@@ -70,3 +70,47 @@ func TestForecastAndPlural(t *testing.T) {
 		t.Errorf("plural(1) = %q", got)
 	}
 }
+
+func TestMeterLevel(t *testing.T) {
+	tests := map[float64]string{0: "ok", 74.9: "ok", 75: "warn", 89.9: "warn", 90: "crit", 100: "crit"}
+	for percent, want := range tests {
+		if got := meterLevel(percent); got != want {
+			t.Errorf("meterLevel(%v) = %q, want %q", percent, got, want)
+		}
+	}
+}
+
+func TestPercentOf(t *testing.T) {
+	if got := percentOf(25, 200); got != 12.5 {
+		t.Errorf("percentOf(25, 200) = %v, want 12.5", got)
+	}
+	if got := percentOf(5, 0); got != 0 {
+		t.Errorf("percentOf(5, 0) = %v, want 0 for an unknown total", got)
+	}
+}
+
+func TestSummarize(t *testing.T) {
+	ok := appView{Status: healthOK}
+	tests := []struct {
+		name      string
+		incidents []incidentView
+		apps      []appView
+		want      appHealth
+		title     string
+	}{
+		{name: "quiet", apps: []appView{ok, ok}, want: healthOK, title: "All systems normal"},
+		{name: "critical wins", incidents: []incidentView{{Severity: store.SeverityWarning}, {Severity: store.SeverityCritical}},
+			apps: []appView{ok}, want: healthCritical, title: "1 critical incident open"},
+		{name: "warnings", incidents: []incidentView{{Severity: store.SeverityWarning}, {Severity: store.SeverityWarning}},
+			apps: []appView{ok}, want: healthWarning, title: "2 incidents open"},
+		{name: "an app with a problem and no incident", apps: []appView{ok, {Status: healthWarning}}, want: healthWarning, title: "An app needs attention"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := summarize(tt.incidents, tt.apps)
+			if got.State != tt.want || got.Title != tt.title {
+				t.Errorf("summarize() = %+v, want %q %q", got, tt.want, tt.title)
+			}
+		})
+	}
+}

@@ -193,6 +193,7 @@ func templateFuncs(location *time.Location, clock clock.Clock) template.FuncMap 
 		"rate":     rateText,
 		"forecast": forecastText,
 		"plural":   plural,
+		"level":    meterLevel,
 		"latency":  latencyText,
 		"mulf": func(value, factor float64) float64 {
 			return value * factor

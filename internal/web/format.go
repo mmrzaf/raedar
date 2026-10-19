@@ -154,3 +154,16 @@ func countText(value int64) string {
 	}
 	return strconv.FormatInt(value, 10)
 }
+
+// meterLevel classifies a usage percentage for a meter: ok below 75, warn
+// below 90, crit from there.
+func meterLevel(percent float64) string {
+	switch {
+	case percent >= 90:
+		return "crit"
+	case percent >= 75:
+		return "warn"
+	default:
+		return "ok"
+	}
+}

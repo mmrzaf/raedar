@@ -50,14 +50,17 @@ type dockerDiskView struct {
 
 // hostView is the host strip.
 type hostView struct {
-	CPU          float64         `json:"cpu"`
-	Load1        float64         `json:"load1"`
-	MemAvailable int64           `json:"mem_available"`
-	MemTotal     int64           `json:"mem_total"`
-	SwapUsed     int64           `json:"swap_used"`
-	SwapTotal    int64           `json:"swap_total"`
-	Disks        []diskView      `json:"disks"`
-	Docker       *dockerDiskView `json:"docker"`
+	CPU          float64 `json:"cpu"`
+	Load1        float64 `json:"load1"`
+	MemAvailable int64   `json:"mem_available"`
+	MemTotal     int64   `json:"mem_total"`
+	// MemUsage and SwapUsage are percentages of the totals.
+	MemUsage  float64         `json:"mem_usage"`
+	SwapUsed  int64           `json:"swap_used"`
+	SwapTotal int64           `json:"swap_total"`
+	SwapUsage float64         `json:"swap_usage"`
+	Disks     []diskView      `json:"disks"`
+	Docker    *dockerDiskView `json:"docker"`
 }
 
 // appView is one row of the overview.
@@ -74,10 +77,12 @@ type appView struct {
 	CPU               float64   `json:"cpu"`
 	Memory            int64     `json:"memory"`
 	MemoryLimit       int64     `json:"memory_limit"`
-	Running           int       `json:"running"`
-	Total             int       `json:"total"`
-	Restarts          int       `json:"restarts"`
-	LastDeploy        time.Time `json:"last_deploy"`
+	// MemoryUsage is the percentage of the limit; 0 without a limit.
+	MemoryUsage float64   `json:"memory_usage"`
+	Running     int       `json:"running"`
+	Total       int       `json:"total"`
+	Restarts    int       `json:"restarts"`
+	LastDeploy  time.Time `json:"last_deploy"`
 }
 
 // certView is one certificate check.
@@ -102,8 +107,17 @@ type unitView struct {
 	Since       *time.Time `json:"since"`
 }
 
+// summaryView is the headline of the overview: how the host is doing at a
+// glance.
+type summaryView struct {
+	State  appHealth `json:"state"`
+	Title  string    `json:"title"`
+	Detail string    `json:"detail"`
+}
+
 // overviewData is everything the overview page and its API show.
 type overviewData struct {
+	Summary   summaryView    `json:"summary"`
 	HostName  string         `json:"host_name"`
 	Now       time.Time      `json:"now"`
 	Version   string         `json:"version"`
@@ -157,6 +171,7 @@ func (s *Server) loadOverview(ctx context.Context) (*overviewData, error) {
 	if data.Units, err = s.unitViews(ctx); err != nil {
 		return nil, err
 	}
+	data.Summary = summarize(data.Incidents, data.Apps)
 	events, err := s.store.LatestEvents(ctx, overviewEvents)
 	if err != nil {
 		return nil, err
@@ -208,6 +223,8 @@ func (s *Server) hostView(ctx context.Context, now time.Time) (*hostView, error)
 		view.MemTotal = sample.MemTotal
 		view.SwapUsed = sample.SwapUsed
 		view.SwapTotal = sample.SwapTotal
+		view.MemUsage = percentOf(sample.MemTotal-sample.MemAvailable, sample.MemTotal)
+		view.SwapUsage = percentOf(sample.SwapUsed, sample.SwapTotal)
 	}
 	disks, err := s.store.DiskSamples(ctx, now.Add(-24*time.Hour))
 	if err != nil {
@@ -232,6 +249,40 @@ func (s *Server) hostView(ctx context.Context, now time.Time) (*hostView, error)
 		}
 	}
 	return view, nil
+}
+
+// percentOf returns part as a percentage of total, 0 when total is not
+// positive.
+func percentOf(part, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return 100 * float64(part) / float64(total)
+}
+
+// summarize builds the headline from the open incidents and the apps.
+func summarize(incidents []incidentView, apps []appView) summaryView {
+	critical, warnings := 0, 0
+	for _, incident := range incidents {
+		if incident.Severity == store.SeverityCritical {
+			critical++
+		} else {
+			warnings++
+		}
+	}
+	detail := plural(len(apps), "app") + " monitored"
+	switch {
+	case critical > 0:
+		return summaryView{State: healthCritical, Title: plural(critical, "critical incident") + " open", Detail: detail}
+	case warnings > 0:
+		return summaryView{State: healthWarning, Title: plural(warnings, "incident") + " open", Detail: detail}
+	}
+	for _, app := range apps {
+		if app.Status != healthOK {
+			return summaryView{State: healthWarning, Title: "An app needs attention", Detail: detail}
+		}
+	}
+	return summaryView{State: healthOK, Title: "All systems normal", Detail: detail}
 }
 
 // diskOf summarizes one filesystem from its samples, oldest first, and
@@ -352,6 +403,7 @@ func (s *Server) appViews(ctx context.Context, model *discovery.Model, open map[
 				view.Restarts++
 			}
 		}
+		view.MemoryUsage = percentOf(view.Memory, view.MemoryLimit)
 		view.LastDeploy = deploys[app.ID]
 		view.Status = appStatus(open, app)
 		views = append(views, view)
