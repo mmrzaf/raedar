@@ -92,27 +92,31 @@ export async function drawIncidentChart() {
   await settle([draw(chartIn(container, "incident"), [container.dataset.series], range(container))]);
 }
 
-// drawSparklines turns the data-values of .spark elements into tiny line charts.
+// drawSparklines turns the data-values of .spark elements into tiny charts:
+// a line over a soft area, in the color of the element's text.
 export function drawSparklines() {
   const NS = "http://www.w3.org/2000/svg";
+  const make = (name, attributes) => {
+    const node = document.createElementNS(NS, name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+    return node;
+  };
   for (const element of document.querySelectorAll(".spark[data-values]")) {
     const values = element.dataset.values.split(",").filter((value) => value !== "").map(Number);
-    if (!values.length) continue;
-    const width = 64;
-    const height = 16;
+    if (values.length < 2) continue;
+    const width = 72;
+    const height = 22;
     const peak = Math.max(1, ...values);
-    const points = values.map((value, index) => `${(index / Math.max(1, values.length - 1)) * width},${height - (value / peak) * (height - 2) - 1}`);
-    const svg = document.createElementNS(NS, "svg");
-    svg.setAttribute("width", String(width));
-    svg.setAttribute("height", String(height));
-    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    svg.setAttribute("aria-hidden", "true");
-    const line = document.createElementNS(NS, "polyline");
-    line.setAttribute("fill", "none");
-    line.setAttribute("stroke", "currentColor");
-    line.setAttribute("stroke-width", "1");
-    line.setAttribute("points", points.join(" "));
-    svg.append(line);
+    const points = values.map((value, index) => [
+      (index / (values.length - 1)) * width,
+      height - 2 - (value / peak) * (height - 4),
+    ]);
+    const line = points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    const svg = make("svg", { viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "none", "aria-hidden": "true" });
+    svg.append(
+      make("polygon", { points: `0,${height} ${line} ${width},${height}`, fill: "currentColor", opacity: "0.14" }),
+      make("polyline", { points: line, fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke" }),
+    );
     element.replaceChildren(svg);
   }
 }

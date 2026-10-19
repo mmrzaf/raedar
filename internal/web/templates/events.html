@@ -1,13 +1,23 @@
 {{template "header" .}}
-<h1>Events</h1>
-<div class="range">{{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}</div>
+<div class="page-head">
+  <div>
+    <h1>Events</h1>
+    <p class="sub">Deploys, crashes, restarts and health changes</p>
+  </div>
+  <nav class="segmented" aria-label="Time range">
+    {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
+  </nav>
+</div>
 <form class="filters" method="get">
+  <input type="hidden" name="range" value="{{.Range.Preset}}">
   <label>App <select name="app"><option value="">All apps</option>{{range .Apps}}<option value="{{.}}"{{if eq . $.Filters.app}} selected{{end}}>{{.}}</option>{{end}}</select></label>
   <label>Kind <select name="kind"><option value="">All kinds</option>{{range .Kinds}}<option value="{{.}}"{{if eq . $.Filters.kind}} selected{{end}}>{{.}}</option>{{end}}</select></label>
   <label>Severity <select name="severity"><option value="">All</option><option value="info"{{if eq $.Filters.severity "info"}} selected{{end}}>info</option><option value="warning"{{if eq $.Filters.severity "warning"}} selected{{end}}>warning</option><option value="critical"{{if eq $.Filters.severity "critical"}} selected{{end}}>critical</option></select></label>
-  <button type="submit">Filter</button>
+  <button class="primary" type="submit">Filter</button>
 </form>
+<div class="card">
 {{if .Events}}
-<ul class="timeline">{{range .Events}}<li><time>{{datetime .TS}}</time> <span class="badge badge-{{.Severity}}">{{.Kind}}</span> {{.Title}} <span class="muted">{{.Subject}}{{if .App}} · {{.App}}{{end}}</span></li>{{end}}</ul>
-{{else}}<p class="empty">No events in this range.</p>{{end}}
+<ul class="timeline">{{range .Events}}<li><time datetime="{{.TS.Format "2006-01-02T15:04:05Z07:00"}}">{{datetime .TS}}</time><span class="badge badge-{{.Severity}}">{{.Kind}}</span><span class="what">{{.Title}}{{if or .Subject .App}} <span class="where">{{.Subject}}{{if and .App (ne .App .Subject)}} · {{.App}}{{end}}</span>{{end}}</span></li>{{end}}</ul>
+{{else}}<div class="card-pad empty">No events in this range.</div>{{end}}
+</div>
 {{template "footer" .}}

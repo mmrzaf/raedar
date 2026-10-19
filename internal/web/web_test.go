@@ -501,3 +501,44 @@ func TestFaviconIsLinkedAndServed(t *testing.T) {
 		t.Errorf("favicon status = %d, type = %q, size = %d, want the icon", icon.Code, icon.Header().Get("Content-Type"), icon.Body.Len())
 	}
 }
+
+// TestTemplatesReferenceExistingStaticFiles catches a page that links a script,
+// stylesheet or icon the binary does not embed.
+func TestTemplatesReferenceExistingStaticFiles(t *testing.T) {
+	reference := regexp.MustCompile(`(?:src|href)="/static/([^"]+)"`)
+	templates, err := fs.Glob(embedded, "templates/*.html")
+	if err != nil || len(templates) == 0 {
+		t.Fatalf("Glob() = %v, %v, want the templates", templates, err)
+	}
+	for _, name := range templates {
+		body, err := fs.ReadFile(embedded, name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, match := range reference.FindAllStringSubmatch(string(body), -1) {
+			if _, err := fs.Stat(embedded, "static/"+match[1]); err != nil {
+				t.Errorf("%s references /static/%s, which is not embedded", name, match[1])
+			}
+		}
+	}
+}
+
+// TestModulesImportExistingFiles does the same for the script modules.
+func TestModulesImportExistingFiles(t *testing.T) {
+	imported := regexp.MustCompile(`from "\./([^"]+)"`)
+	modules, err := fs.Glob(embedded, "static/*.js")
+	if err != nil {
+		t.Fatalf("Glob() error = %v", err)
+	}
+	for _, name := range modules {
+		body, err := fs.ReadFile(embedded, name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, match := range imported.FindAllStringSubmatch(string(body), -1) {
+			if _, err := fs.Stat(embedded, "static/"+match[1]); err != nil {
+				t.Errorf("%s imports ./%s, which is not embedded", name, match[1])
+			}
+		}
+	}
+}

@@ -28,6 +28,9 @@ function drawHeatmap(heatmap, rows, unit) {
     });
   });
   heatmap.replaceChildren(...nodes);
+  const card = heatmap.closest(".card");
+  card.querySelector(".legend-min").textContent = "less";
+  card.querySelector(".legend-max").textContent = `more, up to ${formatValue(unit, peak)}`;
 }
 
 export async function drawPatterns() {
@@ -47,7 +50,7 @@ export async function drawPatterns() {
     { hourly: true, syncKey: "patterns", empty: "Not enough data for a day profile yet." });
     drawChart(container.querySelector('[data-chart="trend"]'), [
       { label: "daily", points: patterns.trend.map((entry) => [entry.ts, entry.value]) },
-    ], unit, { empty: "No daily data yet." });
+    ], unit, { days: true, empty: "No daily data yet." });
   } catch (error) {
     console.error("patterns:", error);
     message.hidden = false;
