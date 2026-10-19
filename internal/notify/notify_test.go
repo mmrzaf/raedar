@@ -468,7 +468,7 @@ type fakeStore struct {
 	mu         sync.Mutex
 	deliveries map[int64]store.Delivery
 	nextID     int64
-	events     map[string][]store.Event
+	events     map[store.EventKind][]store.Event
 }
 
 func (s *fakeStore) AddDelivery(ctx context.Context, delivery store.Delivery) (int64, error) {
@@ -507,7 +507,7 @@ func (s *fakeStore) Deliveries(ctx context.Context, incidentID int64) ([]store.D
 	return deliveries, nil
 }
 
-func (s *fakeStore) Events(ctx context.Context, kind string, from, to time.Time) ([]store.Event, error) {
+func (s *fakeStore) Events(ctx context.Context, kind store.EventKind, from, to time.Time) ([]store.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.events[kind], nil
@@ -533,7 +533,7 @@ func newTestNotifier(t *testing.T, channels ...Channel) (*Notifier, *fakeStore, 
 	cfg.HostName = "host-1"
 	cfg.PublicURL = "https://raedar.example.com"
 	clock := &testClock{now: time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC)}
-	st := &fakeStore{events: map[string][]store.Event{}}
+	st := &fakeStore{events: map[store.EventKind][]store.Event{}}
 	notifier := &Notifier{
 		cfg:       cfg,
 		store:     st,
@@ -552,7 +552,7 @@ func newTestNotifier(t *testing.T, channels ...Channel) (*Notifier, *fakeStore, 
 }
 
 // incident returns a test incident.
-func incident(id int64, severity string) store.Incident {
+func incident(id int64, severity store.Severity) store.Incident {
 	return store.Incident{
 		ID: id, Rule: "route.errors", Subject: "shop@docker", Severity: severity,
 		OpenedAt: time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC), Summary: "5xx errors",
@@ -798,5 +798,36 @@ func TestProxyScopePerChannel(t *testing.T) {
 	}
 	if !failed {
 		t.Error("the direct Telegram request did not fail, want it to bypass the proxy")
+	}
+}
+
+func TestSendDigestRecordsADeliveryWithoutAnIncident(t *testing.T) {
+	telegram := &fakeChannel{kind: KindTelegram}
+	notifier, st, _ := newTestNotifier(t, telegram)
+	notifier.cfg.Notify.DigestChannels = []string{"telegram"}
+	notifier.SendDigest(context.Background(), "all quiet")
+	if got := len(telegram.messages()); got != 1 {
+		t.Fatalf("telegram messages = %d, want the digest", got)
+	}
+	deliveries := st.byChannel(KindTelegram)
+	if len(deliveries) != 1 {
+		t.Fatalf("deliveries = %d, want one for the digest", len(deliveries))
+	}
+	if deliveries[0].Kind != store.DeliveryDigest || deliveries[0].IncidentID != nil || deliveries[0].Status != "sent" {
+		t.Errorf("delivery = %+v, want a sent digest that belongs to no incident", deliveries[0])
+	}
+}
+
+func TestEscalationIsRecordedAsItsOwnDeliveryKind(t *testing.T) {
+	telegram := &fakeChannel{kind: KindTelegram}
+	notifier, st, _ := newTestNotifier(t, telegram)
+	notifier.cfg.Notify.WarningChannels = []string{"telegram"}
+	notifier.cfg.Notify.CriticalChannels = []string{"telegram"}
+	notifier.IncidentsChanged(context.Background(), []rules.Change{
+		{Incident: incident(3, store.SeverityCritical), Kind: rules.ChangeEscalated},
+	})
+	deliveries := st.byChannel(KindTelegram)
+	if len(deliveries) != 1 || deliveries[0].Kind != store.DeliveryEscalated {
+		t.Errorf("deliveries = %+v, want one escalated delivery", deliveries)
 	}
 }

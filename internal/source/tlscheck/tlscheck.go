@@ -14,7 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/discovery"
+	"github.com/mmrzaf/raedar/internal/sourcestatus"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -56,32 +58,6 @@ const (
 // defaultCertificate is the common name of Traefik's built-in certificate.
 const defaultCertificate = "TRAEFIK DEFAULT CERT"
 
-// Clock provides timers to the checker, so that tests run without waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
-
 // Model provides the domains of the TLS routes.
 type Model interface {
 	// TLSDomains returns the domains that need a certificate check, with a
@@ -107,23 +83,22 @@ type Checker struct {
 	extra   []string
 	store   Store
 	logger  *slog.Logger
-	clock   Clock
+	status  *sourcestatus.Reporter
+	clock   clock.Clock
 	warn    time.Duration
 
 	interval time.Duration
 	poll     time.Duration
 	spread   func(time.Duration) time.Duration
 
-	mu          sync.Mutex
-	next        map[string]time.Time
-	status      string
-	statusError string
+	mu   sync.Mutex
+	next map[string]time.Time
 }
 
 // New returns a certificate checker. address is the configured Traefik HTTPS
 // address; when empty the detected one is used. extra are additional domains
 // to check.
-func New(address string, model Model, extra []string, st Store, logger *slog.Logger, clock Clock, warn time.Duration) *Checker {
+func New(address string, model Model, extra []string, st Store, logger *slog.Logger, clock clock.Clock, warn time.Duration) *Checker {
 	return &Checker{
 		address:  address,
 		model:    model,
@@ -136,7 +111,7 @@ func New(address string, model Model, extra []string, st Store, logger *slog.Log
 		poll:     pollInterval,
 		spread:   randomSpread,
 		next:     make(map[string]time.Time),
-		status:   store.StatusUnavailable,
+		status:   sourcestatus.New(SourceName, st, clock, logger),
 	}
 }
 
@@ -158,7 +133,7 @@ func (c *Checker) Run(ctx context.Context) error {
 func (c *Checker) checkDue(ctx context.Context) {
 	address := c.checkAddress()
 	if address == "" {
-		c.recordStatus(ctx, store.StatusUnavailable, errors.New("no TLS check address: set RAEDAR_TLS_CHECK_ADDR"))
+		c.status.Report(ctx, store.StatusUnavailable, errors.New("no TLS check address: set RAEDAR_TLS_CHECK_ADDR"))
 		return
 	}
 	now := c.clock.Now()
@@ -185,10 +160,10 @@ func (c *Checker) checkDue(ctx context.Context) {
 		return
 	}
 	if failures > 0 {
-		c.recordStatus(ctx, store.StatusDegraded, fmt.Errorf("%d of %d domains could not be checked", failures, due))
+		c.status.Report(ctx, store.StatusDegraded, fmt.Errorf("%d of %d domains could not be checked", failures, due))
 		return
 	}
-	c.recordStatus(ctx, store.StatusOK, nil)
+	c.status.Report(ctx, store.StatusOK, nil)
 }
 
 // jitter returns the jitter window.
@@ -340,23 +315,4 @@ func randomSpread(window time.Duration) time.Duration {
 		return 0
 	}
 	return rand.N(window)
-}
-
-// recordStatus stores the state of the source when it changed.
-func (c *Checker) recordStatus(ctx context.Context, status string, cause error) {
-	message := ""
-	if cause != nil {
-		message = cause.Error()
-	}
-	c.mu.Lock()
-	changed := c.status != status || c.statusError != message
-	c.status = status
-	c.statusError = message
-	c.mu.Unlock()
-	if !changed {
-		return
-	}
-	if err := c.store.RecordSourceStatus(ctx, SourceName, status, message, c.clock.Now()); err != nil {
-		c.logger.Warn("record TLS source status", slog.String("error", err.Error()))
-	}
 }

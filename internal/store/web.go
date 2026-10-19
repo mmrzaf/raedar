@@ -41,6 +41,30 @@ func (s *Store) AllEvents(ctx context.Context, from, to time.Time) ([]Event, err
 	return events, nil
 }
 
+// LatestEvents returns the newest events, newest first.
+func (s *Store) LatestEvents(ctx context.Context, limit int) ([]Event, error) {
+	rows, err := s.pool.Query(ctx, `
+		select id, ts, kind, severity, app_id, slot_id, route_id, subject, title, data
+		from events order by ts desc, id desc limit $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read latest events: %w", err)
+	}
+	defer rows.Close()
+	var events []Event
+	for rows.Next() {
+		var event Event
+		if err := rows.Scan(&event.ID, &event.TS, &event.Kind, &event.Severity, &event.AppID, &event.SlotID,
+			&event.RouteID, &event.Subject, &event.Title, &event.Data); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read latest events: %w", err)
+	}
+	return events, nil
+}
+
 // IncidentByID returns one incident, or nil when it does not exist.
 func (s *Store) IncidentByID(ctx context.Context, id int64) (*Incident, error) {
 	var incident Incident
@@ -92,26 +116,71 @@ func (s *Store) TableSizes(ctx context.Context) ([]TableSize, error) {
 	return sizes, nil
 }
 
-// AppMinuteStats sums the minute data of one app over a range.
-func (s *Store) AppMinuteStats(ctx context.Context, appID int64, from, to time.Time) (AppDayStats, error) {
-	var (
-		stats     AppDayStats
-		histogram []int32
-	)
-	err := s.pool.QueryRow(ctx, `
-		select $1::bigint, coalesce(sum(rm.requests), 0), coalesce(sum(rm.s5xx), 0),
-		       coalesce(raedar_hist_sum(rm.latency), array_fill(0::integer, array[21]))
+// AppMinuteStats sums the minute data of every app that had requests in a
+// range, by app ID.
+func (s *Store) AppMinuteStats(ctx context.Context, from, to time.Time) (map[int64]AppDayStats, error) {
+	rows, err := s.pool.Query(ctx, `
+		select r.app_id, sum(rm.requests), sum(rm.s5xx), raedar_hist_sum(rm.latency)
 		from route_minute rm
 		join routes r on r.id = rm.route_id
-		where r.app_id = $1::bigint and rm.ts >= $2 and rm.ts < $3`,
-		appID, from, to).Scan(&stats.AppID, &stats.Requests, &stats.S5xx, &histogram)
+		where r.app_id is not null and rm.ts >= $1 and rm.ts < $2
+		group by r.app_id`, from, to)
 	if err != nil {
-		return AppDayStats{}, fmt.Errorf("read app minute stats: %w", err)
+		return nil, fmt.Errorf("read app minute stats: %w", err)
 	}
-	if stats.Latency, err = LoadHistogram(histogram); err != nil {
-		return AppDayStats{}, fmt.Errorf("read app minute stats: %w", err)
+	defer rows.Close()
+	stats := make(map[int64]AppDayStats)
+	for rows.Next() {
+		var (
+			entry     AppDayStats
+			histogram []int32
+		)
+		if err := rows.Scan(&entry.AppID, &entry.Requests, &entry.S5xx, &histogram); err != nil {
+			return nil, fmt.Errorf("scan app minute stats: %w", err)
+		}
+		if entry.Latency, err = LoadHistogram(histogram); err != nil {
+			return nil, fmt.Errorf("read app minute stats: %w", err)
+		}
+		stats[entry.AppID] = entry
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read app minute stats: %w", err)
 	}
 	return stats, nil
+}
+
+// AppHourlyRequests returns the requests per hour since from for every app,
+// by app ID, from the hourly tables.
+func (s *Store) AppHourlyRequests(ctx context.Context, from time.Time) (map[int64]map[time.Time]int64, error) {
+	rows, err := s.pool.Query(ctx, `
+		select r.app_id, rh.ts, sum(rh.requests)
+		from route_hour rh
+		join routes r on r.id = rh.route_id
+		where r.app_id is not null and rh.ts >= $1
+		group by r.app_id, rh.ts`, from)
+	if err != nil {
+		return nil, fmt.Errorf("read hourly requests: %w", err)
+	}
+	defer rows.Close()
+	byApp := make(map[int64]map[time.Time]int64)
+	for rows.Next() {
+		var (
+			appID int64
+			ts    time.Time
+			count int64
+		)
+		if err := rows.Scan(&appID, &ts, &count); err != nil {
+			return nil, fmt.Errorf("scan hourly requests: %w", err)
+		}
+		if byApp[appID] == nil {
+			byApp[appID] = make(map[time.Time]int64)
+		}
+		byApp[appID][ts.UTC()] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read hourly requests: %w", err)
+	}
+	return byApp, nil
 }
 
 // RoutePathStat is the summed path data of one route and pattern.

@@ -146,7 +146,7 @@ func (s *Store) SlotSamples(ctx context.Context, from time.Time) (map[int64]Slot
 }
 
 // Events returns the events of one kind in a time range, oldest first.
-func (s *Store) Events(ctx context.Context, kind string, from, to time.Time) ([]Event, error) {
+func (s *Store) Events(ctx context.Context, kind EventKind, from, to time.Time) ([]Event, error) {
 	rows, err := s.pool.Query(ctx, `
 		select id, ts, kind, severity, app_id, slot_id, route_id, subject, title, data
 		from events
@@ -171,9 +171,41 @@ func (s *Store) Events(ctx context.Context, kind string, from, to time.Time) ([]
 	return events, nil
 }
 
+// LatestEventByApp returns, for each app, the time of its newest event of any
+// of the given kinds.
+func (s *Store) LatestEventByApp(ctx context.Context, kinds ...EventKind) (map[int64]time.Time, error) {
+	names := make([]string, len(kinds))
+	for i, kind := range kinds {
+		names[i] = string(kind)
+	}
+	rows, err := s.pool.Query(ctx, `
+		select app_id, max(ts) from events
+		where kind = any($1) and app_id is not null
+		group by app_id`, names)
+	if err != nil {
+		return nil, fmt.Errorf("read latest events per app: %w", err)
+	}
+	defer rows.Close()
+	latest := make(map[int64]time.Time)
+	for rows.Next() {
+		var (
+			appID int64
+			at    time.Time
+		)
+		if err := rows.Scan(&appID, &at); err != nil {
+			return nil, fmt.Errorf("scan latest event: %w", err)
+		}
+		latest[appID] = at.UTC()
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read latest events per app: %w", err)
+	}
+	return latest, nil
+}
+
 // LatestEventTime returns the time of the newest event of one kind, or the
 // zero time when there is none.
-func (s *Store) LatestEventTime(ctx context.Context, kind string) (time.Time, error) {
+func (s *Store) LatestEventTime(ctx context.Context, kind EventKind) (time.Time, error) {
 	var at *time.Time
 	if err := s.pool.QueryRow(ctx, `select max(ts) from events where kind = $1`, kind).Scan(&at); err != nil {
 		return time.Time{}, fmt.Errorf("read latest %s event: %w", kind, err)

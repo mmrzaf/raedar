@@ -6,7 +6,8 @@
   {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Data.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
   <span class="muted">Drag across a chart to zoom.</span>
 </div>
-<div class="charts" data-app="{{.App.Name}}" data-slots="{{range .Containers}}{{.Slot}}|{{end}}" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
+<div class="charts" data-app="{{.App.Name}}" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
+  {{range .Containers}}{{if .SlotID}}<span hidden data-slot-id="{{.SlotID}}" data-slot-key="{{.Slot}}"></span>{{end}}{{end}}
   <section><h2>Requests</h2><div class="chart" data-chart="requests"></div></section>
   <section><h2>Error rate</h2><div class="chart" data-chart="errors"></div></section>
   <section><h2>Latency</h2><div class="chart" data-chart="latency"></div></section>
@@ -22,7 +23,7 @@
     <tbody>{{range .Containers}}<tr>
       <td>{{.Slot}}</td><td>{{.Name}}</td><td class="muted">{{.Image}}</td><td>{{.State}}</td><td>{{if .Health}}{{.Health}}{{else}}—{{end}}</td>
       <td>{{if .Uptime}}{{duration .Uptime}}{{else}}—{{end}}</td><td class="num">{{.Restarts}}</td>
-      <td class="num">{{printf "%.0f" .CPU}} m</td><td class="num">{{bytes .Memory}}</td>
+      <td class="num">{{cpu .CPU}}</td><td class="num">{{bytes .Memory}}</td>
     </tr>{{end}}</tbody>
   </table></div>
   {{else}}<p class="empty">No containers for this app yet.</p>{{end}}
@@ -35,7 +36,7 @@
     <tbody>{{range .Paths}}<tr>
       <td>{{.Method}}</td><td>{{.Pattern}}</td><td class="num">{{count .Requests}}</td>
       <td class="num">{{printf "%.1f" .S4xx}}%</td><td class="num">{{printf "%.1f" .S5xx}}%</td>
-      <td class="num">{{printf "%.0f" .P50}} ms</td><td class="num">{{printf "%.0f" .P95}} ms</td>
+      <td class="num">{{.P50}}</td><td class="num">{{.P95}}</td>
     </tr>{{end}}</tbody>
   </table></div>
   {{else}}<p class="empty">No request paths in this range. The access log has not produced lines for this app.</p>{{end}}
@@ -50,6 +51,7 @@
   <div class="logs-head">
     <strong>Logs</strong>
     <select class="logs-container">{{range .Containers}}{{if .ID}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}</select>
+    <span class="logs-status" aria-live="polite"></span>
     <input class="logs-filter" type="search" placeholder="Filter lines">
     <label><input class="logs-follow" type="checkbox" checked> Follow</label>
     <button class="logs-close" type="button">Close</button>

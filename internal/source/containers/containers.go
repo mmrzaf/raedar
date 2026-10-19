@@ -9,8 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/docker"
+	"github.com/mmrzaf/raedar/internal/sourcestatus"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -20,36 +22,7 @@ const SourceName = "containers"
 const (
 	// interval is how often containers are sampled.
 	interval = 60 * time.Second
-	// retryBase and retryMax bound the delay after a failed pass.
-	retryBase = time.Second
-	retryMax  = 30 * time.Second
 )
-
-// Clock provides timers to the source, so that tests run without waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
 
 // Model provides the containers to sample.
 type Model interface {
@@ -81,15 +54,14 @@ type Source struct {
 	docker Docker
 	store  Store
 	logger *slog.Logger
-	clock  Clock
+	status *sourcestatus.Reporter
+	clock  clock.Clock
 
 	interval time.Duration
 
-	mu          sync.Mutex
-	samples     map[int64]*sample
-	hostMemory  int64
-	status      string
-	statusError string
+	mu         sync.Mutex
+	samples    map[int64]*sample
+	hostMemory int64
 }
 
 // sample is the previous statistics of one slot, used to compute the deltas
@@ -102,7 +74,7 @@ type sample struct {
 }
 
 // New returns a container collector.
-func New(model Model, client Docker, st Store, logger *slog.Logger, clock Clock) *Source {
+func New(model Model, client Docker, st Store, logger *slog.Logger, clock clock.Clock) *Source {
 	return &Source{
 		model:    model,
 		docker:   client,
@@ -111,13 +83,12 @@ func New(model Model, client Docker, st Store, logger *slog.Logger, clock Clock)
 		clock:    clock,
 		interval: interval,
 		samples:  make(map[int64]*sample),
-		status:   store.StatusUnavailable,
+		status:   sourcestatus.New(SourceName, st, clock, logger),
 	}
 }
 
 // Run samples the containers every interval until ctx is done.
 func (s *Source) Run(ctx context.Context) error {
-	delay := retryBase
 	next := s.clock.After(0)
 	for {
 		select {
@@ -125,14 +96,10 @@ func (s *Source) Run(ctx context.Context) error {
 			return nil
 		case <-next:
 		}
-		err := s.collect(ctx)
-		if err != nil {
+		if err := s.collect(ctx); err != nil {
 			s.logger.Warn("container sample failed", slog.String("error", err.Error()))
-			delay = min(delay*2, retryMax)
-		} else {
-			delay = retryBase
 		}
-		next = s.clock.After(max(s.interval, delay))
+		next = s.clock.After(s.interval)
 	}
 }
 
@@ -152,10 +119,10 @@ func (s *Source) collect(ctx context.Context) error {
 	}
 	s.recordStopped(ctx, running, now)
 	if failures > 0 {
-		s.recordStatus(ctx, store.StatusDegraded, errCount(failures, len(containers)))
+		s.status.Report(ctx, store.StatusDegraded, errCount(failures, len(containers)))
 		return nil
 	}
-	s.recordStatus(ctx, store.StatusOK, nil)
+	s.status.Report(ctx, store.StatusOK, nil)
 	return nil
 }
 
@@ -274,23 +241,4 @@ func (s *Source) hostMemorySize(ctx context.Context) int64 {
 // errCount describes a pass in which some containers could not be sampled.
 func errCount(failed, total int) error {
 	return fmt.Errorf("%d of %d containers could not be sampled", failed, total)
-}
-
-// recordStatus stores the state of the source when it changed.
-func (s *Source) recordStatus(ctx context.Context, status string, cause error) {
-	message := ""
-	if cause != nil {
-		message = cause.Error()
-	}
-	s.mu.Lock()
-	changed := s.status != status || s.statusError != message
-	s.status = status
-	s.statusError = message
-	s.mu.Unlock()
-	if !changed {
-		return
-	}
-	if err := s.store.RecordSourceStatus(ctx, SourceName, status, message, s.clock.Now()); err != nil {
-		s.logger.Warn("record container source status", slog.String("error", err.Error()))
-	}
 }

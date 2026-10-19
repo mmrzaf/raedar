@@ -104,8 +104,8 @@ func TestClassifierSequences(t *testing.T) {
 			want:   []LifecycleEvent{{Kind: "started", Time: at(0)}},
 		},
 		{
-			name:   "restart",
-			events: []docker.Event{dockerEvent("restart", at(0))},
+			name:   "restart is recorded once, by its start",
+			events: []docker.Event{dockerEvent("start", at(0)), dockerEvent("restart", at(0))},
 			want:   []LifecycleEvent{{Kind: "started", Time: at(0)}},
 		},
 		{

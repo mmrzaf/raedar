@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -17,61 +15,18 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/store"
+	"github.com/mmrzaf/raedar/internal/testdb"
 )
-
-// testDatabaseURL returns the disposable test database URL.
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	databaseURL := os.Getenv("RAEDAR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("RAEDAR_TEST_DATABASE_URL is not set")
-	}
-	return databaseURL
-}
-
-// withSearchPath returns the URL with search_path set to schema.
-func withSearchPath(t *testing.T, databaseURL, schema string) string {
-	t.Helper()
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", databaseURL, err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
-}
 
 // testSchema creates a schema and returns a migrated store on it, the
 // database URL and the schema name.
 func testSchema(t *testing.T) (*store.Store, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	databaseURL := testDatabaseURL(t)
-	schema := fmt.Sprintf("raedar_discovery_%d", time.Now().UnixNano())
-	admin, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to PostgreSQL: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "create schema "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatalf("create schema: %v", err)
-	}
-	if err := admin.Close(ctx); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	t.Cleanup(func() {
-		conn, err := pgx.Connect(ctx, databaseURL)
-		if err != nil {
-			t.Errorf("connect to drop schema: %v", err)
-			return
-		}
-		defer conn.Close(ctx)
-		if _, err := conn.Exec(ctx, "drop schema "+pgx.Identifier{schema}.Sanitize()+" cascade"); err != nil {
-			t.Errorf("drop schema: %v", err)
-		}
-	})
-	st, err := store.Open(ctx, withSearchPath(t, databaseURL, schema), discardLogger())
+	databaseURL, schema := testdb.NewSchema(t, "discovery")
+	st, err := store.Open(ctx, testdb.WithSearchPath(t, databaseURL, schema), discardLogger())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -85,7 +40,7 @@ func testSchema(t *testing.T) (*store.Store, string, string) {
 // testConn returns a connection to the test schema for direct queries.
 func testConn(t *testing.T, databaseURL, schema string) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(context.Background(), withSearchPath(t, databaseURL, schema))
+	conn, err := pgx.Connect(context.Background(), testdb.WithSearchPath(t, databaseURL, schema))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -235,7 +190,9 @@ func (f *fakeDocker) host() string {
 
 // pushEvent sends one container event to the event stream.
 func (f *fakeDocker) pushEvent(action string, container testContainer, exitCode int) {
-	attributes := map[string]string{"name": container.Name, "image": container.Image}
+	attributes := container.labels()
+	attributes["name"] = container.Name
+	attributes["image"] = container.Image
 	if exitCode >= 0 {
 		attributes["exitCode"] = fmt.Sprint(exitCode)
 	}
@@ -316,7 +273,7 @@ func (f *fakeDocker) handleEvents(w http.ResponseWriter, r *http.Request) {
 // newDiscoverer returns a discoverer over the fake daemon and store.
 func newDiscoverer(t *testing.T, fake *fakeDocker, st *store.Store) *Discoverer {
 	t.Helper()
-	return New(fake.host(), "", "raedar-container", st, discardLogger(), SystemClock())
+	return New(fake.host(), "", "raedar-container", st, discardLogger(), clock.System())
 }
 
 // mustResync runs one resync that must succeed.
@@ -536,6 +493,56 @@ func TestResyncFindsDeploysAfterRestart(t *testing.T) {
 	}
 }
 
+func TestResyncFindsDeploysWhenTheOldContainerIsRemovedFirst(t *testing.T) {
+	fake := newFakeDocker(t)
+	st, databaseURL, schema := testSchema(t)
+	base := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	d := newDiscoverer(t, fake, st)
+	fake.set(apiContainer("api1", "shop/api:1.0", "sha256:"+strings.Repeat("a", 64), base))
+	mustResync(t, d)
+	// docker rm -f followed by docker run: a resync sees no container in
+	// between, so the previous model has forgotten the old one.
+	fake.set()
+	mustResync(t, d)
+	fake.set(apiContainer("api2", "shop/api:2.0", "sha256:"+strings.Repeat("c", 64), base.Add(time.Hour)))
+	mustResync(t, d)
+	data := storedDeployData(t, testConn(t, databaseURL, schema))
+	if len(data.Changes) != 1 || data.Changes[0].OldImage != "shop/api:1.0" || data.Changes[0].NewImage != "shop/api:2.0" {
+		t.Errorf("changes = %+v, want the deploy across the gap", data.Changes)
+	}
+}
+
+func TestResyncIgnoresOneOffAndIgnoredContainers(t *testing.T) {
+	fake := newFakeDocker(t)
+	st, databaseURL, schema := testSchema(t)
+	base := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	d := newDiscoverer(t, fake, st)
+	api := apiContainer("api1", "shop/api:1.0", "sha256:"+strings.Repeat("a", 64), base)
+	oneOff := apiContainer("run1", "shop/api:1.0", "sha256:"+strings.Repeat("a", 64), base.Add(time.Minute))
+	oneOff.Name = "shop-api-run-1a2b"
+	oneOff.Labels = map[string]string{labelComposeOneOff: "True"}
+	ignored := testContainer{
+		ID: "tool1", Name: "shop-tool-1", Image: "shop/tool:1.0", ImageID: "sha256:" + strings.Repeat("b", 64),
+		Project: "shop", Service: "tool", Created: base, Labels: map[string]string{labelIgnore: "true"},
+	}
+	fake.set(api, oneOff, ignored)
+	mustResync(t, d)
+	conn := testConn(t, databaseURL, schema)
+	var containers, slots int
+	if err := conn.QueryRow(context.Background(), "select (select count(*) from containers), (select count(*) from slots)").Scan(&containers, &slots); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if containers != 1 || slots != 1 {
+		t.Errorf("containers = %d, slots = %d, want only the service container", containers, slots)
+	}
+	if got := countEvents(t, conn, "recreated"); got != 0 {
+		t.Errorf("recreated events = %d, want 0: a one-off run is not a recreation", got)
+	}
+	if running := d.RunningContainers(); len(running) != 1 || running[0].ID != "api1" {
+		t.Errorf("RunningContainers() = %+v, want only the service container", running)
+	}
+}
+
 func TestResyncKeepsAccessLogRoutes(t *testing.T) {
 	fake := newFakeDocker(t)
 	st, databaseURL, schema := testSchema(t)
@@ -632,7 +639,7 @@ func TestDetectsTraefikAndTLSAddress(t *testing.T) {
 			Created: base, Networks: map[string]string{"proxy": "172.20.0.9"},
 		},
 	)
-	d := New(fake.host(), "", "raedar-container", st, discardLogger(), SystemClock())
+	d := New(fake.host(), "", "raedar-container", st, discardLogger(), clock.System())
 	mustResync(t, d)
 	model := d.Model()
 	if model.Traefik == nil || model.Traefik.Container == nil {
@@ -640,6 +647,70 @@ func TestDetectsTraefikAndTLSAddress(t *testing.T) {
 	}
 	if got := model.Traefik.TLSCheckAddr; got != "172.20.0.2:443" {
 		t.Errorf("TLSCheckAddr = %q, want 172.20.0.2:443", got)
+	}
+}
+
+func TestRunRecordsLifecycleOnlyForTrackedContainers(t *testing.T) {
+	fake := newFakeDocker(t)
+	st, databaseURL, schema := testSchema(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	base := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	api := apiContainer("api1", "shop/api:1.0", "sha256:"+strings.Repeat("a", 64), base)
+	fake.set(api)
+	d := newDiscoverer(t, fake, st)
+	d.resyncEvery = time.Hour
+	done := make(chan error, 1)
+	if err := d.Load(ctx); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	go func() { done <- d.Run(ctx) }()
+	conn := testConn(t, databaseURL, schema)
+	waitFor(t, 10*time.Second, func() bool {
+		var count int
+		return conn.QueryRow(ctx, "select count(*) from containers").Scan(&count) == nil && count == 1
+	})
+	// A short-lived container of some tool, a one-off run and the service
+	// itself, which was recreated and has not been resynced yet.
+	stray := testContainer{ID: "tmp1", Name: "gitman-9f2c-3", Image: "gitman:1.0"}
+	oneOff := apiContainer("run1", "shop/api:1.0", "", base)
+	oneOff.Name = "shop-api-run-1a2b"
+	oneOff.Labels = map[string]string{labelComposeOneOff: "True"}
+	fresh := apiContainer("api2", "shop/api:1.0", "", base)
+	for _, container := range []testContainer{stray, oneOff, fresh} {
+		fake.pushEvent("start", container, -1)
+	}
+	// A restart is a start followed by a restart event and must count once.
+	fake.pushEvent("restart", fresh, -1)
+	waitFor(t, 15*time.Second, func() bool { return countEvents(t, conn, "started") >= 1 })
+	time.Sleep(500 * time.Millisecond)
+	rows, err := conn.Query(ctx, "select subject, app_id is not null, slot_id is not null from events where kind = 'started'")
+	if err != nil {
+		t.Fatalf("read started events: %v", err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var (
+			subject         string
+			hasApp, hasSlot bool
+		)
+		if err := rows.Scan(&subject, &hasApp, &hasSlot); err != nil {
+			t.Fatalf("scan event: %v", err)
+		}
+		count++
+		if subject != "api #1" || !hasApp || !hasSlot {
+			t.Errorf("event = %q app %v slot %v, want the api slot with its app", subject, hasApp, hasSlot)
+		}
+	}
+	if count != 1 {
+		t.Errorf("started events = %d, want 1: only the tracked container, once", count)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() did not stop")
 	}
 }
 
@@ -654,6 +725,9 @@ func TestRunClassifiesCrashesFromTheEventStream(t *testing.T) {
 	d := newDiscoverer(t, fake, st)
 	d.resyncEvery = 100 * time.Millisecond
 	done := make(chan error, 1)
+	if err := d.Load(ctx); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
 	go func() { done <- d.Run(ctx) }()
 	conn := testConn(t, databaseURL, schema)
 	waitFor(t, 10*time.Second, func() bool {
@@ -694,5 +768,27 @@ func TestRunClassifiesCrashesFromTheEventStream(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run() did not stop")
+	}
+}
+
+func TestLoadRestoresTheRoutesOfEachApp(t *testing.T) {
+	fake := newFakeDocker(t)
+	st, _, _ := testSchema(t)
+	base := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	fake.set(apiContainer("api1", "shop/api:1.0", "sha256:"+strings.Repeat("a", 64), base))
+	mustResync(t, newDiscoverer(t, fake, st))
+
+	// A restarted process knows the app's routes before Docker answers, so
+	// its charts work while the daemon is unreachable.
+	restarted := newDiscoverer(t, fake, st)
+	if err := restarted.Load(context.Background()); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	app := restarted.Model().Apps["shop"]
+	if app == nil || app.Routes["shop-api@docker"] == nil {
+		t.Fatalf("app = %+v, want it to carry its route after Load", app)
+	}
+	if route := restarted.Model().Routes["shop-api@docker"]; route == nil || route.App != app || route.ID == 0 {
+		t.Errorf("route = %+v, want it attached to its app with its row ID", route)
 	}
 }

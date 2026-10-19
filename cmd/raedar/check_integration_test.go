@@ -5,56 +5,22 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
-	"net/url"
-	"os"
+	"regexp"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/store"
+	"github.com/mmrzaf/raedar/internal/testdb"
 )
 
 // migratedSchema creates and migrates a schema and returns its URL.
 func migratedSchema(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
-	databaseURL := os.Getenv("RAEDAR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("RAEDAR_TEST_DATABASE_URL is not set")
-	}
-	schema := fmt.Sprintf("raedar_check_%d", time.Now().UnixNano())
-	admin, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to PostgreSQL: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "create schema "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatalf("create schema: %v", err)
-	}
-	if err := admin.Close(ctx); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	t.Cleanup(func() {
-		conn, err := pgx.Connect(ctx, databaseURL)
-		if err != nil {
-			t.Errorf("connect to drop schema: %v", err)
-			return
-		}
-		defer conn.Close(ctx)
-		if _, err := conn.Exec(ctx, "drop schema "+pgx.Identifier{schema}.Sanitize()+" cascade"); err != nil {
-			t.Errorf("drop schema: %v", err)
-		}
-	})
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse database URL: %v", err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	st, err := store.Dial(ctx, parsed.String())
+	databaseURL, schema := testdb.NewSchema(t, "check")
+	schemaURL := testdb.WithSearchPath(t, databaseURL, schema)
+	st, err := store.Dial(ctx, schemaURL)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -62,7 +28,7 @@ func migratedSchema(t *testing.T) string {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	return parsed.String()
+	return schemaURL
 }
 
 func TestCheckDatabase(t *testing.T) {
@@ -73,7 +39,7 @@ func TestCheckDatabase(t *testing.T) {
 	if result.failed {
 		t.Fatalf("checkDatabase() failed: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "reachable; schema version 1") {
+	if !regexp.MustCompile(`reachable; schema version \d+`).MatchString(out.String()) {
 		t.Errorf("output = %q, want the schema version", out.String())
 	}
 }

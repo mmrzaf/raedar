@@ -69,7 +69,7 @@ func TestRollup(t *testing.T) {
 		t.Fatalf("InsertDiskMinute() error = %v", err)
 	}
 
-	if err := st.Rollup(ctx, base.Add(65*time.Minute)); err != nil {
+	if err := st.Rollup(ctx, base.Add(65*time.Minute), time.UTC); err != nil {
 		t.Fatalf("Rollup() error = %v", err)
 	}
 	var requests, s5xx, noBackend, bytes int64
@@ -126,7 +126,7 @@ func TestRollup(t *testing.T) {
 	}}}); err != nil {
 		t.Fatalf("second FlushBuckets() error = %v", err)
 	}
-	if err := st.Rollup(ctx, base.Add(65*time.Minute)); err != nil {
+	if err := st.Rollup(ctx, base.Add(65*time.Minute), time.UTC); err != nil {
 		t.Fatalf("second Rollup() error = %v", err)
 	}
 	if err := st.pool.QueryRow(ctx, `select requests from route_hour where route_id = $1 and ts = $2`,
@@ -152,7 +152,7 @@ func TestRollupRecomputesOnlyCompleteHours(t *testing.T) {
 			t.Fatalf("FlushBuckets() error = %v", err)
 		}
 	}
-	if err := st.Rollup(ctx, now); err != nil {
+	if err := st.Rollup(ctx, now, time.UTC); err != nil {
 		t.Fatalf("Rollup() error = %v", err)
 	}
 	var hours []time.Time
@@ -175,5 +175,109 @@ func TestRollupRecomputesOnlyCompleteHours(t *testing.T) {
 	}
 	if !reflect.DeepEqual(hours, want) {
 		t.Errorf("rolled up hours = %v, want the last three complete hours %v", hours, want)
+	}
+}
+
+func TestRollupFollowsLocalHours(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	tehran, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	routeID := insertRoute(t, st, "shop@docker")
+	// Local 13:40 and 14:10 are in different local hours but 10:10 and 10:40
+	// UTC are in the same UTC hour.
+	for _, ts := range []time.Time{
+		time.Date(2026, 10, 18, 10, 10, 0, 0, time.UTC),
+		time.Date(2026, 10, 18, 10, 40, 0, 0, time.UTC),
+	} {
+		if err := st.FlushBuckets(ctx, Flush{Minutes: []RouteMinute{{RouteID: routeID, TS: ts, Requests: 5}}}); err != nil {
+			t.Fatalf("FlushBuckets() error = %v", err)
+		}
+	}
+	if err := st.Rollup(ctx, time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC), tehran); err != nil {
+		t.Fatalf("Rollup() error = %v", err)
+	}
+	rows, err := st.pool.Query(ctx, `select ts, requests from route_hour order by ts`)
+	if err != nil {
+		t.Fatalf("read route_hour: %v", err)
+	}
+	defer rows.Close()
+	type hour struct {
+		ts       time.Time
+		requests int64
+	}
+	var got []hour
+	for rows.Next() {
+		var h hour
+		if err := rows.Scan(&h.ts, &h.requests); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		h.ts = h.ts.UTC()
+		got = append(got, h)
+	}
+	want := []hour{
+		{time.Date(2026, 10, 18, 9, 30, 0, 0, time.UTC), 5},
+		{time.Date(2026, 10, 18, 10, 30, 0, 0, time.UTC), 5},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("route_hour = %v, want rows on local hour starts %v", got, want)
+	}
+}
+
+func TestRealignRollupsRebuildsMisalignedHours(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	tehran, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	routeID := insertRoute(t, st, "shop@docker")
+	minute := time.Date(2026, 10, 18, 10, 10, 0, 0, time.UTC)
+	if err := st.FlushBuckets(ctx, Flush{Minutes: []RouteMinute{{RouteID: routeID, TS: minute, Requests: 7}}}); err != nil {
+		t.Fatalf("FlushBuckets() error = %v", err)
+	}
+	// What an older version wrote: a row on the UTC hour, plus one far older
+	// than the minute tables cover, which cannot be rebuilt and must stay.
+	utcHour := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	ancient := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
+	for _, ts := range []time.Time{utcHour, ancient} {
+		insertHourlyRoute(t, st, routeID, ts, 99, 0, 2, 99)
+	}
+	hours, err := st.RealignRollups(ctx, tehran, 14*24*time.Hour, now)
+	if err != nil {
+		t.Fatalf("RealignRollups() error = %v", err)
+	}
+	if hours == 0 {
+		t.Error("RealignRollups() rebuilt no hours, want the misaligned row to trigger a rebuild")
+	}
+	var stamps []time.Time
+	rows, err := st.pool.Query(ctx, `select ts from route_hour order by ts`)
+	if err != nil {
+		t.Fatalf("read route_hour: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ts time.Time
+		if err := rows.Scan(&ts); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		stamps = append(stamps, ts.UTC())
+	}
+	want := []time.Time{ancient, time.Date(2026, 10, 18, 9, 30, 0, 0, time.UTC)}
+	if !reflect.DeepEqual(stamps, want) {
+		t.Errorf("route_hour = %v, want the rebuilt local hour and the untouched old row %v", stamps, want)
+	}
+	again, err := st.RealignRollups(ctx, tehran, 14*24*time.Hour, now)
+	if err != nil || again != 0 {
+		t.Errorf("second RealignRollups() = %d, %v, want nothing to do", again, err)
 	}
 }

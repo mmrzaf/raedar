@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/aggregate"
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/digest"
 	"github.com/mmrzaf/raedar/internal/discovery"
@@ -88,6 +89,11 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if err := st.Lock(ctx); err != nil {
 		return err
 	}
+	if hours, err := st.RealignRollups(ctx, cfg.Location, cfg.Retention.Minute, time.Now().UTC()); err != nil {
+		return err
+	} else if hours > 0 {
+		logger.Info("hourly rows rebuilt on local hour boundaries", slog.Int("hours", hours), slog.String("zone", cfg.Location.String()))
+	}
 	logger.Info("running")
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
@@ -110,21 +116,23 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		logger.Debug("cannot determine the container host name", slog.String("error", err.Error()))
 	}
 	connector := docker.NewConnector(cfg.Docker.Host)
-	dockerClient := dockerAdapter{connector: connector}
-	discoverer := discovery.New(cfg.Docker.Host, cfg.Docker.TraefikContainer, self, st, logger, discovery.SystemClock())
-	aggregator := aggregate.New(st, accesslog.SourceName, logger, aggregate.SystemClock())
+	discoverer := discovery.New(cfg.Docker.Host, cfg.Docker.TraefikContainer, self, st, logger, clock.System())
+	if err := discoverer.Load(ctx); err != nil {
+		return err
+	}
+	aggregator := aggregate.New(st, accesslog.SourceName, logger, clock.System())
 	accessLog := accesslog.New(accesslog.Options{
 		Path:       cfg.Docker.AccessLogPath,
 		DockerHost: cfg.Docker.Host,
-	}, discoverer, st, aggregator, logger, accesslog.SystemClock())
-	containerStats := containers.New(discoverer, dockerClient, st, logger, containers.SystemClock())
-	hostStats := host.New(cfg.Host.Disks, procRoot, dockerClient, st, logger, host.SystemClock())
+	}, discoverer, st, aggregator, logger, clock.System())
+	containerStats := containers.New(discoverer, connector, st, logger, clock.System())
+	hostStats := host.New(cfg.Host.Disks, procRoot, connector, st, logger, clock.System())
 	tlsChecks := tlscheck.New(cfg.Docker.TLSCheckAddr, discoverer, cfg.Docker.TLSDomains, st, logger,
-		tlscheck.SystemClock(), cfg.Rules.CertWarn)
-	if enabled, err := systemd.Enabled(cfg.Host.Systemd, socketExists(systemBusSocket)); err != nil {
+		clock.System(), cfg.Rules.CertWarn)
+	if enabled, err := systemd.Enabled(cfg.Host.Systemd, systemd.BusAvailable()); err != nil {
 		return err
 	} else if enabled {
-		bus, err := systemd.Connect(systemBusSocket)
+		bus, err := systemd.Connect(systemd.BusSocket)
 		if err != nil {
 			if cfg.Host.Systemd == config.SystemdOn {
 				return fmt.Errorf("connect to systemd: %w", err)
@@ -133,20 +141,20 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 			recordStatus(ctx, st, systemd.SourceName, store.StatusUnavailable, err, logger)
 		} else {
 			defer bus.Close()
-			start(systemd.New(bus, st, logger, systemd.SystemClock(), cfg.Host.SystemdIgnore, cfg.Host.SystemdCritical).Run)
+			start(systemd.New(bus, st, logger, clock.System(), cfg.Host.SystemdIgnore, cfg.Host.SystemdCritical).Run)
 		}
 	}
-	notification, err := notify.New(cfg, st, discoverer, logger, notify.SystemClock())
+	notification, err := notify.New(cfg, st, discoverer, logger, clock.System())
 	if err != nil {
 		return err
 	}
-	engine := rules.New(st, discoverer, aggregator, cfg, logger, rules.SystemClock(), notification)
+	engine := rules.New(st, discoverer, aggregator, cfg, logger, clock.System(), notification)
 	webOptions := web.Options{Version: version, DevStatic: os.Getenv("RAEDAR_DEV_STATIC")}
 	if len(cfg.Heartbeat.Peers) > 0 {
 		webOptions.Heartbeat = heartbeat.NewReceiver(cfg.Heartbeat.Peers, cfg.Heartbeat.ReceiveToken,
-			st, logger, heartbeat.SystemClock())
+			st, logger, clock.System())
 	}
-	webServer, err := web.New(st, cfg, connector, discoverer, logger, web.SystemClock(), webOptions)
+	webServer, err := web.New(st, cfg, connector, discoverer, logger, clock.System(), webOptions)
 	if err != nil {
 		return err
 	}
@@ -179,9 +187,8 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		sender := heartbeat.NewSender(cfg, client, logger, heartbeat.SystemClock(), func(ctx context.Context) bool {
-			last := aggregator.LastWrite()
-			return !last.IsZero() && time.Since(last) <= 3*time.Minute && discoverer.Healthy()
+		sender := heartbeat.NewSender(cfg, client, logger, clock.System(), func(ctx context.Context) bool {
+			return discoverer.Healthy() && databaseWritable(ctx, st, time.Now().UTC())
 		})
 		start(sender.Run)
 	}
@@ -190,21 +197,45 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	start(hostStats.Run)
 	start(tlsChecks.Run)
 	start(func(ctx context.Context) error { return keepLock(ctx, st, logger) })
+	var failure error
 	select {
 	case <-runCtx.Done():
 		logger.Info("stopping")
-		components.Wait()
-		flushCtx, cancel := context.WithTimeout(context.Background(), stopFlushTimeout)
-		if err := aggregator.Flush(flushCtx); err != nil {
-			logger.Warn("flush access log buckets", slog.String("error", err.Error()))
-		}
-		cancel()
-		return nil
-	case err := <-failures:
-		stop()
-		components.Wait()
-		return err
+	case failure = <-failures:
+		logger.Error("a component failed, stopping", slog.String("error", failure.Error()))
 	}
+	stop()
+	components.Wait()
+	if failure != nil {
+		// A failed component may mean that the instance lock was lost, and
+		// another instance then owns the access log position; writing the
+		// buffered buckets could count lines twice.
+		return failure
+	}
+	flushCtx, cancel := context.WithTimeout(context.Background(), stopFlushTimeout)
+	defer cancel()
+	if err := aggregator.Flush(flushCtx); err != nil {
+		logger.Warn("flush access log buckets", slog.String("error", err.Error()))
+	}
+	return nil
+}
+
+// maxSampleAge is how old the newest host sample may be while the database
+// still counts as accepting writes.
+const maxSampleAge = 3 * time.Minute
+
+// sampleReader reads the newest host sample.
+type sampleReader interface {
+	LatestHostSample(ctx context.Context) (*store.HostMinute, error)
+}
+
+// databaseWritable reports whether the database accepted writes recently. The
+// host collector writes one sample every minute whatever the traffic, so a
+// recent one proves both the connection and the write path, which the access
+// log buckets cannot while a server is idle.
+func databaseWritable(ctx context.Context, samples sampleReader, now time.Time) bool {
+	sample, err := samples.LatestHostSample(ctx)
+	return err == nil && sample != nil && now.Sub(sample.TS) <= maxSampleAge
 }
 
 // maintenanceHour is the local hour of the daily retention.
@@ -213,9 +244,9 @@ const maintenanceHour = 3
 // maintenance runs the hourly rollup with baselines, the daily retention and
 // the daily digest until ctx is done.
 func maintenance(ctx context.Context, st *store.Store, cfg *config.Config, logger *slog.Logger, notification *notify.Notifier) error {
-	composer := digest.New(st, cfg, logger, digest.SystemClock())
+	composer := digest.New(st, cfg, logger, clock.System())
 	now := time.Now().UTC()
-	nextRollup := nextRollupTime(now)
+	nextRollup := nextRollupTime(now, cfg.Location)
 	nextRetention := nextTimeOfDay(now, cfg.Location, maintenanceHour, 0)
 	var nextDigest time.Time
 	if cfg.Notify.DigestAt != nil {
@@ -236,14 +267,14 @@ func maintenance(ctx context.Context, st *store.Store, cfg *config.Config, logge
 		}
 		now = time.Now().UTC()
 		if !now.Before(nextRollup) {
-			if err := st.Rollup(ctx, now); err != nil {
+			if err := st.Rollup(ctx, now, cfg.Location); err != nil {
 				logger.Error("hourly rollup failed", slog.String("error", err.Error()))
 			} else if err := st.ComputeBaselines(ctx, cfg.Location, cfg.Rules.ErrorsMinRequests, now); err != nil {
 				logger.Error("baseline computation failed", slog.String("error", err.Error()))
 			} else {
 				logger.Debug("hourly rollup done")
 			}
-			nextRollup = nextRollupTime(now)
+			nextRollup = nextRollupTime(now, cfg.Location)
 		}
 		if !now.Before(nextRetention) {
 			policy := store.Retention{
@@ -272,9 +303,9 @@ func maintenance(ctx context.Context, st *store.Store, cfg *config.Config, logge
 }
 
 // nextRollupTime returns the next hourly rollup: five minutes after the next
-// hour boundary.
-func nextRollupTime(now time.Time) time.Time {
-	next := now.UTC().Truncate(time.Hour).Add(5 * time.Minute)
+// local hour boundary.
+func nextRollupTime(now time.Time, location *time.Location) time.Time {
+	next := store.TruncateLocalHour(now, location).Add(5 * time.Minute)
 	if !next.After(now) {
 		next = next.Add(time.Hour)
 	}
@@ -293,7 +324,7 @@ func nextTimeOfDay(now time.Time, location *time.Location, hour, minute int) tim
 
 // recordStatus records an unavailable source at startup.
 func recordStatus(ctx context.Context, st *store.Store, source, status string, cause error, logger *slog.Logger) {
-	if err := st.RecordSourceStatus(ctx, source, status, cause.Error(), discovery.SystemClock().Now()); err != nil {
+	if err := st.RecordSourceStatus(ctx, source, status, cause.Error(), clock.System().Now()); err != nil {
 		logger.Warn("record source status", slog.String("source", source), slog.String("error", err.Error()))
 	}
 }

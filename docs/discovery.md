@@ -10,7 +10,7 @@ Each container belongs to exactly one app. The app name is the first match of:
 2. the `com.docker.compose.project` label
 3. the container name, for standalone containers
 
-An app is hidden when every one of its containers carries `raedar.ignore=true`. An app that has had no containers for 7 days is archived: it disappears from the overview and its history stays until retention removes it. If it gets containers again, it reappears with its history.
+Two kinds of containers are not tracked at all: containers with `raedar.ignore=true`, and one-off containers started by `docker compose run` (`com.docker.compose.oneoff=True`), such as migrations and shells. They have no app, slot, samples, routes, events or alerts. An app whose containers are all untracked does not exist. An app that has had no containers for 7 days is archived: it disappears from the overview and its history stays until retention removes it. If it gets containers again, it reappears with its history.
 
 ## Slots
 
@@ -23,7 +23,7 @@ Charts, metrics and incidents for containers are keyed by slot, not by Docker co
 
 ## Deploys
 
-When a new container appears in a slot, Raedar compares its image ID with the image ID of the previous container in that slot:
+When a new container appears in a slot, Raedar compares its image ID with the image ID of the previous container Raedar recorded in that slot. The previous container is read from the database, so a deploy is still found when the old container was removed before the new one was created (`docker rm -f` followed by `docker run`) or while Raedar was down:
 
 - **Different image** → a `deploy` event, recording the old and new image references (`Config.Image`) and short image IDs.
 - **Same image** → a `recreated` event.
@@ -32,13 +32,13 @@ Deploys of several slots in the same app within 2 minutes are merged into one de
 
 ## Container lifecycle events
 
-Raedar follows the Docker event stream for containers (`create`, `start`, `kill`, `die`, `stop`, `destroy`, `oom`, `health_status`, `restart`, `rename`). From it, it derives:
+Raedar follows the Docker event stream for containers (`create`, `start`, `kill`, `die`, `stop`, `destroy`, `oom`, `health_status`, `restart`, `rename`). From it, it derives the events below for tracked containers. A container is placed in its app and slot by its labels, so a container that was created after the last resync is attributed correctly. Events of containers outside the model, such as short-lived containers of build or deploy tools, are dropped.
 
 | Event | Meaning |
 |---|---|
 | `crashed` | The container exited on its own with a non-zero exit code. Includes the exit code and whether it was killed for running out of memory. |
 | `stopped` | The container was stopped on purpose (`kill`/`stop` before `die`). |
-| `started` | The container started, either the first time or after a restart. |
+| `started` | The container started, either the first time or after a restart. A restart is recorded once. |
 | `health` | The health status changed (`starting`, `healthy`, `unhealthy`). |
 | `removed` | The container was destroyed. |
 
@@ -102,7 +102,7 @@ All labels are optional.
 | Label | Set on | Effect |
 |---|---|---|
 | `raedar.app=<name>` | container | Put the container in this app instead of its Compose project. |
-| `raedar.ignore=true` | container | Do not monitor this container. An app whose containers all carry it is hidden. |
+| `raedar.ignore=true` | container | Do not monitor this container: no slot, samples, events, routes or alerts. An app whose containers all carry it does not appear. |
 | `raedar.critical=true` | any container of an app | The app's availability incidents are critical. See [alerts.md](alerts.md#severity). |
 | `raedar.alerts=false` | any container of an app | Record everything for the app but send no alerts for it. Incidents still appear in the UI. |
 | `raedar.latency.ignore=/ws,/events` | any container of an app | Path prefixes excluded from latency for the app's routes, for WebSockets, server-sent events and long downloads. |

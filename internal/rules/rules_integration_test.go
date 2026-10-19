@@ -5,11 +5,8 @@ package rules
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +15,7 @@ import (
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/store"
+	"github.com/mmrzaf/raedar/internal/testdb"
 )
 
 // testClock is a clock the tests set.
@@ -72,58 +70,13 @@ func (n *fakeNotifier) take() []Change {
 	return changes
 }
 
-// testDatabaseURL returns the disposable test database URL.
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	databaseURL := os.Getenv("RAEDAR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("RAEDAR_TEST_DATABASE_URL is not set")
-	}
-	return databaseURL
-}
-
-// withSearchPath returns the URL with search_path set to schema.
-func withSearchPath(t *testing.T, databaseURL, schema string) string {
-	t.Helper()
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", databaseURL, err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
-}
-
 // testSchema creates a schema and returns a migrated store, the database URL
 // and the schema name.
 func testSchema(t *testing.T) (*store.Store, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	databaseURL := testDatabaseURL(t)
-	schema := fmt.Sprintf("raedar_rules_%d", time.Now().UnixNano())
-	admin, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to PostgreSQL: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "create schema "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatalf("create schema: %v", err)
-	}
-	if err := admin.Close(ctx); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	t.Cleanup(func() {
-		conn, err := pgx.Connect(ctx, databaseURL)
-		if err != nil {
-			t.Errorf("connect to drop schema: %v", err)
-			return
-		}
-		defer conn.Close(ctx)
-		if _, err := conn.Exec(ctx, "drop schema "+pgx.Identifier{schema}.Sanitize()+" cascade"); err != nil {
-			t.Errorf("drop schema: %v", err)
-		}
-	})
-	st, err := store.Open(ctx, withSearchPath(t, databaseURL, schema), discardLogger())
+	databaseURL, schema := testdb.NewSchema(t, "rules")
+	st, err := store.Open(ctx, testdb.WithSearchPath(t, databaseURL, schema), discardLogger())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -137,7 +90,7 @@ func testSchema(t *testing.T) (*store.Store, string, string) {
 // testConn returns a connection to the test schema.
 func testConn(t *testing.T, databaseURL, schema string) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(context.Background(), withSearchPath(t, databaseURL, schema))
+	conn, err := pgx.Connect(context.Background(), testdb.WithSearchPath(t, databaseURL, schema))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -976,5 +929,52 @@ func TestSourceNeedsFiveMinutes(t *testing.T) {
 	env.evaluate(t, 0)
 	if env.openIncident(t, RuleSourceFailed, "docker") != nil {
 		t.Error("source incident opened before five minutes of failure")
+	}
+}
+
+func TestIncidentsResolveWhenTheirSubjectDisappears(t *testing.T) {
+	env := newTestEnv(t)
+	env.container.Health = "unhealthy"
+	env.evaluate(t, 0)
+	env.evaluate(t, 2*time.Minute)
+	if env.openIncident(t, RuleContainerUnhealthy, "shop / api #1") == nil {
+		t.Fatal("unhealthy incident did not open")
+	}
+	env.notifier.take()
+	// The container is removed: its slot leaves the model, so no rule reports
+	// on it any more.
+	delete(env.app.Slots, "api #1")
+	env.evaluate(t, 3*time.Minute)
+	if env.openIncident(t, RuleContainerUnhealthy, "shop / api #1") == nil {
+		t.Error("incident closed at once, want it to wait out the quiet period like any other")
+	}
+	env.evaluate(t, 9*time.Minute)
+	if env.openIncident(t, RuleContainerUnhealthy, "shop / api #1") != nil {
+		t.Error("incident of a removed container stayed open")
+	}
+	var resolved bool
+	for _, change := range env.notifier.take() {
+		if change.Kind == ChangeResolved && change.Incident.Rule == RuleContainerUnhealthy {
+			resolved = true
+		}
+	}
+	if !resolved {
+		t.Error("no resolved change was reported for the vanished incident")
+	}
+}
+
+func TestVanishedIncidentComesBackWithItsSubject(t *testing.T) {
+	env := newTestEnv(t)
+	env.container.Health = "unhealthy"
+	env.evaluate(t, 0)
+	env.evaluate(t, 2*time.Minute)
+	delete(env.app.Slots, "api #1")
+	env.evaluate(t, 3*time.Minute)
+	// A redeploy: the slot is back within the quiet period and still unhealthy.
+	env.app.Slots["api #1"] = env.slot
+	env.evaluate(t, 4*time.Minute)
+	env.evaluate(t, 10*time.Minute)
+	if env.openIncident(t, RuleContainerUnhealthy, "shop / api #1") == nil {
+		t.Error("incident was closed although its container came back unhealthy")
 	}
 }

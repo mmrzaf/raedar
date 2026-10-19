@@ -150,7 +150,7 @@ func checkAccessLog(ctx context.Context, cfg *config.Config, result *report) {
 
 // checkSystemd checks the D-Bus socket and the reader.
 func checkSystemd(ctx context.Context, cfg *config.Config, result *report) {
-	enabled, err := systemd.Enabled(cfg.Host.Systemd, socketExists(systemBusSocket))
+	enabled, err := systemd.Enabled(cfg.Host.Systemd, systemd.BusAvailable())
 	if err != nil {
 		result.add(statusFail, "systemd", err.Error())
 		return
@@ -159,7 +159,7 @@ func checkSystemd(ctx context.Context, cfg *config.Config, result *report) {
 		result.add(statusOK, "systemd", "disabled")
 		return
 	}
-	bus, err := systemd.Connect(systemBusSocket)
+	bus, err := systemd.Connect(systemd.BusSocket)
 	if err != nil {
 		result.add(statusFail, "systemd", err.Error())
 		return

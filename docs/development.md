@@ -60,7 +60,7 @@ The UI's static files are served from disk instead of the embedded copy when `RA
 | Kind | Command | Needs |
 |---|---|---|
 | Unit | `go test ./...` | nothing |
-| Integration | `go test -tags integration ./...` | `RAEDAR_TEST_DATABASE_URL` pointing to a disposable PostgreSQL database |
+| Integration | `go test -tags integration ./...` | `RAEDAR_TEST_DATABASE_URL` pointing to a disposable PostgreSQL database; the tests fail, not skip, without it. Each test works in its own schema (see `internal/testdb`). |
 
 Areas that must be covered by unit tests: Traefik rule parsing, path normalization, histogram merging and percentiles, baseline computation, every rule's open/resolve logic (driven by a fake clock), intentional-stop detection from event sequences, message formatting and SMS length limits.
 

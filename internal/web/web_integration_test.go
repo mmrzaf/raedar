@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,46 +17,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/store"
+	"github.com/mmrzaf/raedar/internal/testdb"
 )
 
 // testSchema creates a schema and returns a migrated store and a connection.
 func testSchema(t *testing.T) (*store.Store, *pgx.Conn) {
 	t.Helper()
 	ctx := context.Background()
-	databaseURL := os.Getenv("RAEDAR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("RAEDAR_TEST_DATABASE_URL is not set")
-	}
-	schema := fmt.Sprintf("raedar_web_%d", time.Now().UnixNano())
-	admin, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to PostgreSQL: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "create schema "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatalf("create schema: %v", err)
-	}
-	if err := admin.Close(ctx); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	t.Cleanup(func() {
-		conn, err := pgx.Connect(ctx, databaseURL)
-		if err != nil {
-			t.Errorf("connect to drop schema: %v", err)
-			return
-		}
-		defer conn.Close(ctx)
-		if _, err := conn.Exec(ctx, "drop schema "+pgx.Identifier{schema}.Sanitize()+" cascade"); err != nil {
-			t.Errorf("drop schema: %v", err)
-		}
-	})
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse database URL: %v", err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	st, err := store.Open(ctx, parsed.String(), discardLogger())
+	databaseURL, schema := testdb.NewSchema(t, "web")
+	schemaURL := testdb.WithSearchPath(t, databaseURL, schema)
+	st, err := store.Open(ctx, schemaURL, discardLogger())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -64,7 +34,7 @@ func testSchema(t *testing.T) (*store.Store, *pgx.Conn) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
-	conn, err := pgx.Connect(ctx, parsed.String())
+	conn, err := pgx.Connect(ctx, schemaURL)
 	if err != nil {
 		t.Fatalf("connect to the schema: %v", err)
 	}
@@ -111,7 +81,7 @@ func newIntegrationServer(t *testing.T) (*Server, *store.Store, *pgx.Conn, *disc
 	}); err != nil {
 		t.Fatalf("FlushBuckets() error = %v", err)
 	}
-	if err := st.Rollup(ctx, now); err != nil {
+	if err := st.Rollup(ctx, now, time.UTC); err != nil {
 		t.Fatalf("Rollup() error = %v", err)
 	}
 	if _, err := st.InsertIncident(ctx, store.Incident{
@@ -195,12 +165,18 @@ func get(t *testing.T, handler http.Handler, path string) *httptest.ResponseReco
 }
 
 func TestSeriesAPI(t *testing.T) {
-	server, _, _, _ := newIntegrationServer(t)
+	server, _, _, model := newIntegrationServer(t)
 	handler := server.Handler()
 	from := time.Date(2026, 10, 18, 13, 0, 0, 0, time.UTC).Unix()
 	to := time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC).Unix()
-	path := "/api/series?keys=" + url.QueryEscape("route:shop@docker:requests,slot:shop / api #1:cpu,host:cpu,disk:/:used") +
-		fmt.Sprintf("&from=%d&to=%d", from, to)
+	slot := model.Apps["shop"].Slots["api #1"]
+	params := url.Values{"series": {
+		seriesRef{Kind: subjectRoute, Subject: "shop@docker", Metric: "requests"}.String(),
+		seriesRef{Kind: subjectSlot, Subject: strconv.FormatInt(slot.ID, 10), Metric: "cpu"}.String(),
+		seriesRef{Kind: subjectHost, Metric: "cpu"}.String(),
+		seriesRef{Kind: subjectDisk, Subject: "/", Metric: "used"}.String(),
+	}}
+	path := "/api/series?" + params.Encode() + fmt.Sprintf("&from=%d&to=%d", from, to)
 	recorder := get(t, handler, path)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", recorder.Code, recorder.Body.String())
@@ -211,10 +187,11 @@ func TestSeriesAPI(t *testing.T) {
 		Bin    int64     `json:"bin_seconds"`
 		Source string    `json:"source"`
 		Series []struct {
-			Key    string       `json:"key"`
-			Label  string       `json:"label"`
-			Unit   string       `json:"unit"`
-			Points [][2]float64 `json:"points"`
+			Series string        `json:"series"`
+			Metric string        `json:"metric"`
+			Label  string        `json:"label"`
+			Unit   string        `json:"unit"`
+			Points [][2]*float64 `json:"points"`
 		} `json:"series"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
@@ -226,11 +203,14 @@ func TestSeriesAPI(t *testing.T) {
 	if len(body.Series) != 4 {
 		t.Fatalf("series = %d, want 4", len(body.Series))
 	}
-	if len(body.Series[0].Points) == 0 || body.Series[0].Points[0][1] != 40 {
+	if len(body.Series[0].Points) == 0 || body.Series[0].Points[0][1] == nil || *body.Series[0].Points[0][1] != 40 {
 		t.Errorf("route requests = %+v, want the seeded 40 requests", body.Series[0].Points)
 	}
 	if body.Series[1].Unit != "millicores" || len(body.Series[1].Points) == 0 {
 		t.Errorf("slot series = %+v, want CPU in millicores", body.Series[1])
+	}
+	if body.Series[1].Label != "api #1" || body.Series[1].Metric != "cpu" {
+		t.Errorf("slot series label = %q, metric = %q, want the slot key and metric name", body.Series[1].Label, body.Series[1].Metric)
 	}
 	if body.Series[3].Unit != "percent" {
 		t.Errorf("disk unit = %q, want percent", body.Series[3].Unit)
@@ -281,11 +261,13 @@ func TestBaselineAndPathsAPI(t *testing.T) {
 	}
 	var paths struct {
 		Paths []struct {
-			Method   string  `json:"method"`
-			Pattern  string  `json:"pattern"`
-			Requests int64   `json:"requests"`
-			S5xx     int64   `json:"s5xx"`
-			P95MS    float64 `json:"p95_ms"`
+			Method   string `json:"method"`
+			Pattern  string `json:"pattern"`
+			Requests int64  `json:"requests"`
+			S5xx     int64  `json:"s5xx"`
+			P95      struct {
+				MS float64 `json:"ms"`
+			} `json:"p95"`
 		} `json:"paths"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &paths); err != nil {
@@ -326,33 +308,58 @@ func TestEventsAPI(t *testing.T) {
 
 func TestPatternsAPI(t *testing.T) {
 	server, _, _, _ := newIntegrationServer(t)
-	recorder := get(t, server.Handler(), "/api/patterns?key="+url.QueryEscape("route:shop@docker:requests")+"&weeks=2")
+	ref := seriesRef{Kind: subjectRoute, Subject: "shop@docker", Metric: "requests"}.String()
+	recorder := get(t, server.Handler(), "/api/patterns?series="+url.QueryEscape(ref)+"&weeks=2")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", recorder.Code, recorder.Body.String())
 	}
 	var body struct {
-		Key        string      `json:"key"`
-		Heatmap    [][]float64 `json:"heatmap"`
-		DayProfile []float64   `json:"day_profile"`
+		Series     string       `json:"series"`
+		Unit       string       `json:"unit"`
+		Heatmap    [][]*float64 `json:"heatmap"`
+		DayProfile []*float64   `json:"day_profile"`
 		Trend      []struct {
-			Day   string  `json:"day"`
+			TS    int64   `json:"ts"`
 			Value float64 `json:"value"`
 		} `json:"trend"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Key != "route:shop@docker:requests" {
-		t.Errorf("key = %q", body.Key)
+	if body.Series != ref || body.Unit != "count" {
+		t.Errorf("series = %q, unit = %q, want the request echoed with its unit", body.Series, body.Unit)
 	}
-	if len(body.Heatmap) != 7 || len(body.Heatmap[0]) != 24 {
-		t.Errorf("heatmap shape = %d x %d, want 7 x 24", len(body.Heatmap), len(body.Heatmap[0]))
+	if len(body.Heatmap) != 7 || len(body.Heatmap[0]) != 24 || len(body.DayProfile) != 24 {
+		t.Fatalf("heatmap shape = %d x %d, day profile = %d, want 7 x 24 and 24 hours", len(body.Heatmap), len(body.Heatmap[0]), len(body.DayProfile))
 	}
-	if len(body.DayProfile) != 24 {
-		t.Errorf("day profile = %d, want 24 hours", len(body.DayProfile))
+	// One hour of data was seeded: every other cell and hour has no data and
+	// must be null, not zero.
+	filled := 0
+	for _, row := range body.Heatmap {
+		for _, cell := range row {
+			if cell != nil {
+				filled++
+			}
+		}
 	}
-	if len(body.Trend) == 0 {
-		t.Error("trend is empty, want daily points")
+	if filled != 1 {
+		t.Errorf("heatmap has %d cells with data, want the one seeded hour", filled)
+	}
+	profileHours := 0
+	for _, value := range body.DayProfile {
+		if value != nil {
+			profileHours++
+		}
+	}
+	if profileHours != 1 {
+		t.Errorf("day profile has %d hours with data, want 1", profileHours)
+	}
+	if len(body.Trend) != 1 || body.Trend[0].Value != 40 {
+		t.Fatalf("trend = %+v, want one day with the seeded 40 requests", body.Trend)
+	}
+	local := time.Date(2026, 10, 18, 0, 0, 0, 0, server.cfg.Location)
+	if body.Trend[0].TS != local.Unix() {
+		t.Errorf("trend ts = %d, want the start of the local day %d", body.Trend[0].TS, local.Unix())
 	}
 }
 
@@ -418,5 +425,45 @@ func TestPagesAndHealth(t *testing.T) {
 	}
 	if len(overview.Host.Disks) != 1 || overview.Host.Disks[0].Name != "/" {
 		t.Errorf("host = %+v, want the root filesystem", overview.Host)
+	}
+}
+
+func TestPatternsUseLocalHoursInHalfHourZones(t *testing.T) {
+	server, st, conn, _ := newIntegrationServer(t)
+	tehran, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	server.cfg.Location = tehran
+	routeID := int64(0)
+	if err := conn.QueryRow(context.Background(), "select id from routes where name = 'shop@docker'").Scan(&routeID); err != nil {
+		t.Fatalf("read route: %v", err)
+	}
+	// 12:31 UTC is 16:01 in Tehran. Bins that do not start on a local hour
+	// would put it into the previous local hour.
+	if err := st.FlushBuckets(context.Background(), store.Flush{Minutes: []store.RouteMinute{{
+		RouteID: routeID, TS: time.Date(2026, 10, 18, 12, 31, 0, 0, time.UTC), Requests: 10,
+	}}}); err != nil {
+		t.Fatalf("FlushBuckets() error = %v", err)
+	}
+	ref := seriesRef{Kind: subjectRoute, Subject: "shop@docker", Metric: "requests"}.String()
+	recorder := get(t, server.Handler(), "/api/patterns?series="+url.QueryEscape(ref)+"&weeks=2")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		DayProfile []*float64 `json:"day_profile"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var hours []int
+	for hour, value := range body.DayProfile {
+		if value != nil {
+			hours = append(hours, hour)
+		}
+	}
+	if len(hours) != 1 || hours[0] != 16 {
+		t.Errorf("hours with data = %v, want only local hour 16", hours)
 	}
 }

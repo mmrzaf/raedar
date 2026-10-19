@@ -14,10 +14,19 @@ import (
 // RollupHours is how many complete hours are recomputed on every rollup.
 const RollupHours = 3
 
-// Rollup recomputes the hourly tables for the last three complete hours from
-// the minute tables, replacing the rows of those hours. Recomputing more than
-// one hour absorbs late access log lines and restarts.
-func (s *Store) Rollup(ctx context.Context, now time.Time) error {
+// TruncateLocalHour returns the start of the hour that contains t in a
+// location. Hourly rows start on local hour boundaries, so hour-of-day
+// statistics are exact in zones whose offset is not a whole number of hours,
+// such as Asia/Tehran (UTC+03:30).
+func TruncateLocalHour(t time.Time, location *time.Location) time.Time {
+	local := t.In(location)
+	return time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), 0, 0, 0, location).UTC()
+}
+
+// Rollup recomputes the hourly tables for the last three complete local hours
+// from the minute tables, replacing the rows of those hours. Recomputing more
+// than one hour absorbs late access log lines and restarts.
+func (s *Store) Rollup(ctx context.Context, now time.Time, location *time.Location) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin rollup: %w", err)
@@ -27,10 +36,9 @@ func (s *Store) Rollup(ctx context.Context, now time.Time) error {
 			s.logger.Warn("roll back rollup", slog.String("error", err.Error()))
 		}
 	}()
-	hour := now.UTC().Truncate(time.Hour)
+	hour := TruncateLocalHour(now, location)
 	for i := 1; i <= RollupHours; i++ {
-		start := hour.Add(-time.Duration(i) * time.Hour)
-		if err := rollupHour(ctx, tx, start); err != nil {
+		if err := rollupHour(ctx, tx, hour.Add(-time.Duration(i)*time.Hour)); err != nil {
 			return err
 		}
 	}
@@ -38,6 +46,52 @@ func (s *Store) Rollup(ctx context.Context, now time.Time) error {
 		return fmt.Errorf("commit rollup: %w", err)
 	}
 	return nil
+}
+
+// rollupTables are the tables that hold one row per local hour.
+var rollupTables = []string{"route_hour", "slot_hour", "host_hour", "disk_hour"}
+
+// RealignRollups rebuilds the hourly rows that do not start on a local hour
+// boundary, which happens when the time zone changes or when rows were written
+// before hours followed the local zone. Only hours that the minute tables still
+// cover can be rebuilt; older rows stay as they are. It returns how many hours
+// it recomputed.
+func (s *Store) RealignRollups(ctx context.Context, location *time.Location, minuteRetention time.Duration, now time.Time) (int, error) {
+	zone := location.String()
+	// The first complete local hour that the minute tables fully cover.
+	start := TruncateLocalHour(now.Add(-minuteRetention), location).Add(time.Hour)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin realign: %w", err)
+	}
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			s.logger.Warn("roll back realign", slog.String("error", err.Error()))
+		}
+	}()
+	removed := int64(0)
+	for _, table := range rollupTables {
+		tag, err := tx.Exec(ctx, "delete from "+table+" where ts >= $1 and ts <> date_trunc('hour', ts, $2)", start, zone)
+		if err != nil {
+			return 0, fmt.Errorf("clear misaligned %s: %w", table, err)
+		}
+		removed += tag.RowsAffected()
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	hours := 0
+	end := TruncateLocalHour(now, location)
+	for hour := start; hour.Before(end); hour = hour.Add(time.Hour) {
+		if err := rollupHour(ctx, tx, hour); err != nil {
+			return 0, err
+		}
+		hours++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit realign: %w", err)
+	}
+	return hours, nil
 }
 
 // rollupHour recomputes the hourly rows of one hour.

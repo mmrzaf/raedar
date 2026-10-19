@@ -9,7 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/backoff"
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/docker"
+	"github.com/mmrzaf/raedar/internal/sourcestatus"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -19,19 +22,15 @@ const SourceName = "docker"
 const (
 	// resyncInterval is how often the whole model is rebuilt.
 	resyncInterval = 5 * time.Minute
-	// connectBase and connectMax bound the delay between attempts to reach
-	// the Docker API.
-	connectBase = time.Second
-	connectMax  = 30 * time.Second
+	// retryBase and retryMax bound the delay between attempts to reach the
+	// Docker API and between reconnects of its event stream.
+	retryBase = time.Second
+	retryMax  = 30 * time.Second
 	// resyncDebounce coalesces a burst of container events into one resync.
 	resyncDebounce = 300 * time.Millisecond
 	// pendingFlushInterval is how often outstanding crash classifications are
 	// completed.
 	pendingFlushInterval = time.Second
-	// streamRetryBase and streamRetryMax bound the reconnect delay of the
-	// Docker event stream.
-	streamRetryBase = time.Second
-	streamRetryMax  = 30 * time.Second
 	// deployMergeWindow is how long deploys of one app are merged into a
 	// single event.
 	deployMergeWindow = 2 * time.Minute
@@ -41,33 +40,6 @@ const (
 	eventBuffer = 1024
 )
 
-// Clock provides the time to the discovery loop, so that tests run without
-// waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
-
 // Discoverer keeps the model of apps, slots, containers and routes up to date
 // from the Docker API and records deploys and container lifecycle events.
 type Discoverer struct {
@@ -76,16 +48,14 @@ type Discoverer struct {
 	self        string
 	store       *store.Store
 	logger      *slog.Logger
-	clock       Clock
+	status      *sourcestatus.Reporter
+	clock       clock.Clock
 	resyncEvery time.Duration
-	connectBase time.Duration
 
 	mu           sync.Mutex
 	connected    *docker.Client
 	model        *Model
 	accessRoutes map[string]*Route
-	status       string
-	statusError  string
 
 	classifier *classifier
 }
@@ -94,7 +64,7 @@ type Discoverer struct {
 // tcp:// address. traefikName is the configured Traefik container name, empty
 // for detection. self is the process host name, used to find Raedar's own
 // container among the containers the daemon reports.
-func New(host, traefikName, self string, st *store.Store, logger *slog.Logger, clock Clock) *Discoverer {
+func New(host, traefikName, self string, st *store.Store, logger *slog.Logger, clock clock.Clock) *Discoverer {
 	return &Discoverer{
 		host:        host,
 		traefikName: traefikName,
@@ -103,7 +73,6 @@ func New(host, traefikName, self string, st *store.Store, logger *slog.Logger, c
 		logger:      logger,
 		clock:       clock,
 		resyncEvery: resyncInterval,
-		connectBase: connectBase,
 		classifier:  newClassifier(),
 		model: &Model{
 			Apps:       make(map[string]*App),
@@ -111,33 +80,30 @@ func New(host, traefikName, self string, st *store.Store, logger *slog.Logger, c
 			Containers: make(map[string]*Container),
 		},
 		accessRoutes: make(map[string]*Route),
-		status:       store.StatusUnavailable,
+		status:       sourcestatus.New(SourceName, st, clock, logger),
 	}
 }
 
-// Run loads the persisted model and keeps the model up to date until ctx is
-// done: it connects to the Docker API, retrying while it is unreachable, runs
-// a full discovery pass, and then follows the Docker event stream with a full
-// resync every resyncEvery and one after container events.
+// Run keeps the model up to date until ctx is done: it connects to the Docker
+// API, retrying while it is unreachable, runs a full discovery pass, and then
+// follows the Docker event stream with a full resync every resyncEvery and one
+// after container events. Load must have been called first, so that routes and
+// apps are known from the first request.
 func (d *Discoverer) Run(ctx context.Context) error {
-	if err := d.Load(ctx); err != nil {
-		return err
-	}
-	delay := d.connectBase
+	retries := backoff.New(retryBase, retryMax)
 	for ctx.Err() == nil {
 		client, err := d.client(ctx)
 		if err != nil {
-			d.recordStatus(ctx, store.StatusUnavailable, err)
+			d.status.Report(ctx, store.StatusUnavailable, err)
 			d.logger.Warn("Docker API not reachable", slog.String("error", err.Error()))
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-d.clock.After(delay):
+			case <-d.clock.After(retries.Next()):
 			}
-			delay = min(delay*2, connectMax)
 			continue
 		}
-		delay = d.connectBase
+		retries.Reset()
 		d.run(ctx, client)
 	}
 	return nil
@@ -257,6 +223,9 @@ func (d *Discoverer) Load(ctx context.Context) error {
 		if route.AppID != nil {
 			loaded.App = appsByID[*route.AppID]
 		}
+		if loaded.App != nil {
+			loaded.App.Routes[route.Name] = loaded
+		}
 		model.Routes[route.Name] = loaded
 	}
 	d.publish(model)
@@ -274,7 +243,7 @@ func (d *Discoverer) Model() *Model {
 func (d *Discoverer) Healthy() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.status == store.StatusOK
+	return d.status.Status() == store.StatusOK
 }
 
 // TraefikContainer returns the detected Traefik container, nil when there is
@@ -292,12 +261,12 @@ func (d *Discoverer) TraefikContainer() *Container {
 func (d *Discoverer) Resync(ctx context.Context) error {
 	client, err := d.client(ctx)
 	if err != nil {
-		d.recordStatus(ctx, store.StatusUnavailable, err)
+		d.status.Report(ctx, store.StatusUnavailable, err)
 		return fmt.Errorf("connect to the Docker API: %w", err)
 	}
 	listed, err := client.Containers(ctx)
 	if err != nil {
-		d.recordStatus(ctx, store.StatusUnavailable, err)
+		d.status.Report(ctx, store.StatusUnavailable, err)
 		return fmt.Errorf("list containers: %w", err)
 	}
 	inspected := make([]docker.ContainerInspect, 0, len(listed))
@@ -332,16 +301,16 @@ func (d *Discoverer) Resync(ctx context.Context) error {
 		}
 	}
 	if err := d.persist(ctx, model, previous); err != nil {
-		d.recordStatus(ctx, store.StatusUnavailable, err)
+		d.status.Report(ctx, store.StatusUnavailable, err)
 		return err
 	}
 	d.publish(model)
 	if failures > 0 {
-		d.recordStatus(ctx, store.StatusDegraded,
+		d.status.Report(ctx, store.StatusDegraded,
 			fmt.Errorf("%d of %d containers could not be inspected", failures, len(listed)))
 		return nil
 	}
-	d.recordStatus(ctx, store.StatusOK, nil)
+	d.status.Report(ctx, store.StatusOK, nil)
 	return nil
 }
 
@@ -369,6 +338,13 @@ func (d *Discoverer) persist(ctx context.Context, model, previous *Model) error 
 			}
 			slot.ID = slotID
 		}
+	}
+	// Deploys are detected against what the database remembers of each slot,
+	// not against the previous model, which forgets a container once it is
+	// removed. Read it before this pass writes the new containers.
+	latest, err := d.store.LatestSlotContainers(ctx)
+	if err != nil {
+		return err
 	}
 	seen := make(map[string]bool, len(model.Containers))
 	for _, id := range sortedKeys(model.Containers) {
@@ -419,7 +395,7 @@ func (d *Discoverer) persist(ctx context.Context, model, previous *Model) error 
 		}
 		route.ID = id
 	}
-	if err := d.recordChanges(ctx, previous, model, now); err != nil {
+	if err := d.recordChanges(ctx, latest, model, now); err != nil {
 		return err
 	}
 	archived, err := d.store.ArchiveStaleApps(ctx, now.Add(-appArchiveAfter), now)
@@ -433,10 +409,10 @@ func (d *Discoverer) persist(ctx context.Context, model, previous *Model) error 
 }
 
 // recordChanges records the deploy and recreated events a resync implies: a
-// new container in a slot whose image differs from the previous container is
-// a deploy, the same image is a recreation.
-func (d *Discoverer) recordChanges(ctx context.Context, previous, model *Model, now time.Time) error {
-	latest := latestSlotContainers(previous)
+// new container in a slot whose image differs from the slot's previous
+// container is a deploy, the same image is a recreation. latest holds the
+// previous container of each slot.
+func (d *Discoverer) recordChanges(ctx context.Context, latest map[int64]store.Container, model *Model, now time.Time) error {
 	for _, appName := range sortedKeys(model.Apps) {
 		app := model.Apps[appName]
 		for _, key := range sortedKeys(app.Slots) {
@@ -445,37 +421,23 @@ func (d *Discoverer) recordChanges(ctx context.Context, previous, model *Model, 
 			if container == nil {
 				continue
 			}
-			old := latest[app.Name+"\x00"+slot.Key]
-			if old == nil || old.ID == container.ID {
+			previous, ok := latest[slot.ID]
+			if !ok || previous.DockerID == container.ID || container.CreatedAt.Before(previous.CreatedAt) {
 				continue
 			}
-			if old.ImageID == container.ImageID {
+			if previous.ImageID == container.ImageID {
 				if err := d.recordRecreated(ctx, app, slot, container, now); err != nil {
 					return err
 				}
 				continue
 			}
+			old := &Container{ID: previous.DockerID, Name: previous.Name, ImageRef: previous.ImageRef, ImageID: previous.ImageID}
 			if err := d.recordDeploy(ctx, app, slot, old, container, now); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-// latestSlotContainers returns the newest container per app and slot key.
-func latestSlotContainers(model *Model) map[string]*Container {
-	latest := make(map[string]*Container)
-	for _, container := range model.Containers {
-		if container.App == nil || container.Slot == nil {
-			continue
-		}
-		key := container.App.Name + "\x00" + container.Slot.Key
-		if current, ok := latest[key]; !ok || current.CreatedAt.Before(container.CreatedAt) {
-			latest[key] = container
-		}
-	}
-	return latest
 }
 
 // deployChange is one slot's image change in a deploy event.
@@ -516,7 +478,7 @@ func (d *Discoverer) recordDeploy(ctx context.Context, app *App, slot *Slot, old
 		at = now
 	}
 	if app.ID > 0 {
-		recent, err := d.store.RecentEvent(ctx, app.ID, "deploy", at.Add(-deployMergeWindow))
+		recent, err := d.store.RecentEvent(ctx, app.ID, store.EventDeploy, at.Add(-deployMergeWindow))
 		if err != nil {
 			return err
 		}
@@ -534,8 +496,8 @@ func (d *Discoverer) recordDeploy(ctx context.Context, app *App, slot *Slot, old
 	slotID := slot.ID
 	event := store.Event{
 		TS:       at,
-		Kind:     "deploy",
-		Severity: "info",
+		Kind:     store.EventDeploy,
+		Severity: store.SeverityInfo,
 		Subject:  app.Name,
 		Title:    deployTitle(deployData{Services: []string{slot.Service}, Changes: []deployChange{change}}),
 	}
@@ -592,8 +554,8 @@ func (d *Discoverer) recordRecreated(ctx context.Context, app *App, slot *Slot, 
 	}
 	event := store.Event{
 		TS:       at,
-		Kind:     "recreated",
-		Severity: "info",
+		Kind:     store.EventRecreated,
+		Severity: store.SeverityInfo,
 		Subject:  app.Name,
 		Title:    "recreated: " + container.ImageRef,
 		Data:     data,
@@ -614,8 +576,9 @@ func (d *Discoverer) recordRecreated(ctx context.Context, app *App, slot *Slot, 
 // watchEvents follows the Docker event stream and passes every event to the
 // loop, reconnecting after a stream ends.
 func (d *Discoverer) watchEvents(ctx context.Context, client *docker.Client, events chan<- docker.Event) {
-	delay := streamRetryBase
+	retries := backoff.New(retryBase, retryMax)
 	for ctx.Err() == nil {
+		started := d.clock.Now()
 		err := client.Events(ctx, func(event docker.Event) {
 			select {
 			case events <- event:
@@ -628,12 +591,14 @@ func (d *Discoverer) watchEvents(ctx context.Context, client *docker.Client, eve
 		if err != nil {
 			d.logger.Warn("Docker event stream ended", slog.String("error", err.Error()))
 		}
+		if d.clock.Now().Sub(started) > retryMax {
+			retries.Reset() // the stream worked for a while before it ended
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-d.clock.After(delay):
+		case <-d.clock.After(retries.Next()):
 		}
-		delay = min(delay*2, streamRetryMax)
 	}
 }
 
@@ -679,15 +644,48 @@ func (d *Discoverer) resyncAndLog(ctx context.Context) {
 	}
 }
 
-// recordLifecycle stores one derived lifecycle event, attributed to the
-// container's app and slot when they are known.
+// lifecycleTarget returns the app and slot a lifecycle event belongs to. It
+// finds the container in the model by ID and otherwise places it by its
+// labels, so a container that appeared after the last resync is still
+// attributed to its slot. ok is false for containers the model does not track:
+// ignored and one-off containers, and short-lived containers of tools that
+// were never part of an app.
+func (d *Discoverer) lifecycleTarget(lifecycle LifecycleEvent) (*App, *Slot, bool) {
+	model := d.Model()
+	if container, ok := model.Containers[lifecycle.ContainerID]; ok {
+		return container.App, container.Slot, container.Slot != nil
+	}
+	id := identify(lifecycle.Name, lifecycle.Labels)
+	if !id.Tracked() {
+		return nil, nil, false
+	}
+	app := model.Apps[id.App]
+	if app == nil {
+		return nil, nil, false
+	}
+	slot := app.Slots[id.SlotKey]
+	return app, slot, slot != nil
+}
+
+// recordLifecycle stores one derived lifecycle event for the app and slot of
+// its container. Events of containers outside the model are dropped.
 func (d *Discoverer) recordLifecycle(ctx context.Context, lifecycle LifecycleEvent) {
+	app, slot, ok := d.lifecycleTarget(lifecycle)
+	if !ok {
+		return
+	}
 	event := store.Event{
 		TS:       lifecycle.Time,
 		Kind:     lifecycle.Kind,
-		Severity: "info",
-		Subject:  lifecycle.Name,
+		Severity: store.SeverityInfo,
+		Subject:  slot.Key,
 		Title:    lifecycleTitle(lifecycle),
+	}
+	if app.ID > 0 {
+		event.AppID = &app.ID
+	}
+	if slot.ID > 0 {
+		event.SlotID = &slot.ID
 	}
 	payload := struct {
 		Image    string `json:"image"`
@@ -696,13 +694,13 @@ func (d *Discoverer) recordLifecycle(ctx context.Context, lifecycle LifecycleEve
 		Health   string `json:"health,omitempty"`
 	}{Image: lifecycle.ImageRef}
 	switch lifecycle.Kind {
-	case "crashed":
+	case store.EventCrashed:
 		exitCode := lifecycle.ExitCode
 		oom := lifecycle.OOMKilled
 		payload.ExitCode = &exitCode
 		payload.OOM = &oom
-		event.Severity = "warning"
-	case "health":
+		event.Severity = store.SeverityWarning
+	case store.EventHealth:
 		payload.Health = lifecycle.Health
 	}
 	data, err := json.Marshal(payload)
@@ -711,34 +709,23 @@ func (d *Discoverer) recordLifecycle(ctx context.Context, lifecycle LifecycleEve
 		return
 	}
 	event.Data = data
-	if container, ok := d.Model().Containers[lifecycle.ContainerID]; ok {
-		event.Subject = container.Slot.Key
-		if container.App.ID > 0 {
-			appID := container.App.ID
-			event.AppID = &appID
-		}
-		if container.Slot.ID > 0 {
-			slotID := container.Slot.ID
-			event.SlotID = &slotID
-		}
-	}
 	if _, err := d.store.AddEvent(ctx, event); err != nil {
-		d.logger.Warn("record container event", slog.String("kind", lifecycle.Kind), slog.String("error", err.Error()))
+		d.logger.Warn("record container event", slog.String("kind", string(lifecycle.Kind)), slog.String("error", err.Error()))
 	}
 }
 
 // lifecycleTitle returns the one-line title of a lifecycle event.
 func lifecycleTitle(lifecycle LifecycleEvent) string {
 	switch lifecycle.Kind {
-	case "crashed":
+	case store.EventCrashed:
 		if lifecycle.OOMKilled {
 			return fmt.Sprintf("crashed: exit code %d, out of memory", lifecycle.ExitCode)
 		}
 		return fmt.Sprintf("crashed: exit code %d", lifecycle.ExitCode)
-	case "health":
+	case store.EventHealth:
 		return "health: " + lifecycle.Health
 	default:
-		return lifecycle.Kind
+		return string(lifecycle.Kind)
 	}
 }
 
@@ -764,25 +751,6 @@ func appendUnique(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
-}
-
-// recordStatus stores the state of the Docker source when it changed.
-func (d *Discoverer) recordStatus(ctx context.Context, status string, cause error) {
-	message := ""
-	if cause != nil {
-		message = cause.Error()
-	}
-	d.mu.Lock()
-	changed := d.status != status || d.statusError != message
-	d.status = status
-	d.statusError = message
-	d.mu.Unlock()
-	if !changed {
-		return
-	}
-	if err := d.store.RecordSourceStatus(ctx, SourceName, status, message, d.clock.Now()); err != nil {
-		d.logger.Warn("record Docker source status", slog.String("error", err.Error()))
-	}
 }
 
 // publish makes the model current.

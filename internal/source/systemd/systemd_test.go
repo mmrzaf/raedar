@@ -98,7 +98,7 @@ func (f *fakeStore) eventKinds() []string {
 	defer f.mu.Unlock()
 	kinds := make([]string, 0, len(f.events))
 	for _, event := range f.events {
-		kinds = append(kinds, event.Kind)
+		kinds = append(kinds, string(event.Kind))
 	}
 	return kinds
 }

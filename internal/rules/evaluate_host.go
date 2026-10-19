@@ -50,10 +50,10 @@ func (e *Engine) hostReadings(now time.Time, s *snapshot) []reading {
 		readings = append(readings, reading{
 			rule:         RuleHostMemory,
 			subject:      e.cfg.HostName,
-			severity:     "warning",
+			severity:     store.SeverityWarning,
 			firing:       available < float64(e.cfg.Rules.HostMemoryMinAvailable),
 			alerts:       true,
-			openAfter:    5 * time.Minute,
+			openAfter:    hostMemoryOpenAfter,
 			resolveAfter: e.cfg.Rules.ResolveAfter,
 			summary:      "available memory low",
 			details: map[string]any{
@@ -77,9 +77,9 @@ func diskReading(rule, subject string, usage float64, cfg *config.Config, open m
 	if isOpen {
 		firing = usage >= warn-2
 	}
-	severity := "warning"
+	severity := store.SeverityWarning
 	if usage >= crit {
-		severity = "critical"
+		severity = store.SeverityCritical
 	}
 	return reading{
 		rule:         rule,
@@ -105,7 +105,7 @@ func (e *Engine) forecastReading(name string, samples []store.DiskMinute, cfg *c
 	}
 	first, latest := samples[0], samples[len(samples)-1]
 	hours := latest.TS.Sub(first.TS).Hours()
-	if hours < 12 || latest.SizeBytes <= 0 {
+	if hours < diskForecastMinHistory.Hours() || latest.SizeBytes <= 0 {
 		return reading{}, false
 	}
 	growthPerHour := float64(latest.UsedBytes-first.UsedBytes) / hours
@@ -118,9 +118,9 @@ func (e *Engine) forecastReading(name string, samples []store.DiskMinute, cfg *c
 	var projection time.Duration
 	projecting := growthPerHour > 0
 	if projecting {
-		projection = time.Duration(float64(latest.SizeBytes-latest.UsedBytes) / growthPerHour * float64(time.Hour))
+		projection = time.Duration(float64(latest.AvailBytes) / growthPerHour * float64(time.Hour))
 	}
-	firing := usage >= 50 && projecting && projection <= limit
+	firing := usage >= diskForecastMinUsage && projecting && projection <= limit
 	details := map[string]any{
 		"used_bytes":           latest.UsedBytes,
 		"size_bytes":           latest.SizeBytes,
@@ -134,7 +134,7 @@ func (e *Engine) forecastReading(name string, samples []store.DiskMinute, cfg *c
 	return reading{
 		rule:         RuleHostDiskForecast,
 		subject:      name,
-		severity:     "warning",
+		severity:     store.SeverityWarning,
 		firing:       firing,
 		alerts:       true,
 		resolveAfter: 0,
@@ -164,9 +164,9 @@ func inodeUsage(sample store.DiskMinute) float64 {
 func (e *Engine) unitReadings(now time.Time, s *snapshot) []reading {
 	readings := make([]reading, 0, len(s.units))
 	for _, unit := range s.units {
-		severity := "warning"
+		severity := store.SeverityWarning
 		if systemd.Matches(e.cfg.Host.SystemdCritical, unit.Name) {
-			severity = "critical"
+			severity = store.SeverityCritical
 		}
 		details := map[string]any{
 			"state":     unit.ActiveState,
@@ -194,15 +194,15 @@ func (e *Engine) unitReadings(now time.Time, s *snapshot) []reading {
 func (e *Engine) certReadings(now time.Time, s *snapshot) []reading {
 	readings := make([]reading, 0, 2*len(s.certs))
 	for _, cert := range s.certs {
-		severity := "warning"
+		severity := store.SeverityWarning
 		expiring := false
 		if cert.NotAfter != nil {
 			remaining := cert.NotAfter.Sub(now)
 			switch {
 			case remaining <= 0, remaining <= e.cfg.Rules.CertCrit:
-				severity, expiring = "critical", true
+				severity, expiring = store.SeverityCritical, true
 			case remaining <= e.cfg.Rules.CertWarn:
-				severity, expiring = "warning", true
+				severity, expiring = store.SeverityWarning, true
 			}
 		}
 		details := map[string]any{
@@ -233,7 +233,7 @@ func (e *Engine) certReadings(now time.Time, s *snapshot) []reading {
 			rule:         RuleCertInvalid,
 			subject:      cert.Domain,
 			routeID:      cert.RouteID,
-			severity:     "warning",
+			severity:     store.SeverityWarning,
 			firing:       invalid,
 			alerts:       true,
 			resolveAfter: 0,
@@ -260,7 +260,7 @@ func (e *Engine) peerReadings(now time.Time, s *snapshot) []reading {
 		readings = append(readings, reading{
 			rule:         RulePeerSilent,
 			subject:      name,
-			severity:     "critical",
+			severity:     store.SeverityCritical,
 			firing:       now.Sub(at) >= e.cfg.Heartbeat.Timeout,
 			alerts:       true,
 			resolveAfter: 0,
@@ -285,8 +285,8 @@ func (e *Engine) sourceReadings(now time.Time, s *snapshot) []reading {
 		readings = append(readings, reading{
 			rule:         RuleSourceFailed,
 			subject:      state.Source,
-			severity:     "warning",
-			firing:       state.Status != store.StatusOK && now.Sub(state.UpdatedAt) >= 5*time.Minute,
+			severity:     store.SeverityWarning,
+			firing:       state.Status != store.StatusOK && now.Sub(state.UpdatedAt) >= sourceFailedAfter,
 			alerts:       true,
 			resolveAfter: 0,
 			summary:      "source failed",

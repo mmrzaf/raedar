@@ -94,14 +94,15 @@ type RunningContainer struct {
 	SlotID int64
 }
 
-// RunningContainers returns the running containers that are not ignored,
-// ordered by Docker ID.
+// RunningContainers returns the running container of each slot, ordered by
+// Docker ID. While a deploy replaces a container, only the newer one is
+// returned, so that a slot has one stream of samples.
 func (d *Discoverer) RunningContainers() []RunningContainer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	containers := make([]RunningContainer, 0, len(d.model.Containers))
 	for _, container := range d.model.Containers {
-		if container.State != "running" || container.Ignored || container.Slot == nil || container.Slot.ID == 0 {
+		if container.State != "running" || container.Slot == nil || container.Slot.ID == 0 || container.Slot.Container != container {
 			continue
 		}
 		containers = append(containers, RunningContainer{ID: container.ID, SlotID: container.Slot.ID})

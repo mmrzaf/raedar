@@ -4,18 +4,15 @@ package digest
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/store"
+	"github.com/mmrzaf/raedar/internal/testdb"
 )
 
 // testClock is a clock the tests set.
@@ -37,40 +34,9 @@ func discardLogger() *slog.Logger {
 func testSchema(t *testing.T) *store.Store {
 	t.Helper()
 	ctx := context.Background()
-	databaseURL := os.Getenv("RAEDAR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("RAEDAR_TEST_DATABASE_URL is not set")
-	}
-	schema := fmt.Sprintf("raedar_digest_%d", time.Now().UnixNano())
-	admin, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to PostgreSQL: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "create schema "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatalf("create schema: %v", err)
-	}
-	if err := admin.Close(ctx); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	t.Cleanup(func() {
-		conn, err := pgx.Connect(ctx, databaseURL)
-		if err != nil {
-			t.Errorf("connect to drop schema: %v", err)
-			return
-		}
-		defer conn.Close(ctx)
-		if _, err := conn.Exec(ctx, "drop schema "+pgx.Identifier{schema}.Sanitize()+" cascade"); err != nil {
-			t.Errorf("drop schema: %v", err)
-		}
-	})
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse database URL: %v", err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	st, err := store.Open(ctx, parsed.String(), discardLogger())
+	databaseURL, schema := testdb.NewSchema(t, "digest")
+	schemaURL := testdb.WithSearchPath(t, databaseURL, schema)
+	st, err := store.Open(ctx, schemaURL, discardLogger())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -146,7 +112,7 @@ func TestDigestSummarizesThePreviousDay(t *testing.T) {
 	}}}); err != nil {
 		t.Fatalf("FlushBuckets() error = %v", err)
 	}
-	if err := st.Rollup(ctx, clock.now); err != nil {
+	if err := st.Rollup(ctx, clock.now, time.UTC); err != nil {
 		t.Fatalf("Rollup() error = %v", err)
 	}
 	// A deploy and a failed unit.

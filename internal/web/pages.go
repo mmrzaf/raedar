@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/config"
-	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -39,7 +38,7 @@ type appPageData struct {
 // appDetail is the app header.
 type appDetail struct {
 	Name       string
-	Status     string
+	Status     appHealth
 	Domains    []domainStatus
 	Containers []containerView
 }
@@ -52,6 +51,7 @@ type domainStatus struct {
 
 // containerView is one container row.
 type containerView struct {
+	SlotID   int64
 	Slot     string
 	Name     string
 	Image    string
@@ -64,17 +64,6 @@ type containerView struct {
 	ID       string
 }
 
-// pathView is one row of the paths table.
-type pathView struct {
-	Method   string
-	Pattern  string
-	Requests int64
-	S4xx     float64
-	S5xx     float64
-	P50      float64
-	P95      float64
-}
-
 // rangeView is the selected time range.
 type rangeView struct {
 	From   time.Time
@@ -85,15 +74,15 @@ type rangeView struct {
 // incidentPageData is the data of the incident page.
 type incidentPageData struct {
 	pageData
-	Incident   *store.Incident
-	App        string
-	Duration   time.Duration
-	Details    map[string]any
-	Deliveries []store.Delivery
-	ChartKey   string
-	ChartFrom  time.Time
-	ChartTo    time.Time
-	Link       string
+	Incident    *store.Incident
+	App         string
+	Duration    time.Duration
+	Details     map[string]any
+	Deliveries  []store.Delivery
+	ChartSeries string
+	ChartFrom   time.Time
+	ChartTo     time.Time
+	Link        string
 }
 
 // aboutPageData is the data of the about page.
@@ -143,21 +132,6 @@ type sourceStateView struct {
 	UpdatedAt time.Time
 }
 
-// overviewPage renders the overview.
-func (s *Server) overviewPage(w http.ResponseWriter, request *http.Request) {
-	data, err := s.loadOverview(request.Context())
-	if err != nil {
-		s.logger.Error("overview page", "error", err)
-		http.Error(w, "cannot read the overview", http.StatusInternalServerError)
-		return
-	}
-	s.render(w, "overview.html", map[string]any{
-		"Page": pageData{Title: "Overview", HostName: s.cfg.HostName, Now: s.clock.Now(), Version: s.version,
-			Sources: data.Sources, Nav: "overview", Location: s.cfg.Location},
-		"Overview": data,
-	})
-}
-
 // appPage renders one app.
 func (s *Server) appPage(w http.ResponseWriter, request *http.Request) {
 	name := request.PathValue("app")
@@ -195,7 +169,7 @@ func (s *Server) appPage(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	for _, slot := range app.Slots {
-		view := containerView{Slot: slot.Key}
+		view := containerView{SlotID: slot.ID, Slot: slot.Key}
 		if slot.Container != nil {
 			view.ID = slot.Container.ID
 			view.Name = slot.Container.Name
@@ -245,31 +219,6 @@ func mustOpenMap(request *http.Request, s *Server) map[store.IncidentKey]store.I
 	return open
 }
 
-// pathsFor returns the path rows of an app.
-func (s *Server) pathsFor(request *http.Request, app *discovery.App) ([]pathView, error) {
-	timeRange := s.rangeFromQuery(request)
-	var routeIDs []int64
-	for _, route := range app.Routes {
-		routeIDs = append(routeIDs, route.ID)
-	}
-	stats, err := s.store.RoutePathStats(request.Context(), routeIDs, timeRange.From, timeRange.To)
-	if err != nil {
-		return nil, err
-	}
-	var views []pathView
-	for _, stat := range stats {
-		p50, _ := stat.Latency.Percentile(50)
-		p95, _ := stat.Latency.Percentile(95)
-		view := pathView{Method: stat.Method, Pattern: stat.Pattern, Requests: stat.Requests, P50: p50, P95: p95}
-		if stat.Requests > 0 {
-			view.S4xx = 100 * float64(stat.S4xx) / float64(stat.Requests)
-			view.S5xx = 100 * float64(stat.S5xx) / float64(stat.Requests)
-		}
-		views = append(views, view)
-	}
-	return views, nil
-}
-
 // hostPage renders the host page.
 func (s *Server) hostPage(w http.ResponseWriter, request *http.Request) {
 	now := s.clock.Now()
@@ -292,166 +241,6 @@ func (s *Server) hostPage(w http.ResponseWriter, request *http.Request) {
 		"Page": pageData{Title: "Host", HostName: s.cfg.HostName, Now: now, Version: s.version,
 			Sources: s.sourceViews(request), Nav: "host", Location: s.cfg.Location},
 		"Host": host, "Units": units, "Certs": certs, "Range": s.rangeFromQuery(request),
-		"RangePresets": rangePresets(),
-	})
-}
-
-// patternsPage renders the patterns page.
-func (s *Server) patternsPage(w http.ResponseWriter, request *http.Request) {
-	subjects := s.patternSubjects()
-	selected := request.URL.Query().Get("subject")
-	if !containsSubject(subjects, selected) {
-		selected = subjects[0].Value
-	}
-	kind := patternKind(selected)
-	metrics := patternMetrics(kind)
-	metric := request.URL.Query().Get("metric")
-	if !containsString(metrics, metric) {
-		metric = metrics[0]
-	}
-	weeks := parseInt(request.URL.Query().Get("weeks"), 4)
-	if weeks < 1 || weeks > 52 {
-		weeks = 4
-	}
-	s.render(w, "patterns.html", map[string]any{
-		"Page": pageData{Title: "Patterns", HostName: s.cfg.HostName, Now: s.clock.Now(), Version: s.version,
-			Sources: s.sourceViews(request), Nav: "patterns", Location: s.cfg.Location},
-		"Subjects": subjects, "Metrics": metrics, "Subject": selected, "Metric": metric,
-		"Weeks": weeks, "Key": patternKey(selected, metric),
-	})
-}
-
-// patternSubject is one choice in the patterns picker.
-type patternSubject struct {
-	// Label is the shown label.
-	Label string
-	// Value is the encoded subject, kind:subject.
-	Value string
-	// Kind is app, route, slot, host or disk.
-	Kind string
-}
-
-// patternSubjects returns the subjects the patterns page can chart.
-func (s *Server) patternSubjects() []patternSubject {
-	model := s.model.Model()
-	var subjects []patternSubject
-	if model != nil {
-		for _, name := range sortedKeys(model.Apps) {
-			app := model.Apps[name]
-			subjects = append(subjects, patternSubject{Label: "app: " + name, Value: "app:" + name, Kind: "app"})
-			routeNames := make([]string, 0, len(app.Routes))
-			for routeName := range app.Routes {
-				routeNames = append(routeNames, routeName)
-			}
-			sort.Strings(routeNames)
-			for _, routeName := range routeNames {
-				subjects = append(subjects, patternSubject{Label: "route: " + routeName, Value: "route:" + routeName, Kind: "route"})
-			}
-			slotKeys := make([]string, 0, len(app.Slots))
-			for slotKey := range app.Slots {
-				slotKeys = append(slotKeys, slotKey)
-			}
-			sort.Strings(slotKeys)
-			for _, slotKey := range slotKeys {
-				subjects = append(subjects, patternSubject{
-					Label: "slot: " + name + " / " + slotKey,
-					Value: "slot:" + name + " / " + slotKey,
-					Kind:  "slot",
-				})
-			}
-		}
-	}
-	subjects = append(subjects, patternSubject{Label: "host: " + s.cfg.HostName, Value: "host:", Kind: "host"})
-	for _, disk := range s.cfg.Host.Disks {
-		subjects = append(subjects, patternSubject{Label: "disk: " + disk.Name, Value: "disk:" + disk.Name, Kind: "disk"})
-	}
-	return subjects
-}
-
-// patternKind returns the kind of an encoded subject.
-func patternKind(subject string) string {
-	kind, _, _ := strings.Cut(subject, ":")
-	return kind
-}
-
-// patternMetrics returns the metrics of one subject kind.
-func patternMetrics(kind string) []string {
-	switch kind {
-	case "app", "route":
-		return []string{"requests", "error_rate", "p95", "p50", "p99"}
-	case "slot":
-		return []string{"cpu", "memory", "net_rx", "net_tx"}
-	case "host":
-		return []string{"cpu", "load1", "memory", "swap"}
-	case "disk":
-		return []string{"used", "inodes"}
-	}
-	return []string{"requests"}
-}
-
-// patternKey builds a series key from an encoded subject and a metric.
-func patternKey(subject, metric string) string {
-	kind, rest, _ := strings.Cut(subject, ":")
-	switch kind {
-	case "host":
-		return "host:" + metric
-	case "disk":
-		return "disk:" + rest + ":" + metric
-	default:
-		return kind + ":" + rest + ":" + metric
-	}
-}
-
-// containsSubject reports whether the encoded subject is in the list.
-func containsSubject(subjects []patternSubject, value string) bool {
-	for _, subject := range subjects {
-		if subject.Value == value {
-			return true
-		}
-	}
-	return false
-}
-
-// containsString reports whether value is in values.
-func containsString(values []string, value string) bool {
-	for _, item := range values {
-		if item == value {
-			return true
-		}
-	}
-	return false
-}
-
-// eventsPage renders the events page.
-func (s *Server) eventsPage(w http.ResponseWriter, request *http.Request) {
-	timeRange := s.rangeFromQuery(request)
-	query := request.URL.Query()
-	events, err := s.eventsForApp(request, 0, timeRange)
-	if err != nil {
-		http.Error(w, "cannot read the events", http.StatusInternalServerError)
-		return
-	}
-	filters := map[string]string{"app": query.Get("app"), "kind": query.Get("kind"), "severity": query.Get("severity")}
-	var filtered []eventView
-	for _, event := range events {
-		if filters["app"] != "" && event.App != filters["app"] {
-			continue
-		}
-		if filters["kind"] != "" && event.Kind != filters["kind"] {
-			continue
-		}
-		if filters["severity"] != "" && event.Severity != filters["severity"] {
-			continue
-		}
-		filtered = append(filtered, event)
-	}
-	model := s.model.Model()
-	apps := append([]string(nil), sortedKeys(model.Apps)...)
-	kinds := []string{"deploy", "crashed", "started", "stopped", "health"}
-	s.render(w, "events.html", map[string]any{
-		"Page": pageData{Title: "Events", HostName: s.cfg.HostName, Now: s.clock.Now(), Version: s.version,
-			Sources: s.sourceViews(request), Nav: "events", Location: s.cfg.Location},
-		"Range": timeRange, "Events": filtered, "Filters": filters, "Apps": apps, "Kinds": kinds,
 		"RangePresets": rangePresets(),
 	})
 }
@@ -492,7 +281,7 @@ func (s *Server) incidentPage(w http.ResponseWriter, request *http.Request) {
 	if incident.RouteID != nil && s.model.Model() != nil {
 		for _, route := range s.model.Model().Routes {
 			if route.ID == *incident.RouteID {
-				key = "route:" + route.Name + ":p95"
+				key = seriesRef{Kind: subjectRoute, Subject: route.Name, Metric: "p95"}.String()
 				if route.App != nil {
 					link = "/apps/" + route.App.Name
 				}
@@ -503,7 +292,7 @@ func (s *Server) incidentPage(w http.ResponseWriter, request *http.Request) {
 		"Page": pageData{Title: "Incident", HostName: s.cfg.HostName, Now: s.clock.Now(), Version: s.version,
 			Sources: s.sourceViews(request), Nav: "", Location: s.cfg.Location},
 		"Data": incidentPageData{Incident: incident, App: incidentApp(*incident), Duration: duration,
-			Details: details, Deliveries: deliveries, ChartKey: key, ChartFrom: from, ChartTo: to, Link: link},
+			Details: details, Deliveries: deliveries, ChartSeries: key, ChartFrom: from, ChartTo: to, Link: link},
 	})
 }
 
@@ -616,47 +405,8 @@ func (s *Server) rangeFromQuery(request *http.Request) rangeView {
 	return rangeView{From: now.Add(-length), To: now, Preset: preset}
 }
 
-// sourceViews returns the source dots.
-func (s *Server) sourceViews(request *http.Request) []sourceView {
-	states, err := s.store.SourceStates(request.Context())
-	if err != nil {
-		return nil
-	}
-	var views []sourceView
-	for _, state := range states {
-		view := sourceView{Name: state.Source, Status: state.Status}
-		if state.LastError != nil {
-			view.LastError = *state.LastError
-		}
-		views = append(views, view)
-	}
-	views = append(views, sourceView{Name: "database", Status: store.StatusOK})
-	return views
-}
-
-// eventsForApp returns the events of an app, or of every app.
-func (s *Server) eventsForApp(request *http.Request, appID int64, timeRange rangeView) ([]eventView, error) {
-	events, err := s.store.AllEvents(request.Context(), timeRange.From, timeRange.To)
-	if err != nil {
-		return nil, err
-	}
-	model := s.model.Model()
-	var views []eventView
-	for _, event := range events {
-		if appID != 0 && (event.AppID == nil || *event.AppID != appID) {
-			continue
-		}
-		view := eventView{TS: event.TS, Kind: event.Kind, Severity: event.Severity, Title: event.Title, Subject: event.Subject}
-		if event.AppID != nil {
-			view.App = s.appName(model, *event.AppID)
-		}
-		views = append(views, view)
-	}
-	return views, nil
-}
-
-// sortedKeys returns the keys of an app map in order.
-func sortedKeys(values map[string]*discovery.App) []string {
+// sortedKeys returns the keys of a map in order.
+func sortedKeys[V any](values map[string]V) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
