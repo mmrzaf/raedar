@@ -10,7 +10,9 @@ services:
     restart: unless-stopped
     init: true
     read_only: true
-    user: "65532:65532"
+    # nobody: the system D-Bus rejects users the host does not know, and the host
+    # has no uid 65532.
+    user: "65534:65534"
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -29,6 +31,7 @@ services:
     volumes:
       - /:/host/root:ro
       - /srv/logs/traefik:/logs:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
     expose:
       - "8080"
     healthcheck:
