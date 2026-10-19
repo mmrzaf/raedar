@@ -1,0 +1,38 @@
+{{template "header" .}}
+<h1>Host</h1>
+<div class="range">
+  {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
+</div>
+<div class="charts" data-host="true" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
+  <section><h2>CPU</h2><div class="chart" data-chart="host-cpu"></div></section>
+  <section><h2>Load average</h2><div class="chart" data-chart="host-load"></div></section>
+  <section><h2>Memory available</h2><div class="chart" data-chart="host-memory"></div></section>
+  <section><h2>Swap used</h2><div class="chart" data-chart="host-swap"></div></section>
+  {{with .Host}}{{range .Disks}}<section><h2>Disk {{.Name}}</h2><div class="chart" data-chart="disk-{{.Name}}"></div></section>{{end}}{{end}}
+  {{with .Host}}{{with .Docker}}<section><h2>Docker disk</h2><div class="strip">
+    <div class="metric"><span class="label">Images</span><span class="value">{{bytes .Images}}</span></div>
+    <div class="metric"><span class="label">Reclaimable</span><span class="value">{{bytes .Reclaimable}}</span></div>
+    <div class="metric"><span class="label">Build cache</span><span class="value">{{bytes .BuildCache}}</span></div>
+    <div class="metric"><span class="label">Volumes</span><span class="value">{{bytes .Volumes}}</span></div>
+    <div class="metric"><span class="label">Layers</span><span class="value">{{bytes .Layers}}</span></div>
+  </div></section>{{end}}{{end}}
+</div>
+<section>
+  <h2>systemd</h2>
+  {{if .Units}}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Unit</th><th>State</th><th>Result</th><th>Exit</th><th>Since</th></tr></thead>
+    <tbody>{{range .Units}}<tr><td>{{.Name}}</td><td>{{.ActiveState}} / {{.SubState}}</td><td>{{if .Result}}{{.Result}}{{else}}—{{end}}</td><td>{{if .ExitStatus}}{{.ExitStatus}}{{else}}—{{end}}</td><td>{{if .Since}}{{datetime .Since}}{{else}}—{{end}}</td></tr>{{end}}</tbody>
+  </table></div>
+  {{else}}<p class="empty">No systemd units recorded. Mount the D-Bus socket or set RAEDAR_SYSTEMD=off.</p>{{end}}
+</section>
+<section>
+  <h2>Certificates</h2>
+  {{if .Certs}}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Domain</th><th>Status</th><th>Issuer</th><th>Expires</th><th class="num">Days left</th><th>Checked</th></tr></thead>
+    <tbody>{{range .Certs}}<tr><td>{{.Domain}}</td><td><span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span></td><td>{{.Issuer}}</td><td>{{if .NotAfter}}{{datetime .NotAfter}}{{else}}—{{end}}</td><td class="num">{{if .NotAfter}}{{printf "%.0f" .DaysLeft}}{{else}}—{{end}}</td><td>{{relative .CheckedAt}}</td></tr>{{end}}</tbody>
+  </table></div>
+  {{else}}<p class="empty">No certificates checked yet. Set RAEDAR_TLS_CHECK_ADDR if Traefik could not be detected.</p>{{end}}
+</section>
+{{template "footer" .}}

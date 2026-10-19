@@ -1,0 +1,60 @@
+{{template "header" .}}
+{{with .Data}}
+<h1>{{.App.Name}} <span class="badge badge-{{.App.Status}}">{{if eq .App.Status "ok"}}OK{{else}}{{.App.Status}}{{end}}</span></h1>
+{{if .App.Domains}}<p class="domains">{{range .App.Domains}}<span>{{.Name}} <span class="muted">{{.Status}}</span></span>{{end}}</p>{{end}}
+<div class="range">
+  {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Data.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
+  <span class="muted">Drag across a chart to zoom.</span>
+</div>
+<div class="charts" data-app="{{.App.Name}}" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
+  <section><h2>Requests</h2><div class="chart" data-chart="requests"></div></section>
+  <section><h2>Error rate</h2><div class="chart" data-chart="errors"></div></section>
+  <section><h2>Latency</h2><div class="chart" data-chart="latency"></div></section>
+  <section><h2>CPU</h2><div class="chart" data-chart="cpu"></div></section>
+  <section><h2>Memory</h2><div class="chart" data-chart="memory"></div></section>
+  <section><h2>Network</h2><div class="chart" data-chart="network"></div></section>
+</div>
+<section>
+  <h2>Containers</h2>
+  {{if .Containers}}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Slot</th><th>Container</th><th>Image</th><th>State</th><th>Health</th><th>Uptime</th><th class="num">Restarts</th><th class="num">CPU</th><th class="num">Memory</th></tr></thead>
+    <tbody>{{range .Containers}}<tr>
+      <td>{{.Slot}}</td><td>{{.Name}}</td><td class="muted">{{.Image}}</td><td>{{.State}}</td><td>{{if .Health}}{{.Health}}{{else}}—{{end}}</td>
+      <td>{{if gt .Uptime 0.0}}{{duration .Uptime}}{{else}}—{{end}}</td><td class="num">{{.Restarts}}</td>
+      <td class="num">{{printf "%.0f" .CPU}} m</td><td class="num">{{bytes .Memory}}</td>
+    </tr>{{end}}</tbody>
+  </table></div>
+  {{else}}<p class="empty">No containers for this app yet.</p>{{end}}
+</section>
+<section>
+  <h2>Paths</h2>
+  {{if .Paths}}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Method</th><th>Path</th><th class="num">Requests</th><th class="num">4xx</th><th class="num">5xx</th><th class="num">p50</th><th class="num">p95</th></tr></thead>
+    <tbody>{{range .Paths}}<tr>
+      <td>{{.Method}}</td><td>{{.Pattern}}</td><td class="num">{{count .Requests}}</td>
+      <td class="num">{{printf "%.1f" .S4xx}}%</td><td class="num">{{printf "%.1f" .S5xx}}%</td>
+      <td class="num">{{printf "%.0f" .P50}} ms</td><td class="num">{{printf "%.0f" .P95}} ms</td>
+    </tr>{{end}}</tbody>
+  </table></div>
+  {{else}}<p class="empty">No request paths in this range. The access log has not produced lines for this app.</p>{{end}}
+</section>
+<section>
+  <h2>Events</h2>
+  {{if .Events}}
+  <ul class="timeline">{{range .Events}}<li><time>{{datetime .TS}}</time> <span class="badge badge-{{.Severity}}">{{.Kind}}</span> {{.Title}} <span class="muted">{{.Subject}}</span></li>{{end}}</ul>
+  {{else}}<p>No events in this range.</p>{{end}}
+</section>
+<div class="logs-drawer" hidden>
+  <div class="logs-head">
+    <strong>Logs</strong>
+    <select class="logs-container"></select>
+    <input class="logs-filter" type="search" placeholder="Filter lines">
+    <label><input class="logs-follow" type="checkbox" checked> Follow</label>
+    <button class="logs-close" type="button">Close</button>
+  </div>
+  <pre class="logs-output" aria-live="polite"></pre>
+</div>
+{{end}}
+{{template "footer" .}}

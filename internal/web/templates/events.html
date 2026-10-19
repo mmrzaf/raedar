@@ -1,0 +1,13 @@
+{{template "header" .}}
+<h1>Events</h1>
+<div class="range">{{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}</div>
+<form class="filters" method="get">
+  <label>App <select name="app"><option value="">All apps</option>{{range .Apps}}<option value="{{.}}"{{if eq . $.Filters.app}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+  <label>Kind <select name="kind"><option value="">All kinds</option>{{range .Kinds}}<option value="{{.}}"{{if eq . $.Filters.kind}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+  <label>Severity <select name="severity"><option value="">All</option><option value="info"{{if eq $.Filters.severity "info"}} selected{{end}}>info</option><option value="warning"{{if eq $.Filters.severity "warning"}} selected{{end}}>warning</option><option value="critical"{{if eq $.Filters.severity "critical"}} selected{{end}}>critical</option></select></label>
+  <button type="submit">Filter</button>
+</form>
+{{if .Events}}
+<ul class="timeline">{{range .Events}}<li><time>{{datetime .TS}}</time> <span class="badge badge-{{.Severity}}">{{.Kind}}</span> {{.Title}} <span class="muted">{{.Subject}}{{if .App}} · {{.App}}{{end}}</span></li>{{end}}</ul>
+{{else}}<p class="empty">No events in this range.</p>{{end}}
+{{template "footer" .}}

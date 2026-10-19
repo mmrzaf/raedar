@@ -1,0 +1,32 @@
+{{define "header"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Page.Title}} · Raedar</title>
+<link rel="stylesheet" href="/static/uplot.min.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">{{.Page.HostName}}</a>
+  <nav class="nav">
+    <a href="/"{{if eq .Page.Nav "overview"}} aria-current="page"{{end}}>Overview</a>
+    <a href="/host"{{if eq .Page.Nav "host"}} aria-current="page"{{end}}>Host</a>
+    <a href="/patterns"{{if eq .Page.Nav "patterns"}} aria-current="page"{{end}}>Patterns</a>
+    <a href="/events"{{if eq .Page.Nav "events"}} aria-current="page"{{end}}>Events</a>
+  </nav>
+  <div class="sources" aria-label="Sources">
+    {{range .Page.Sources}}<span class="source"><span class="dot dot-{{.Status}}" aria-hidden="true"></span><span class="source-name">{{.Name}}</span><span class="source-state">{{.Status}}{{if .LastError}} — {{.LastError}}{{end}}</span></span>
+    {{end}}
+  </div>
+  <time class="clock" datetime="{{.Page.Now.Format "2006-01-02T15:04:05Z07:00"}}">{{.Page.Now.In .Page.Location | time}}</time>
+</header>
+<main class="page">
+{{end}}
+{{define "footer"}}
+</main>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
+{{end}}

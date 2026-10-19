@@ -1,0 +1,13 @@
+{{template "header" .}}
+<h1>Patterns</h1>
+<form class="filters" method="get">
+  <label>Subject <select name="key">{{range .Subjects}}<option value="{{.}}"{{if eq . $.Key}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+  <label>Weeks <input type="number" name="weeks" min="1" max="52" value="{{.Weeks}}"></label>
+  <button type="submit">Show</button>
+</form>
+<div class="patterns" data-key="{{.Key}}" data-weeks="{{.Weeks}}">
+  <section><h2>Week heatmap</h2><div class="heatmap" aria-label="Average by weekday and hour"></div></section>
+  <section><h2>Day profile</h2><div class="chart" data-chart="profile"></div></section>
+  <section><h2>Trend</h2><div class="chart" data-chart="trend"></div></section>
+</div>
+{{template "footer" .}}

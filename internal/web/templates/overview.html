@@ -1,0 +1,83 @@
+{{template "header" .}}
+<h1>Overview</h1>
+{{with .Overview}}
+{{if .Incidents}}
+<section class="problems" aria-labelledby="incidents-title">
+  <h2 id="incidents-title">Open incidents</h2>
+  <ul class="incident-list">
+  {{range .Incidents}}
+    <li class="severity-{{.Severity}}">
+      <a href="/incidents/{{.ID}}">
+        <span class="badge badge-{{.Severity}}">{{.Severity}}</span>
+        <strong>{{.Subject}}</strong> — {{.Summary}}
+        <span class="muted">open for {{duration .Duration}}</span>
+      </a>
+    </li>
+  {{end}}
+  </ul>
+</section>
+{{end}}
+<section aria-labelledby="host-title">
+  <h2 id="host-title">Host</h2>
+  {{with .Host}}
+  <div class="strip">
+    <div class="metric"><span class="label">CPU</span><span class="value">{{printf "%.0f" .CPU}}%</span></div>
+    <div class="metric"><span class="label">Load</span><span class="value">{{printf "%.2f" .Load1}}</span></div>
+    <div class="metric"><span class="label">Memory available</span><span class="value">{{bytes .MemAvailable}} of {{bytes .MemTotal}}</span></div>
+    <div class="metric"><span class="label">Swap used</span><span class="value">{{bytes .SwapUsed}} of {{bytes .SwapTotal}}</span></div>
+    {{range .Disks}}
+    <div class="metric"><span class="label">{{.Name}}</span><span class="value">{{printf "%.1f" .Usage}}% used · {{bytes .Free}} free{{if .Growing}} · full in {{printf "%.0f" .DaysUntilFull}} days{{end}}</span></div>
+    {{end}}
+    {{with .Docker}}
+    <div class="metric"><span class="label">Docker disk</span><span class="value">{{bytes .Images}} images · {{bytes .Reclaimable}} reclaimable · {{bytes .Volumes}} volumes</span></div>
+    {{end}}
+  </div>
+  {{end}}
+</section>
+<section aria-labelledby="apps-title">
+  <h2 id="apps-title">Apps</h2>
+  {{if .Apps}}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Status</th><th>App</th><th class="num">Traffic</th><th class="num">Errors</th><th class="num">p95</th><th class="num">CPU</th><th class="num">Memory</th><th class="num">Containers</th><th>Last deploy</th></tr></thead>
+    <tbody>
+    {{range .Apps}}
+      <tr>
+        <td><span class="badge badge-{{.Status}}">{{if eq .Status "ok"}}OK{{else}}{{.Status}}{{end}}</span></td>
+        <td><a href="/apps/{{.Name}}">{{.Name}}</a>{{if .Domains}}<div class="muted small">{{range $i, $domain := .Domains}}{{if $i}}, {{end}}{{$domain}}{{end}}</div>{{end}}</td>
+        <td class="num">{{printf "%.0f" .RequestsPerMinute}}/min <span class="spark" data-values="{{range .Sparkline}}{{printf "%.0f" .}},{{end}}" aria-hidden="true"></span></td>
+        <td class="num">{{printf "%.1f" .ErrorRate}}%{{if gt .ErrorBaseline 0.0}}{{if gt .ErrorRate .ErrorBaseline}} <span class="warn" title="above the usual {{printf "%.1f" .ErrorBaseline}}%">↑</span>{{end}}{{end}}</td>
+        <td class="num">{{printf "%.0f" .P95}} ms{{if gt .P95Baseline 0.0}}{{if gt .P95 (mulf .P95Baseline 1.5)}} <span class="warn" title="usual {{printf "%.0f" .P95Baseline}} ms">↑</span>{{else if lt .P95 (mulf .P95Baseline 0.5)}} <span class="muted" title="usual {{printf "%.0f" .P95Baseline}} ms">↓</span>{{end}}{{end}}</td>
+        <td class="num">{{printf "%.0f" .CPU}} m</td>
+        <td class="num">{{bytes .Memory}}{{if gt .MemoryLimit 0}} of {{bytes .MemoryLimit}}{{end}}</td>
+        <td class="num">{{.Running}}/{{.Total}}{{if gt .Restarts 0}} · {{.Restarts}} restarts{{end}}</td>
+        <td>{{if .LastDeploy.IsZero}}never{{else}}{{relative .LastDeploy}}{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="empty">No apps yet. Raedar reads them from the Docker API; check that it is reachable.</p>{{end}}
+</section>
+<section aria-labelledby="certs-title">
+  <h2 id="certs-title">Certificates</h2>
+  {{$attention := false}}{{range .Certs}}{{if .Attention}}{{$attention = true}}{{end}}{{end}}
+  {{if $attention}}
+  <ul class="plain">{{range .Certs}}{{if .Attention}}<li><strong>{{.Domain}}</strong> <span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span> {{if .NotAfter}}expires in {{printf "%.0f" .DaysLeft}} days{{end}} {{if .Error}}<span class="muted">{{.Error}}</span>{{end}}</li>{{end}}{{end}}</ul>
+  {{else}}<p>All certificates fine.</p>{{end}}
+</section>
+<section aria-labelledby="units-title">
+  <h2 id="units-title">Host jobs</h2>
+  {{$failed := false}}{{range .Units}}{{if eq .ActiveState "failed"}}{{$failed = true}}{{end}}{{end}}
+  {{if $failed}}
+  <ul class="plain">{{range .Units}}{{if eq .ActiveState "failed"}}<li><strong>{{.Name}}</strong> <span class="badge badge-critical">failed</span> {{.Result}}{{if .ExitStatus}} · exit {{.ExitStatus}}{{end}}</li>{{end}}{{end}}</ul>
+  {{else}}<p>No failed units.</p>{{end}}
+</section>
+<section aria-labelledby="events-title">
+  <h2 id="events-title">Recent events</h2>
+  {{if .Events}}
+  <ul class="timeline">{{range .Events}}<li><time>{{datetime .TS}}</time> <span class="badge badge-{{.Severity}}">{{.Kind}}</span> {{.Title}} <span class="muted">{{.Subject}}</span></li>{{end}}</ul>
+  {{else}}<p>No events yet.</p>{{end}}
+</section>
+{{end}}
+{{template "footer" .}}

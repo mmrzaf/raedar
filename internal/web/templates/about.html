@@ -1,0 +1,40 @@
+{{template "header" .}}
+{{with .Data}}
+<h1>About</h1>
+<div class="strip">
+  <div class="metric"><span class="label">Version</span><span class="value">{{$.Page.Version}}</span></div>
+  <div class="metric"><span class="label">Uptime</span><span class="value">{{duration .Uptime}}</span></div>
+  <div class="metric"><span class="label">Host</span><span class="value">{{$.Page.HostName}}</span></div>
+</div>
+<section>
+  <h2>Configuration</h2>
+  <div class="table-wrap"><table><tbody>{{range .Settings}}<tr><th>{{.Name}}</th><td>{{if .Value}}{{.Value}}{{else}}—{{end}}</td></tr>{{end}}</tbody></table></div>
+</section>
+<section>
+  <h2>Notifications</h2>
+  <div class="table-wrap"><table><tbody>
+    {{range .Data.Notify.Channels}}<tr><th>{{.Name}}</th><td>{{if .Configured}}configured, {{.Route}}{{else}}not configured{{end}}</td></tr>{{end}}
+    <tr><th>Warnings</th><td>{{if .Data.Notify.Warning}}{{.Data.Notify.Warning}}{{else}}none{{end}}</td></tr>
+    <tr><th>Critical</th><td>{{.Data.Notify.Critical}}</td></tr>
+    <tr><th>Digest</th><td>{{.Data.Notify.Digest}}</td></tr>
+    <tr><th>Proxy</th><td>{{.Data.Notify.Proxy}}</td></tr>
+  </tbody></table></div>
+</section>
+<section>
+  <h2>Sources</h2>
+  {{if .Sources}}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Source</th><th>Status</th><th>Last error</th><th>Position</th><th>Updated</th></tr></thead>
+    <tbody>{{range .Sources}}<tr><td>{{.Name}}</td><td>{{.Status}}</td><td>{{if .LastError}}{{.LastError}}{{else}}—{{end}}</td><td class="muted small">{{if .Position}}{{.Position}}{{else}}—{{end}}</td><td>{{relative .UpdatedAt}}</td></tr>{{end}}</tbody>
+  </table></div>
+  {{else}}<p class="empty">No source has reported yet.</p>{{end}}
+</section>
+<section>
+  <h2>Database</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Table</th><th class="num">Size</th></tr></thead>
+    <tbody>{{range .Tables}}<tr><td>{{.Name}}</td><td class="num">{{bytes .Bytes}}</td></tr>{{end}}</tbody>
+  </table></div>
+</section>
+{{end}}
+{{template "footer" .}}
