@@ -7,7 +7,7 @@ Raedar sees a lot of the host it monitors: container metadata, container logs, r
 | Access | Through | Scope |
 |---|---|---|
 | Docker API | a socket proxy allowing `GET` only (recommended) | container metadata, stats, events and logs; no changes |
-| Host filesystem | `/` mounted read-only | used for filesystem statistics and the hostname; as UID 65532, only world-readable files are readable |
+| Host filesystem | `/` mounted read-only | used for filesystem statistics and the hostname; as UID 65534, only world-readable files are readable |
 | systemd | the system D-Bus socket | unit and timer state; changing units requires privileges Raedar does not have |
 | Traefik | the access log, and TLS handshakes on its HTTPS port | read-only |
 | PostgreSQL | its own database and role | full access to that database only |
