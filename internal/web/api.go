@@ -1102,17 +1102,42 @@ type patternBin struct {
 	value float64
 }
 
-// patternBins reads the hourly values of one series key.
+// patternBins reads the hourly values of one series key. The recent window
+// comes from the minute tables, so patterns are useful before the first
+// hourly rollups have run; older days come from the hourly tables.
 func (s *Server) patternBins(ctx context.Context, model *discovery.Model, key seriesKey, timeRange store.Range) ([]patternBin, error) {
-	series, err := s.series(ctx, model, key, timeRange, store.SourceHours, time.Hour)
-	if err != nil {
-		return nil, err
+	boundary := timeRange.From
+	if recent := timeRange.To.Add(-min(s.cfg.Retention.Minute, store.MinuteRange)); recent.After(boundary) {
+		boundary = recent
 	}
-	bins := make([]patternBin, 0, len(series.Points))
-	for _, point := range series.Points {
+	var bins []patternBin
+	if timeRange.From.Before(boundary) {
+		older, err := s.series(ctx, model, key, store.Range{From: timeRange.From, To: boundary},
+			store.SourceHours, time.Hour)
+		if err != nil {
+			return nil, err
+		}
+		bins = append(bins, patternPoints(older.Points)...)
+	}
+	if boundary.Before(timeRange.To) {
+		recent, err := s.series(ctx, model, key, store.Range{From: boundary, To: timeRange.To},
+			store.SourceMinutes, time.Hour)
+		if err != nil {
+			return nil, err
+		}
+		bins = append(bins, patternPoints(recent.Points)...)
+	}
+	sort.Slice(bins, func(i, j int) bool { return bins[i].at.Before(bins[j].at) })
+	return bins, nil
+}
+
+// patternPoints converts series points into pattern bins.
+func patternPoints(points []seriesPoint) []patternBin {
+	bins := make([]patternBin, 0, len(points))
+	for _, point := range points {
 		bins = append(bins, patternBin{at: time.Unix(int64(point[0]), 0).UTC(), value: point[1]})
 	}
-	return bins, nil
+	return bins
 }
 
 // logsAPI streams container logs as server-sent events when follow is set.
