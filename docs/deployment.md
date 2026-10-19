@@ -35,7 +35,7 @@ accessLog:
   bufferingSize: 0
 ```
 
-mount the directory into Raedar read-only and set `RAEDAR_ACCESSLOG_PATH`. The file must be readable by Raedar's user (UID 65532). If it is not, either make the log directory group-readable for a group Raedar is added to with `group_add`, or let Raedar read Traefik's output instead.
+mount the directory into Raedar read-only and set `RAEDAR_ACCESSLOG_PATH`. The file must be readable by Raedar's user (UID 65534, `nobody`). If it is not, either make the log directory group-readable for a group Raedar is added to with `group_add`, or let Raedar read Traefik's output instead.
 
 ## 2. Docker socket proxy
 
@@ -88,7 +88,7 @@ services:
     container_name: raedar
     restart: unless-stopped
     read_only: true
-    user: "65532:65532"
+    user: "65534:65534"
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     mem_limit: 128m
@@ -135,7 +135,7 @@ networks:
 Notes:
 
 - **Host root.** `/` is mounted read-only only to measure filesystem usage and read the hostname. Raedar runs as an unprivileged user, so it can read only world-readable files.
-- **D-Bus.** Remove that line if you do not want systemd monitoring.
+- **D-Bus.** Remove that line if you do not want systemd monitoring. Keep `user: "65534:65534"` (`nobody`) when you use it: the system bus only accepts connections from users that exist in the host's user database, and a container user the host does not know, such as the uid common in minimal images, is disconnected during the handshake. With `RAEDAR_SYSTEMD=on` that stops Raedar from starting; with `auto` it only costs the systemd view.
 - **Networks.** Raedar must share a network with Traefik (for routing and TLS checks), with the socket proxy and with PostgreSQL. Use the names of your existing networks.
 - **Memory.** Raedar sets `GOMEMLIMIT` to 80 % of the container's memory limit when it detects one.
 

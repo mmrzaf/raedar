@@ -4,6 +4,25 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-10-20
+
+### Fixed
+
+- The container runs as `nobody` (uid 65534) instead of uid 65532. The system
+  D-Bus only accepts connections from users that exist in the host's user
+  database, and no host has 65532, so systemd monitoring could never connect.
+  With `RAEDAR_SYSTEMD=on` that stopped Raedar from starting.
+- The production compose file mounts the system D-Bus socket, as
+  `docs/deployment.md` always described, and `deploy/.env.example` sets
+  `RAEDAR_SYSTEMD=auto`, which monitors systemd when the bus answers and carries
+  on without it otherwise.
+
+### Upgrading
+
+- A deployment that mounts the D-Bus socket and sets `user: "65532:65532"` must
+  change the user to `"65534:65534"`. Access log files must be readable by that
+  user, which holds for world-readable files.
+
 ## [0.2.0] - 2026-10-19
 
 ### Upgrading

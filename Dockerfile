@@ -28,7 +28,9 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifica
 COPY --from=build /out/raedar /usr/local/bin/raedar
 ENV PATH=/usr/local/bin:/usr/bin:/bin
 EXPOSE 8080
-USER 65532:65532
+# nobody. The system D-Bus only lets users that exist in the host's user
+# database connect, and every Linux host has this one.
+USER 65534:65534
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["/usr/local/bin/raedar", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/raedar"]
 CMD ["serve"]

@@ -10,7 +10,7 @@
 | Docker API | a small client in the repository, using `net/http` for the handful of `GET` endpoints Raedar needs (see [data-sources.md](data-sources.md#docker)) |
 | Web | `net/http`, `html/template`, plain JavaScript modules, CSS |
 | Charts | uPlot, vendored |
-| Container image | static binary on a `scratch` base, running as uid 65532 |
+| Container image | static binary on a `scratch` base, running as uid 65534 (`nobody`) |
 
 Dependencies are kept to this list. Anything else needs a strong reason.
 
