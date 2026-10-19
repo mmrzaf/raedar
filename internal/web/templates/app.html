@@ -6,7 +6,7 @@
   {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Data.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
   <span class="muted">Drag across a chart to zoom.</span>
 </div>
-<div class="charts" data-app="{{.App.Name}}" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
+<div class="charts" data-app="{{.App.Name}}" data-slots="{{range .Containers}}{{.Slot}}|{{end}}" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
   <section><h2>Requests</h2><div class="chart" data-chart="requests"></div></section>
   <section><h2>Error rate</h2><div class="chart" data-chart="errors"></div></section>
   <section><h2>Latency</h2><div class="chart" data-chart="latency"></div></section>
@@ -49,7 +49,7 @@
 <div class="logs-drawer" hidden>
   <div class="logs-head">
     <strong>Logs</strong>
-    <select class="logs-container"></select>
+    <select class="logs-container">{{range .Containers}}{{if .ID}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}</select>
     <input class="logs-filter" type="search" placeholder="Filter lines">
     <label><input class="logs-follow" type="checkbox" checked> Follow</label>
     <button class="logs-close" type="button">Close</button>

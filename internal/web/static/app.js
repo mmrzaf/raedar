@@ -34,9 +34,10 @@ function drawChart(target, series, unit, options = {}) {
     width: target.clientWidth || 600,
     height: options.height || 180,
     cursor: { sync: { key: options.syncKey || "raedar" }, points: { size: 6 } },
-    scales: { x: { time: true } },
+    scales: { x: { time: !options.hourly } },
     axes: [
-      { stroke: muted, grid: { stroke: text ? text + "11" : undefined }, ticks: { stroke: text ? text + "22" : undefined } },
+      { stroke: muted, grid: { stroke: text ? text + "11" : undefined }, ticks: { stroke: text ? text + "22" : undefined },
+        values: options.hourly ? (self, ticks) => ticks.map((tick) => `${String(Math.round(tick)).padStart(2, "0")}:00`) : undefined },
       { stroke: muted, grid: { stroke: text ? text + "11" : undefined }, ticks: { stroke: text ? text + "22" : undefined },
         values: (self, ticks) => ticks.map((tick) => unit === "bytes" ? number(tick) : unit === "percent" ? tick + "%" : number(tick)) },
     ],
@@ -72,12 +73,22 @@ async function drawAppCharts() {
     const latency = await fetchSeries([`app:${app}:p50`, `app:${app}:p95`, `app:${app}:p99`], from, to);
     const latencySeries = latency.series.map((entry, index) => ({ ...entry, label: entry.key.split(":")[2], color: palette[4 + index] }));
     drawChart(target("latency"), latencySeries, "ms");
-    const cpu = await fetchSeries([`slot:${app} / api #1:cpu`], from, to).catch(() => null);
-    if (cpu) drawChart(target("cpu"), cpu.series, "millicores");
-    const memory = await fetchSeries([`slot:${app} / api #1:memory`], from, to).catch(() => null);
-    if (memory) drawChart(target("memory"), memory.series, "bytes");
-    const network = await fetchSeries([`slot:${app} / api #1:net_rx`, `slot:${app} / api #1:net_tx`], from, to).catch(() => null);
-    if (network) drawChart(target("network"), network.series, "bytes");
+    const slots = (container.dataset.slots || "").split("|").filter(Boolean);
+    const slotKeys = (metric) => slots.map((slot) => `slot:${app} / ${slot}:${metric}`);
+    const withColors = (series, offset) => series.map((entry, index) => ({ ...entry, color: palette[(offset + index) % palette.length] }));
+    if (slots.length > 0) {
+      const cpu = await fetchSeries(slotKeys("cpu"), from, to);
+      drawChart(target("cpu"), withColors(cpu.series, 4), "millicores");
+      const memory = await fetchSeries(slotKeys("memory"), from, to);
+      drawChart(target("memory"), withColors(memory.series, 4), "bytes");
+      const rx = await fetchSeries(slotKeys("net_rx"), from, to);
+      const tx = await fetchSeries(slotKeys("net_tx"), from, to);
+      const network = [
+        ...rx.series.map((entry, index) => ({ ...entry, label: entry.label + " RX", color: palette[(4 + index) % palette.length] })),
+        ...tx.series.map((entry, index) => ({ ...entry, label: entry.label + " TX", color: palette[(4 + slots.length + index) % palette.length] })),
+      ];
+      drawChart(target("network"), network, "bytes");
+    }
   } catch (error) {
     console.error("charts:", error);
     container.insertAdjacentHTML("afterbegin", '<p class="empty">Chart data is unavailable for this range. Pick a shorter range or check the database.</p>');
@@ -127,14 +138,28 @@ async function drawPatterns() {
     const max = Math.max(1, ...patterns.heatmap.flat());
     patterns.heatmap.forEach((row, day) => {
       heatmap.insertAdjacentHTML("beforeend", `<span class="day">${days[day]}</span>`);
-      row.forEach((value) => {
+      row.forEach((value, hour) => {
         const alpha = Math.max(0.05, value / max);
-        heatmap.insertAdjacentHTML("beforeend", `<span title="${days[day]} ${String(row.indexOf(value)).padStart(2, "0")}:00 — ${number(value)}" style="background: color-mix(in srgb, var(--selected) ${Math.round(alpha * 100)}%, var(--grid))"></span>`);
+        heatmap.insertAdjacentHTML("beforeend", `<span title="${days[day]} ${String(hour).padStart(2, "0")}:00 — ${number(value)}" style="background: color-mix(in srgb, var(--selected) ${Math.round(alpha * 100)}%, var(--grid))"></span>`);
       });
     });
-    const profile = patterns.day_profile.map((value, hour) => [hour, value]);
-    drawChart(container.querySelector('[data-chart="profile"]'), [{ key: "profile", label: "average", points: profile }], "count");
-    drawChart(container.querySelector('[data-chart="trend"]'), [{ key: "trend", label: "trend", points: patterns.trend.map((entry) => [new Date(entry.day + "T00:00:00Z").getTime() / 1000, entry.value]) }], "count");
+    const parts = container.dataset.key.split(":");
+    const kind = parts[0];
+    const metric = parts[parts.length - 1];
+    const unit = metric === "error_rate" || metric === "used" ? "percent"
+      : ["p50", "p95", "p99"].includes(metric) ? "ms"
+        : ["memory", "swap", "net_rx", "net_tx"].includes(metric) ? "bytes"
+          : metric === "cpu" ? (kind === "host" ? "percent" : "millicores")
+            : metric === "load1" ? "load" : "count";
+    const hourly = (values) => (values || []).map((value, hour) => [hour, value]);
+    const { colors: palette } = colors();
+    drawChart(container.querySelector('[data-chart="profile"]'), [
+      { key: "recent", label: "last 7 days", color: palette[4], points: hourly(patterns.day_profile_recent) },
+      { key: "previous", label: "previous", color: palette[1], points: hourly(patterns.day_profile_previous) },
+    ], unit, { hourly: true, syncKey: "patterns" });
+    drawChart(container.querySelector('[data-chart="trend"]'), [
+      { key: "trend", label: "daily", points: (patterns.trend || []).map((entry) => [new Date(entry.day + "T00:00:00Z").getTime() / 1000, entry.value]) },
+    ], unit);
   } catch (error) {
     console.error("patterns:", error);
   }
