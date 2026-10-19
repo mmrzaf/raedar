@@ -146,11 +146,6 @@ func (s *Server) loadOverview(ctx context.Context) (*overviewData, error) {
 		}
 		data.Sources = append(data.Sources, view)
 	}
-	if model != nil {
-		if model.Traefik != nil {
-			data.Sources = append(data.Sources, sourceView{Name: "tls", Status: sourceStatus(states, "tlscheck")})
-		}
-	}
 	data.Sources = append(data.Sources, sourceView{Name: "database", Status: store.StatusOK})
 	open, err := s.store.OpenIncidents(ctx)
 	if err != nil {
@@ -197,16 +192,6 @@ func (s *Server) loadOverview(ctx context.Context) (*overviewData, error) {
 	}
 	_ = now2
 	return data, nil
-}
-
-// sourceStatus returns the recorded status of a source.
-func sourceStatus(states []store.SourceState, name string) string {
-	for _, state := range states {
-		if state.Source == name {
-			return state.Status
-		}
-	}
-	return store.StatusUnavailable
 }
 
 // appName returns the name of an app.
@@ -783,6 +768,8 @@ func hostMetric(metric string, entry store.HostBin) (float64, string) {
 		return entry.MemAvailableAvg, "bytes"
 	case "memory_min":
 		return entry.MemAvailableMin, "bytes"
+	case "swap":
+		return entry.SwapUsedAvg, "bytes"
 	}
 	return 0, "count"
 }
@@ -1017,30 +1004,45 @@ func (s *Server) patternsAPI(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	heatmap := make([][]float64, 7)
+	counts := make([][]float64, 7)
 	for day := range heatmap {
 		heatmap[day] = make([]float64, 24)
+		counts[day] = make([]float64, 24)
 	}
-	daySums := make([][]float64, 24)
-	dayCounts := make([]int, 24)
-	trend := make(map[string]float64)
-	gauge := key.metric == "cpu" || key.metric == "memory" || key.metric == "load1" || key.metric == "used"
+	var allSum, recentSum, previousSum [24]float64
+	var allCount, recentCount, previousCount [24]int
+	type dayAggregate struct {
+		sum, max float64
+		count    int
+	}
+	days := make(map[string]*dayAggregate)
+	recentCutoff := now.Add(-7 * 24 * time.Hour)
 	for _, bin := range bins {
 		local := bin.at.In(s.cfg.Location)
 		weekday := int(local.Weekday()+6) % 7
-		heatmap[weekday][local.Hour()] += bin.value
-		daySums[local.Hour()] = append(daySums[local.Hour()], bin.value)
-		dayCounts[local.Hour()]++
+		hour := local.Hour()
+		heatmap[weekday][hour] += bin.value
+		counts[weekday][hour]++
+		allSum[hour] += bin.value
+		allCount[hour]++
+		if bin.at.After(recentCutoff) {
+			recentSum[hour] += bin.value
+			recentCount[hour]++
+		} else {
+			previousSum[hour] += bin.value
+			previousCount[hour]++
+		}
 		day := local.Format("2006-01-02")
-		trend[day] += bin.value
-	}
-	// Average the heatmap over the number of occurrences of each slot.
-	counts := make([][]float64, 7)
-	for day := range counts {
-		counts[day] = make([]float64, 24)
-	}
-	for _, bin := range bins {
-		local := bin.at.In(s.cfg.Location)
-		counts[int(local.Weekday()+6)%7][local.Hour()]++
+		aggregate := days[day]
+		if aggregate == nil {
+			aggregate = &dayAggregate{}
+			days[day] = aggregate
+		}
+		aggregate.sum += bin.value
+		aggregate.count++
+		if bin.value > aggregate.max {
+			aggregate.max = bin.value
+		}
 	}
 	for day := range heatmap {
 		for hour := range heatmap[day] {
@@ -1049,33 +1051,48 @@ func (s *Server) patternsAPI(w http.ResponseWriter, request *http.Request) {
 			}
 		}
 	}
-	profile := make([]float64, 24)
-	for hour := range daySums {
-		profile[hour] = mean(daySums[hour])
+	average := func(sum [24]float64, count [24]int) []float64 {
+		profile := make([]float64, 24)
+		for hour := range profile {
+			if count[hour] > 0 {
+				profile[hour] = sum[hour] / float64(count[hour])
+			}
+		}
+		return profile
 	}
-	keys := make([]string, 0, len(trend))
-	for day := range trend {
-		keys = append(keys, day)
+	dayNames := make([]string, 0, len(days))
+	for day := range days {
+		dayNames = append(dayNames, day)
 	}
-	sort.Strings(keys)
+	sort.Strings(dayNames)
 	type trendPoint struct {
 		Day   string  `json:"day"`
 		Value float64 `json:"value"`
 	}
-	var trendPoints []trendPoint
-	for _, day := range keys {
-		value := trend[day]
-		if gauge {
-			// Gauges are averaged over the day.
-			value /= 24
+	dailyTotal := key.metric == "requests" || key.metric == "net_rx" || key.metric == "net_tx"
+	dailyMax := key.metric == "used"
+	trendPoints := make([]trendPoint, 0, len(dayNames))
+	for _, day := range dayNames {
+		aggregate := days[day]
+		value := aggregate.sum
+		switch {
+		case dailyMax:
+			value = aggregate.max
+		case dailyTotal:
+		default:
+			if aggregate.count > 0 {
+				value = aggregate.sum / float64(aggregate.count)
+			}
 		}
 		trendPoints = append(trendPoints, trendPoint{Day: day, Value: value})
 	}
 	writeJSON(w, map[string]any{
-		"key":         key.kind + ":" + key.subject + ":" + key.metric,
-		"heatmap":     heatmap,
-		"day_profile": profile,
-		"trend":       trendPoints,
+		"key":                  raw,
+		"heatmap":              heatmap,
+		"day_profile":          average(allSum, allCount),
+		"day_profile_recent":   average(recentSum, recentCount),
+		"day_profile_previous": average(previousSum, previousCount),
+		"trend":                trendPoints,
 	})
 }
 

@@ -298,24 +298,128 @@ func (s *Server) hostPage(w http.ResponseWriter, request *http.Request) {
 
 // patternsPage renders the patterns page.
 func (s *Server) patternsPage(w http.ResponseWriter, request *http.Request) {
-	model := s.model.Model()
-	var subjects []string
-	for _, name := range sortedKeys(model.Apps) {
-		subjects = append(subjects, "app:"+name)
-		for _, route := range model.Apps[name].Routes {
-			subjects = append(subjects, "route:"+route.Name)
-		}
-		for _, slot := range model.Apps[name].Slots {
-			subjects = append(subjects, "slot:"+name+" / "+slot.Key)
-		}
+	subjects := s.patternSubjects()
+	selected := request.URL.Query().Get("subject")
+	if !containsSubject(subjects, selected) {
+		selected = subjects[0].Value
 	}
-	subjects = append(subjects, "host:load1")
+	kind := patternKind(selected)
+	metrics := patternMetrics(kind)
+	metric := request.URL.Query().Get("metric")
+	if !containsString(metrics, metric) {
+		metric = metrics[0]
+	}
 	weeks := parseInt(request.URL.Query().Get("weeks"), 4)
+	if weeks < 1 || weeks > 52 {
+		weeks = 4
+	}
 	s.render(w, "patterns.html", map[string]any{
 		"Page": pageData{Title: "Patterns", HostName: s.cfg.HostName, Now: s.clock.Now(), Version: s.version,
 			Sources: s.sourceViews(request), Nav: "patterns", Location: s.cfg.Location},
-		"Subjects": subjects, "Weeks": weeks, "Key": request.URL.Query().Get("key"),
+		"Subjects": subjects, "Metrics": metrics, "Subject": selected, "Metric": metric,
+		"Weeks": weeks, "Key": patternKey(selected, metric),
 	})
+}
+
+// patternSubject is one choice in the patterns picker.
+type patternSubject struct {
+	// Label is the shown label.
+	Label string
+	// Value is the encoded subject, kind:subject.
+	Value string
+	// Kind is app, route, slot, host or disk.
+	Kind string
+}
+
+// patternSubjects returns the subjects the patterns page can chart.
+func (s *Server) patternSubjects() []patternSubject {
+	model := s.model.Model()
+	var subjects []patternSubject
+	if model != nil {
+		for _, name := range sortedKeys(model.Apps) {
+			app := model.Apps[name]
+			subjects = append(subjects, patternSubject{Label: "app: " + name, Value: "app:" + name, Kind: "app"})
+			routeNames := make([]string, 0, len(app.Routes))
+			for routeName := range app.Routes {
+				routeNames = append(routeNames, routeName)
+			}
+			sort.Strings(routeNames)
+			for _, routeName := range routeNames {
+				subjects = append(subjects, patternSubject{Label: "route: " + routeName, Value: "route:" + routeName, Kind: "route"})
+			}
+			slotKeys := make([]string, 0, len(app.Slots))
+			for slotKey := range app.Slots {
+				slotKeys = append(slotKeys, slotKey)
+			}
+			sort.Strings(slotKeys)
+			for _, slotKey := range slotKeys {
+				subjects = append(subjects, patternSubject{
+					Label: "slot: " + name + " / " + slotKey,
+					Value: "slot:" + name + " / " + slotKey,
+					Kind:  "slot",
+				})
+			}
+		}
+	}
+	subjects = append(subjects, patternSubject{Label: "host: " + s.cfg.HostName, Value: "host:", Kind: "host"})
+	for _, disk := range s.cfg.Host.Disks {
+		subjects = append(subjects, patternSubject{Label: "disk: " + disk.Name, Value: "disk:" + disk.Name, Kind: "disk"})
+	}
+	return subjects
+}
+
+// patternKind returns the kind of an encoded subject.
+func patternKind(subject string) string {
+	kind, _, _ := strings.Cut(subject, ":")
+	return kind
+}
+
+// patternMetrics returns the metrics of one subject kind.
+func patternMetrics(kind string) []string {
+	switch kind {
+	case "app", "route":
+		return []string{"requests", "error_rate", "p95", "p50", "p99"}
+	case "slot":
+		return []string{"cpu", "memory", "net_rx", "net_tx"}
+	case "host":
+		return []string{"cpu", "load1", "memory", "swap"}
+	case "disk":
+		return []string{"used", "inodes"}
+	}
+	return []string{"requests"}
+}
+
+// patternKey builds a series key from an encoded subject and a metric.
+func patternKey(subject, metric string) string {
+	kind, rest, _ := strings.Cut(subject, ":")
+	switch kind {
+	case "host":
+		return "host:" + metric
+	case "disk":
+		return "disk:" + rest + ":" + metric
+	default:
+		return kind + ":" + rest + ":" + metric
+	}
+}
+
+// containsSubject reports whether the encoded subject is in the list.
+func containsSubject(subjects []patternSubject, value string) bool {
+	for _, subject := range subjects {
+		if subject.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+// containsString reports whether value is in values.
+func containsString(values []string, value string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 // eventsPage renders the events page.
