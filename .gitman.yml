@@ -1,0 +1,121 @@
+# raedar on Gitman. A v* tag, which must match VERSION, builds
+# raedar:<version> on the host's Docker and deploys it to production.
+# A branch runs nothing. GitHub is only a mirror and publishes the same
+# version independently.
+#
+# Ref rule: v* tags need run, docker and managed deployment.
+image: docker:29-cli
+docker: true
+requires:
+  - golang:1.27-alpine
+
+env:
+  DOCKER_BUILDKIT: "1"
+  BUILDKIT_PROGRESS: plain
+  GO_IMAGE: golang:1.27-alpine
+  GOPROXY: https://mirror.abrha.net/repository/go/,direct
+
+targets:
+  production:
+    tag: "v*"
+    env:
+      DEPLOY_DIR: /srv/apps/raedar
+
+steps:
+  - name: check the tag matches VERSION
+    when: tag
+    run: |
+      set -eu
+      tagged="${GITMAN_REF#v}"
+      version="$(cat VERSION)"
+      case "$tagged" in
+        "$version"|"$version"-*) ;;
+        *)
+          echo "Tag $GITMAN_REF does not match VERSION $version" >&2
+          exit 1
+          ;;
+      esac
+
+  - name: build image
+    when: tag
+    run: |
+      set -eu
+      version="$(cat VERSION)"
+      image="raedar:$version"
+      docker build \
+        --pull=false \
+        --build-arg GO_IMAGE="$GO_IMAGE" \
+        --build-arg GOPROXY="$GOPROXY" \
+        --build-arg VERSION="$version" \
+        --label "org.opencontainers.image.title=raedar" \
+        --label "org.opencontainers.image.revision=$GITMAN_COMMIT" \
+        --label "org.opencontainers.image.ref.name=$GITMAN_REF" \
+        --label "org.opencontainers.image.version=$version" \
+        --tag "$image" \
+        .
+      echo "image=$image" >> "$GITMAN_SUMMARY"
+
+  - name: check image
+    when: tag
+    run: |
+      set -eu
+      version="$(cat VERSION)"
+      image="raedar:$version"
+      test "$(docker run --rm --pull never "$image" version)" = "raedar $version"
+      revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+      test "$revision" = "$GITMAN_COMMIT"
+
+  - name: deploy
+    type: deploy
+    when: production
+    run: |
+      set -eu
+      version="$(cat VERSION)"
+      image="raedar:$version"
+      compose="$(cat deploy/docker-compose.yml)"
+      readme="$(cat deploy/README.md)"
+      env_example="$(cat deploy/.env.example)"
+      init_sql="$(cat deploy/db/init.sql)"
+      docker run --rm --pull never \
+        --network host \
+        --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+        --mount type=bind,src=/srv,dst=/srv \
+        --env DOCKER_HOST=unix:///var/run/docker.sock \
+        --env DEPLOY_DIR="$DEPLOY_DIR" \
+        --env IMAGE_REF="$image" \
+        --env COMPOSE_CONTENT="$compose" \
+        --env README_CONTENT="$readme" \
+        --env ENV_EXAMPLE_CONTENT="$env_example" \
+        --env INIT_SQL_CONTENT="$init_sql" \
+        docker:29-cli sh -c '
+          set -eu
+          if [ ! -f "$DEPLOY_DIR/.env" ]; then
+            echo "Missing $DEPLOY_DIR/.env; create it from .env.example first" >&2
+            exit 1
+          fi
+          mkdir -p "$DEPLOY_DIR/db"
+          printf "%s\n" "$COMPOSE_CONTENT" > "$DEPLOY_DIR/docker-compose.yml"
+          printf "%s\n" "$README_CONTENT" > "$DEPLOY_DIR/README.md"
+          printf "%s\n" "$ENV_EXAMPLE_CONTENT" > "$DEPLOY_DIR/.env.example"
+          printf "%s\n" "$INIT_SQL_CONTENT" > "$DEPLOY_DIR/db/init.sql"
+          if grep -q "^APP_IMAGE=" "$DEPLOY_DIR/.env"; then
+            sed -i "s#^APP_IMAGE=.*#APP_IMAGE=$IMAGE_REF#" "$DEPLOY_DIR/.env"
+          else
+            printf "APP_IMAGE=%s\n" "$IMAGE_REF" >> "$DEPLOY_DIR/.env"
+          fi
+          docker image inspect "$IMAGE_REF" >/dev/null
+          docker compose \
+            --project-name raedar \
+            --project-directory "$DEPLOY_DIR" \
+            --env-file "$DEPLOY_DIR/.env" \
+            -f "$DEPLOY_DIR/docker-compose.yml" \
+            up -d --no-build --pull never --remove-orphans --wait --wait-timeout 120
+        '
+      echo "version=$version" >> "$GITMAN_SUMMARY"
+
+  - name: verify
+    when: production
+    run: |
+      set -eu
+      docker exec raedar raedar healthcheck
+      docker exec raedar raedar check

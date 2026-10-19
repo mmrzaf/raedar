@@ -1,0 +1,68 @@
+# Raedar behind the host's Traefik, on the shared Postgres and through the
+# socket proxy. See README.md for the first deploy and the update process.
+#
+# The application image is pinned in .env as APP_IMAGE and is rewritten by the
+# Gitman deploy step on every release.
+services:
+  raedar:
+    image: ${APP_IMAGE:?APP_IMAGE missing}
+    container_name: raedar
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=16m
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 256
+    env_file: .env
+    environment:
+      # Composed from the database settings in .env.
+      RAEDAR_DATABASE_URL: postgres://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${APP_DB_NAME}?sslmode=disable
+      RAEDAR_DOCKER_HOST: tcp://socket-proxy:2375
+      RAEDAR_HOST_ROOT: /host/root
+    volumes:
+      - /:/host/root:ro
+      - /srv/logs/traefik:/logs:ro
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/raedar", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks:
+      - proxy
+      - socket
+      - data
+      - egress
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: proxy
+      traefik.http.services.raedar.loadbalancer.server.port: "8080"
+      traefik.http.routers.raedar.rule: Host(`${APP_DOMAIN:?APP_DOMAIN missing}`)
+      traefik.http.routers.raedar.entrypoints: websecure
+      traefik.http.routers.raedar.tls: "true"
+      traefik.http.routers.raedar.middlewares: security-headers@file,arvancloud-only@file,admin-auth@file
+
+networks:
+  proxy:
+    external: true
+  socket:
+    external: true
+  data:
+    external: true
+  egress:
+    external: true
+    name: zld_panel_egress
