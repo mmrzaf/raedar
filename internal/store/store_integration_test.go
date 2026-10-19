@@ -5,31 +5,15 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mmrzaf/raedar/internal/testdb"
 )
-
-// testURL returns the disposable test database URL.
-func testURL(t *testing.T) string {
-	t.Helper()
-	databaseURL := os.Getenv("RAEDAR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("RAEDAR_TEST_DATABASE_URL is not set")
-	}
-	return databaseURL
-}
-
-// newSchemaName returns a schema name that is unique per test.
-func newSchemaName() string {
-	return fmt.Sprintf("raedar_test_%d", time.Now().UnixNano())
-}
 
 // connect opens a single connection to the database.
 func connect(t *testing.T, databaseURL string) *pgx.Conn {
@@ -39,19 +23,6 @@ func connect(t *testing.T, databaseURL string) *pgx.Conn {
 		t.Fatalf("connect to PostgreSQL: %v", err)
 	}
 	return conn
-}
-
-// withSearchPath returns the URL with search_path set to schema.
-func withSearchPath(t *testing.T, databaseURL, schema string) string {
-	t.Helper()
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", databaseURL, err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
 }
 
 // withDatabase returns the URL with its database replaced by name.
@@ -65,35 +36,12 @@ func withDatabase(t *testing.T, databaseURL, name string) string {
 	return parsed.String()
 }
 
-// createSchema creates one schema for a test.
-func createSchema(t *testing.T, databaseURL, schema string) {
-	t.Helper()
-	admin := connect(t, databaseURL)
-	defer admin.Close(context.Background())
-	if _, err := admin.Exec(context.Background(), "create schema "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatalf("create schema %s: %v", schema, err)
-	}
-}
-
-// dropSchema removes a schema and everything in it.
-func dropSchema(t *testing.T, databaseURL, schema string) {
-	t.Helper()
-	admin := connect(t, databaseURL)
-	defer admin.Close(context.Background())
-	if _, err := admin.Exec(context.Background(), "drop schema "+pgx.Identifier{schema}.Sanitize()+" cascade"); err != nil {
-		t.Errorf("drop schema %s: %v", schema, err)
-	}
-}
-
 // newStore returns a store on a fresh schema that is dropped when the test
 // ends.
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	databaseURL := testURL(t)
-	schema := newSchemaName()
-	createSchema(t, databaseURL, schema)
-	t.Cleanup(func() { dropSchema(t, databaseURL, schema) })
-	st, err := Open(context.Background(), withSearchPath(t, databaseURL, schema), discardLogger())
+	databaseURL, schema := testdb.NewSchema(t, "store")
+	st, err := Open(context.Background(), testdb.WithSearchPath(t, databaseURL, schema), discardLogger())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -178,8 +126,16 @@ func TestMigrateAppliesToEmptyDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect versions: %v", err)
 	}
-	if !reflect.DeepEqual(versions, []int{1}) {
-		t.Errorf("schema_migrations = %v, want [1]", versions)
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations() error = %v", err)
+	}
+	want := make([]int, 0, len(migrations))
+	for _, m := range migrations {
+		want = append(want, m.version)
+	}
+	if !reflect.DeepEqual(versions, want) {
+		t.Errorf("schema_migrations = %v, want every embedded migration %v", versions, want)
 	}
 	rows, err = st.pool.Query(ctx, `select table_name from information_schema.tables
 		where table_schema = current_schema() order by table_name`)
@@ -223,8 +179,12 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := st.pool.QueryRow(ctx, "select count(*) from schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("schema_migrations rows = %d, want 1", count)
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations() error = %v", err)
+	}
+	if count != len(migrations) {
+		t.Errorf("schema_migrations rows = %d, want one per migration (%d)", count, len(migrations))
 	}
 }
 
@@ -313,7 +273,7 @@ func TestHistogramSumAggregate(t *testing.T) {
 }
 
 func TestInstanceLock(t *testing.T) {
-	lockInstanceTests(t, testURL(t))
+	lockInstanceTests(t, testdb.URL(t))
 	ctx := context.Background()
 	first := newStore(t)
 	second := newStore(t)
@@ -330,7 +290,7 @@ func TestInstanceLock(t *testing.T) {
 }
 
 func TestKeepLockReacquiresAfterDisconnect(t *testing.T) {
-	lockInstanceTests(t, testURL(t))
+	lockInstanceTests(t, testdb.URL(t))
 	ctx := context.Background()
 	st := newStore(t)
 	if err := st.Lock(ctx); err != nil {
@@ -340,7 +300,7 @@ func TestKeepLockReacquiresAfterDisconnect(t *testing.T) {
 	if err := st.lockConn.QueryRow(ctx, "select pg_backend_pid()").Scan(&pid); err != nil {
 		t.Fatalf("read backend pid: %v", err)
 	}
-	terminateBackend(t, testURL(t), pid)
+	terminateBackend(t, testdb.URL(t), pid)
 	if err := st.KeepLock(ctx); err != nil {
 		t.Fatalf("KeepLock() error = %v, want the lock taken again", err)
 	}
@@ -351,9 +311,9 @@ func TestKeepLockReacquiresAfterDisconnect(t *testing.T) {
 }
 
 func TestKeepLockReportsLockTakenByAnotherInstance(t *testing.T) {
-	lockInstanceTests(t, testURL(t))
+	lockInstanceTests(t, testdb.URL(t))
 	ctx := context.Background()
-	databaseURL := testURL(t)
+	databaseURL := testdb.URL(t)
 	st := newStore(t)
 	if err := st.Lock(ctx); err != nil {
 		t.Fatalf("Lock() error = %v", err)
@@ -385,7 +345,7 @@ func TestOpenFailsWhenUnreachable(t *testing.T) {
 }
 
 func TestOpenStopsWhenDatabaseIsMissing(t *testing.T) {
-	databaseURL := withDatabase(t, testURL(t), "raedar_missing_database")
+	databaseURL := withDatabase(t, testdb.URL(t), "raedar_missing_database")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	start := time.Now()
@@ -395,5 +355,141 @@ func TestOpenStopsWhenDatabaseIsMissing(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("Open() took %v, want a fast failure", elapsed)
+	}
+}
+
+func TestLatestEventByApp(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	var shop, blog int64
+	for name, id := range map[string]*int64{"shop": &shop, "blog": &blog} {
+		if err := st.pool.QueryRow(ctx,
+			`insert into apps (name, first_seen, last_seen) values ($1, now(), now()) returning id`, name).Scan(id); err != nil {
+			t.Fatalf("insert app: %v", err)
+		}
+	}
+	base := time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC)
+	add := func(app *int64, kind EventKind, at time.Time) {
+		t.Helper()
+		if _, err := st.AddEvent(ctx, Event{TS: at, Kind: kind, Severity: "info", AppID: app, Subject: "x", Title: string(kind), Data: []byte("{}")}); err != nil {
+			t.Fatalf("AddEvent() error = %v", err)
+		}
+	}
+	add(&shop, EventDeploy, base)
+	add(&shop, EventRecreated, base.Add(48*time.Hour))
+	add(&shop, EventCrashed, base.Add(96*time.Hour))
+	add(nil, EventDeploy, base.Add(120*time.Hour))
+	latest, err := st.LatestEventByApp(ctx, EventDeploy, EventRecreated)
+	if err != nil {
+		t.Fatalf("LatestEventByApp() error = %v", err)
+	}
+	if got := latest[shop]; !got.Equal(base.Add(48 * time.Hour)) {
+		t.Errorf("latest[shop] = %v, want the recreate at %v", got, base.Add(48*time.Hour))
+	}
+	if _, ok := latest[blog]; ok {
+		t.Errorf("latest has the blog app, which has no matching event: %v", latest)
+	}
+	if len(latest) != 1 {
+		t.Errorf("latest = %v, want only the shop app", latest)
+	}
+}
+
+func TestAddDeliveryAcceptsEveryKind(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	for _, kind := range []DeliveryKind{DeliveryOpened, DeliveryEscalated, DeliveryResolved, DeliveryDigest, DeliveryTest} {
+		_, err := st.AddDelivery(ctx, Delivery{Kind: kind, Channel: "telegram", CreatedAt: time.Now(), Status: "pending"})
+		if err != nil {
+			t.Errorf("AddDelivery(%s) error = %v", kind, err)
+		}
+	}
+}
+
+func TestAppStatsAcrossApps(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	shop := insertRoute(t, st, "shop@docker")
+	blog := insertRoute(t, st, "blog@docker")
+	var shopApp, blogApp int64
+	for _, row := range []struct {
+		route int64
+		app   *int64
+	}{{shop, &shopApp}, {blog, &blogApp}} {
+		if err := st.pool.QueryRow(ctx, `select app_id from routes where id = $1`, row.route).Scan(row.app); err != nil {
+			t.Fatalf("read app of route: %v", err)
+		}
+	}
+	base := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	for _, minute := range []struct {
+		route    int64
+		at       time.Time
+		requests int64
+		s5xx     int64
+	}{
+		{shop, base, 10, 1}, {shop, base.Add(time.Minute), 20, 2}, {blog, base, 5, 0},
+		{shop, base.Add(3 * time.Hour), 99, 9}, // outside the range
+	} {
+		if err := st.FlushBuckets(ctx, Flush{Minutes: []RouteMinute{{
+			RouteID: minute.route, TS: minute.at, Requests: minute.requests, S5xx: minute.s5xx, Latency: make([]int32, Buckets),
+		}}}); err != nil {
+			t.Fatalf("FlushBuckets() error = %v", err)
+		}
+	}
+	stats, err := st.AppMinuteStats(ctx, base, base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("AppMinuteStats() error = %v", err)
+	}
+	if len(stats) != 2 || stats[shopApp].Requests != 30 || stats[shopApp].S5xx != 3 || stats[blogApp].Requests != 5 {
+		t.Errorf("stats = %+v, want 30 requests for shop, 5 for blog", stats)
+	}
+	for _, hour := range []struct {
+		route int64
+		at    time.Time
+		count int64
+	}{{shop, base, 7}, {shop, base.Add(time.Hour), 8}, {blog, base, 1}} {
+		if _, err := st.pool.Exec(ctx, `insert into route_hour (route_id, ts, requests) values ($1, $2, $3)`, hour.route, hour.at, hour.count); err != nil {
+			t.Fatalf("insert route_hour: %v", err)
+		}
+	}
+	hourly, err := st.AppHourlyRequests(ctx, base)
+	if err != nil {
+		t.Fatalf("AppHourlyRequests() error = %v", err)
+	}
+	if hourly[shopApp][base] != 7 || hourly[shopApp][base.Add(time.Hour)] != 8 || hourly[blogApp][base] != 1 {
+		t.Errorf("hourly = %v, want the seeded hours per app", hourly)
+	}
+	if _, ok := hourly[shopApp][base.Add(-time.Hour)]; ok {
+		t.Error("an hour before from was returned")
+	}
+}
+
+func TestLatestEvents(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	base := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		if _, err := st.AddEvent(ctx, Event{TS: base.Add(time.Duration(i) * time.Minute), Kind: EventStarted, Severity: SeverityInfo,
+			Subject: "x", Title: "t", Data: []byte("{}")}); err != nil {
+			t.Fatalf("AddEvent() error = %v", err)
+		}
+	}
+	events, err := st.LatestEvents(ctx, 3)
+	if err != nil {
+		t.Fatalf("LatestEvents() error = %v", err)
+	}
+	if len(events) != 3 || !events[0].TS.Equal(base.Add(4*time.Minute)) || !events[2].TS.Equal(base.Add(2*time.Minute)) {
+		t.Errorf("events = %+v, want the newest three, newest first", events)
 	}
 }

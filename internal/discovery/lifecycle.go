@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/docker"
+	"github.com/mmrzaf/raedar/internal/store"
 )
 
 // intentionalWindow is how long a kill or stop event makes a die event
@@ -17,7 +18,7 @@ const stopGrace = time.Second
 // LifecycleEvent is one event derived from the Docker event stream.
 type LifecycleEvent struct {
 	// Kind is crashed, stopped, started, health or removed.
-	Kind string
+	Kind store.EventKind
 	// ContainerID is the Docker container ID.
 	ContainerID string
 	// Name is the container name.
@@ -32,6 +33,8 @@ type LifecycleEvent struct {
 	Health string
 	// Time is when the event happened.
 	Time time.Time
+	// Labels are the container's labels as the Docker event carries them.
+	Labels map[string]string
 }
 
 // pendingDie is a die event that waits for a stop that follows it.
@@ -76,36 +79,41 @@ func (c *classifier) Feed(event docker.Event) []LifecycleEvent {
 			return []LifecycleEvent{stoppedEvent(event)}
 		}
 		c.pending[event.ID] = pendingDie{event: event, deadline: event.Time.Add(c.grace)}
-	case "start", "restart":
+	case "start":
+		// A restart emits start followed by restart; counting both would
+		// record every restart twice.
 		return []LifecycleEvent{{
-			Kind:        "started",
+			Kind:        store.EventStarted,
 			ContainerID: event.ID,
 			Name:        event.Name,
 			ImageRef:    event.Image,
 			Time:        event.Time,
+			Labels:      event.Attributes,
 		}}
 	case "health_status":
 		if event.Health == "" {
 			return nil
 		}
 		return []LifecycleEvent{{
-			Kind:        "health",
+			Kind:        store.EventHealth,
 			ContainerID: event.ID,
 			Name:        event.Name,
 			ImageRef:    event.Image,
 			Health:      event.Health,
 			Time:        event.Time,
+			Labels:      event.Attributes,
 		}}
 	case "oom":
 		c.oom[event.ID] = event.Time
 	case "destroy":
 		delete(c.pending, event.ID)
 		return []LifecycleEvent{{
-			Kind:        "removed",
+			Kind:        store.EventRemoved,
 			ContainerID: event.ID,
 			Name:        event.Name,
 			ImageRef:    event.Image,
 			Time:        event.Time,
+			Labels:      event.Attributes,
 		}}
 	}
 	return nil
@@ -140,25 +148,27 @@ func (c *classifier) classifyDie(event docker.Event) (LifecycleEvent, bool) {
 		return LifecycleEvent{}, false
 	}
 	return LifecycleEvent{
-		Kind:        "crashed",
+		Kind:        store.EventCrashed,
 		ContainerID: event.ID,
 		Name:        event.Name,
 		ImageRef:    event.Image,
 		ExitCode:    event.ExitCode,
 		OOMKilled:   recent(c.oom[event.ID], event.Time),
 		Time:        event.Time,
+		Labels:      event.Attributes,
 	}, true
 }
 
 // stoppedEvent returns the stopped event of an intentional die.
 func stoppedEvent(die docker.Event) LifecycleEvent {
 	return LifecycleEvent{
-		Kind:        "stopped",
+		Kind:        store.EventStopped,
 		ContainerID: die.ID,
 		Name:        die.Name,
 		ImageRef:    die.Image,
 		ExitCode:    die.ExitCode,
 		Time:        die.Time,
+		Labels:      die.Attributes,
 	}
 }
 

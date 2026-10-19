@@ -69,8 +69,8 @@ flowchart LR
 | Docker disk usage | every 15 minutes |
 | systemd units | every 60 seconds |
 | TLS checks | every 6 hours per domain (with jitter), and right after a new domain appears |
-| Rule evaluation | every 60 seconds, 15 seconds after the minute flush |
-| Hourly rollup | every hour at :05, recomputing the last 3 hours |
+| Rule evaluation | every 60 seconds, 15 seconds after the minute boundary; it also reads the aggregator's buckets that are not written yet |
+| Hourly rollup | every local hour at :05, recomputing the last 3 complete local hours |
 | Baselines | after each hourly rollup |
 | Retention cleanup | once a day |
 | Digest | once a day at `RAEDAR_DIGEST_AT` |
@@ -88,7 +88,7 @@ Container, host and systemd samples are written directly by their collectors onc
 
 ## Time
 
-All timestamps are stored in UTC. `RAEDAR_TZ` sets the time zone used for hour-of-day baselines, heatmaps, the digest and display, because traffic patterns follow people's local time.
+All timestamps are stored in UTC. `RAEDAR_TZ` sets the time zone used for hour-of-day baselines, heatmaps, the digest and display, because traffic patterns follow people's local time. Hourly rollups, baselines, heatmaps and day profiles use local hour boundaries, so zones with half-hour offsets such as `Asia/Tehran` are exact.
 
 ## Startup and shutdown
 
@@ -97,12 +97,11 @@ On start, Raedar:
 1. Loads and validates configuration. Invalid configuration stops the process with a clear message.
 2. Connects to PostgreSQL, retrying until it is reachable.
 3. Applies pending migrations under an advisory lock.
-4. Loads open incidents and source positions.
-5. Runs a full discovery pass, then starts every source.
-6. Starts the web server.
-7. Starts rule evaluation after the first complete minute. Incidents that were open before the restart stay open, and resolve normally if their condition is no longer true.
+4. Loads the persisted apps, slots and routes, so that the access log can attribute its first lines even before Docker answers.
+5. Starts the web server and every source. The first discovery pass runs at once in the background; the sources do not wait for it, and each keeps working when another is unavailable.
+6. Starts rule evaluation after the first complete minute. Incidents that were open before the restart stay open, and resolve normally if their condition is no longer true.
 
-On SIGTERM it stops the sources, flushes open buckets with their positions, finishes in-flight notifications for up to 10 seconds and exits.
+On SIGTERM it stops the sources, flushes open buckets with their positions (waiting up to 10 seconds) and exits. A notification that is being retried at that moment is not sent after the restart.
 
 ## Degraded operation
 

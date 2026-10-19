@@ -26,7 +26,7 @@ Start with the [overview](docs/overview.md), or see [all documents](docs/README.
 
 ## Status
 
-Raedar is in early development and has no release yet. The design is described in [docs](docs/README.md).
+Raedar is in early development. The design is described in [docs](docs/README.md), and the [changelog](CHANGELOG.md) lists what changed in each release.
 
 ## License
 

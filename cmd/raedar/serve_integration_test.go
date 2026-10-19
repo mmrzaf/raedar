@@ -7,8 +7,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,17 +17,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mmrzaf/raedar/internal/testdb"
 )
-
-// testDatabaseURL returns the disposable test database URL.
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	databaseURL := os.Getenv("RAEDAR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("RAEDAR_TEST_DATABASE_URL is not set")
-	}
-	return databaseURL
-}
 
 // childEnv returns the environment without RAEDAR_ variables, plus extra.
 func childEnv(extra map[string]string) []string {
@@ -44,48 +33,6 @@ func childEnv(extra map[string]string) []string {
 		env = append(env, name+"="+value)
 	}
 	return env
-}
-
-// withSearchPath returns the URL with search_path set to schema.
-func withSearchPath(t *testing.T, databaseURL, schema string) string {
-	t.Helper()
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", databaseURL, err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
-}
-
-// createSchema creates one schema for a test.
-func createSchema(t *testing.T, databaseURL, schema string) {
-	t.Helper()
-	ctx := context.Background()
-	admin, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to PostgreSQL: %v", err)
-	}
-	defer admin.Close(ctx)
-	if _, err := admin.Exec(ctx, "create schema "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatalf("create schema %s: %v", schema, err)
-	}
-}
-
-// dropSchema removes a schema and everything in it.
-func dropSchema(t *testing.T, databaseURL, schema string) {
-	t.Helper()
-	ctx := context.Background()
-	admin, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Errorf("connect to PostgreSQL: %v", err)
-		return
-	}
-	defer admin.Close(ctx)
-	if _, err := admin.Exec(ctx, "drop schema "+pgx.Identifier{schema}.Sanitize()+" cascade"); err != nil {
-		t.Errorf("drop schema %s: %v", schema, err)
-	}
 }
 
 // buildBinary builds the raedar binary for the tests in this file.
@@ -126,14 +73,11 @@ func lockInstanceTests(t *testing.T, databaseURL string) {
 }
 
 func TestServeRunsHoldsTheLockAndStopsOnSignal(t *testing.T) {
-	databaseURL := testDatabaseURL(t)
+	databaseURL, schema := testdb.NewSchema(t, "serve")
 	lockInstanceTests(t, databaseURL)
 	binary := buildBinary(t)
-	schema := fmt.Sprintf("raedar_serve_%d", time.Now().UnixNano())
-	createSchema(t, databaseURL, schema)
-	t.Cleanup(func() { dropSchema(t, databaseURL, schema) })
 	env := childEnv(map[string]string{
-		"RAEDAR_DATABASE_URL": withSearchPath(t, databaseURL, schema),
+		"RAEDAR_DATABASE_URL": testdb.WithSearchPath(t, databaseURL, schema),
 		"RAEDAR_HOST_NAME":    "test-host",
 	})
 

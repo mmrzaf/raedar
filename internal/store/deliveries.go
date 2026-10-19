@@ -16,8 +16,8 @@ type Delivery struct {
 	// IncidentID is the incident the delivery belongs to; nil for a digest or
 	// a test.
 	IncidentID *int64
-	// Kind is opened, resolved, digest or test.
-	Kind string
+	// Kind is what the delivery carries.
+	Kind DeliveryKind
 	// Channel is the channel the message is delivered through.
 	Channel string
 	// CreatedAt is when the delivery was created.

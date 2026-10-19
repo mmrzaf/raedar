@@ -6,7 +6,6 @@ package discovery
 import (
 	"log/slog"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -34,8 +33,6 @@ type App struct {
 	ID int64
 	// Name is the app name.
 	Name string
-	// Hidden reports whether every container carries raedar.ignore=true.
-	Hidden bool
 	// Critical reports whether the app's availability incidents are
 	// critical.
 	Critical bool
@@ -83,13 +80,13 @@ type Container struct {
 	ImageID string
 	// Labels are the container labels.
 	Labels map[string]string
-	// AppName is the app the container belongs to.
-	AppName string
-	// SlotKey is the key of the slot the container fills.
-	SlotKey string
-	// App is the app the container belongs to.
+	// Identity is where the container's labels say it belongs.
+	Identity identity
+	// App is the app the container belongs to; nil for containers that are
+	// not tracked (ignored and one-off containers).
 	App *App
-	// Slot is the slot the container fills.
+	// Slot is the slot the container fills; nil for containers that are not
+	// tracked.
 	Slot *Slot
 	// State is created, running, paused, restarting, exited or dead.
 	State string
@@ -113,8 +110,13 @@ type Container struct {
 	// StartedAt is when the container last started; the zero time when it
 	// never started.
 	StartedAt time.Time
-	// Ignored reports whether the container carries raedar.ignore=true.
-	Ignored bool
+}
+
+// Finished reports whether the container is a job that ran to completion: it
+// exited with code 0 and is not meant to be restarted, like a migration
+// service. Such a container being stopped is not a problem.
+func (c *Container) Finished() bool {
+	return c.State == "exited" && c.ExitCode == 0 && (c.RestartPolicy == "no" || c.RestartPolicy == "")
 }
 
 // Route is one Traefik router.
@@ -165,6 +167,7 @@ const (
 	labelComposeProject = "com.docker.compose.project"
 	labelComposeService = "com.docker.compose.service"
 	labelComposeNumber  = "com.docker.compose.container-number"
+	labelComposeOneOff  = "com.docker.compose.oneoff"
 	labelTraefikEnable  = "traefik.enable"
 )
 
@@ -186,8 +189,11 @@ func build(inspected []docker.ContainerInspect, traefikName, selfHostname string
 	}
 	sort.Slice(containers, func(i, j int) bool { return containers[i].ID < containers[j].ID })
 	for _, container := range containers {
-		app := model.app(container.AppName)
-		slot := app.slot(container.SlotKey, container)
+		if !container.Identity.Tracked() {
+			continue
+		}
+		app := model.app(container.Identity.App)
+		slot := app.slot(container.Identity)
 		container.App = app
 		container.Slot = slot
 		if slot.Container == nil || slot.Container.CreatedAt.Before(container.CreatedAt) {
@@ -198,7 +204,7 @@ func build(inspected []docker.ContainerInspect, traefikName, selfHostname string
 		resolveAppLabels(app, containers, logger)
 	}
 	for _, container := range containers {
-		if container.Ignored {
+		if container.App == nil {
 			continue
 		}
 		for _, route := range routesFromLabels(container.Labels) {
@@ -231,20 +237,13 @@ func (m *Model) app(name string) *App {
 	return app
 }
 
-// slot returns the slot with this key, creating it when needed.
-func (a *App) slot(key string, container *Container) *Slot {
-	if slot, ok := a.Slots[key]; ok {
+// slot returns the slot of an identity, creating it when needed.
+func (a *App) slot(id identity) *Slot {
+	if slot, ok := a.Slots[id.SlotKey]; ok {
 		return slot
 	}
-	service := container.Labels[labelComposeService]
-	replica := 1
-	if service == "" {
-		service = container.Name
-	} else if number, err := strconv.Atoi(container.Labels[labelComposeNumber]); err == nil && number > 0 {
-		replica = number
-	}
-	slot := &Slot{App: a, Key: key, Service: service, Replica: replica}
-	a.Slots[key] = slot
+	slot := &Slot{App: a, Key: id.SlotKey, Service: id.Service, Replica: id.Replica}
+	a.Slots[id.SlotKey] = slot
 	return slot
 }
 
@@ -256,8 +255,7 @@ func newContainer(inspect docker.ContainerInspect) *Container {
 		ImageRef:      inspect.ImageRef,
 		ImageID:       inspect.ImageID,
 		Labels:        inspect.Labels,
-		AppName:       appName(inspect),
-		SlotKey:       slotKey(inspect),
+		Identity:      identify(inspect.Name, inspect.Labels),
 		State:         inspect.State,
 		Health:        inspect.Health,
 		ExitCode:      inspect.ExitCode,
@@ -268,31 +266,7 @@ func newContainer(inspect docker.ContainerInspect) *Container {
 		Ports:         inspect.Ports,
 		CreatedAt:     inspect.Created,
 		StartedAt:     inspect.StartedAt,
-		Ignored:       isTrue(inspect.Labels[labelIgnore]),
 	}
-}
-
-// appName returns the app a container belongs to: the raedar.app label, the
-// Compose project, or the container name.
-func appName(inspect docker.ContainerInspect) string {
-	if name := strings.TrimSpace(inspect.Labels[labelApp]); name != "" {
-		return name
-	}
-	if project := strings.TrimSpace(inspect.Labels[labelComposeProject]); project != "" {
-		return project
-	}
-	return inspect.Name
-}
-
-// slotKey returns the key of the slot a container fills: the Compose service
-// and container number, or the container name for standalone containers.
-func slotKey(inspect docker.ContainerInspect) string {
-	service := strings.TrimSpace(inspect.Labels[labelComposeService])
-	number := strings.TrimSpace(inspect.Labels[labelComposeNumber])
-	if service != "" && number != "" {
-		return service + " #" + number
-	}
-	return inspect.Name
 }
 
 // resolveAppLabels reads the app-level labels from the app's containers. When
@@ -310,13 +284,6 @@ func resolveAppLabels(app *App, containers []*Container, logger *slog.Logger) {
 		}
 		return members[i].ID < members[j].ID
 	})
-	ignored := len(members) > 0
-	for _, container := range members {
-		if !container.Ignored {
-			ignored = false
-		}
-	}
-	app.Hidden = ignored
 	if value, ok := labelValue(members, labelCritical); ok {
 		app.Critical = isTrue(value)
 	}

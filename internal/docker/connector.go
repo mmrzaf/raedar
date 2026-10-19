@@ -37,3 +37,32 @@ func (c *Connector) Client(ctx context.Context) (*Client, error) {
 	c.mu.Unlock()
 	return client, nil
 }
+
+// Stats returns one statistics sample for a container, connecting first when
+// needed.
+func (c *Connector) Stats(ctx context.Context, id string) (Stats, error) {
+	client, err := c.Client(ctx)
+	if err != nil {
+		return Stats{}, err
+	}
+	return client.Stats(ctx, id)
+}
+
+// Info returns the daemon info, connecting first when needed.
+func (c *Connector) Info(ctx context.Context) (Info, error) {
+	client, err := c.Client(ctx)
+	if err != nil {
+		return Info{}, err
+	}
+	return client.Info(ctx)
+}
+
+// DiskUsage reads Docker's own disk usage report, connecting first when
+// needed.
+func (c *Connector) DiskUsage(ctx context.Context) (DiskUsage, error) {
+	client, err := c.Client(ctx)
+	if err != nil {
+		return DiskUsage{}, err
+	}
+	return client.DiskUsage(ctx)
+}

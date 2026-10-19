@@ -12,8 +12,8 @@
   <h2>Details</h2>
   <div class="table-wrap"><table><tbody>{{range $key, $value := .Details}}<tr><th>{{$key}}</th><td>{{$value}}</td></tr>{{end}}</tbody></table></div>
 </section>
-{{if .ChartKey}}
-<section class="charts" data-key="{{.ChartKey}}" data-from="{{.ChartFrom.Unix}}" data-to="{{.ChartTo.Unix}}">
+{{if .ChartSeries}}
+<section class="charts" data-series="{{.ChartSeries}}" data-from="{{.ChartFrom.Unix}}" data-to="{{.ChartTo.Unix}}">
   <h2>Around the incident</h2>
   <div class="chart" data-chart="incident"></div>
   <p><a href="{{.Link}}?from={{.ChartFrom.Unix}}&to={{.ChartTo.Unix}}">Open the full page for this window</a></p>

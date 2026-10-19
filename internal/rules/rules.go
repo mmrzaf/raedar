@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/aggregate"
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/store"
@@ -64,32 +66,6 @@ const reopenWindow = 30 * time.Minute
 // reports raedar.database.
 const databaseOutageAfter = 2 * time.Minute
 
-// Clock provides the time to the engine, so that tests run without waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
-
 // Notifier receives incident changes.
 type Notifier interface {
 	// IncidentsChanged is called once per evaluation with every change, so
@@ -102,12 +78,22 @@ type Notifier interface {
 	DatabaseUp(ctx context.Context)
 }
 
+// ChangeKind says how an incident changed.
+type ChangeKind string
+
+// The kinds of incident changes.
+const (
+	ChangeOpened    ChangeKind = "opened"
+	ChangeEscalated ChangeKind = "escalated"
+	ChangeResolved  ChangeKind = "resolved"
+)
+
 // Change describes what happened to one incident.
 type Change struct {
 	// Incident is the incident after the change.
 	Incident store.Incident
 	// Kind is opened, escalated or resolved.
-	Kind string
+	Kind ChangeKind
 	// Reopened reports an incident that opened again within reopenWindow.
 	Reopened bool
 }
@@ -131,7 +117,7 @@ type Engine struct {
 	deltas   Deltas
 	cfg      *config.Config
 	logger   *slog.Logger
-	clock    Clock
+	clock    clock.Clock
 	notifier Notifier
 
 	interval  time.Duration
@@ -151,7 +137,7 @@ type pending struct {
 }
 
 // New returns a rules engine.
-func New(st *store.Store, model Model, deltas Deltas, cfg *config.Config, logger *slog.Logger, clock Clock, notifier Notifier) *Engine {
+func New(st *store.Store, model Model, deltas Deltas, cfg *config.Config, logger *slog.Logger, clock clock.Clock, notifier Notifier) *Engine {
 	return &Engine{
 		store:     st,
 		model:     model,
@@ -170,7 +156,7 @@ func New(st *store.Store, model Model, deltas Deltas, cfg *config.Config, logger
 // Load records the newest crash event, so that crashes that happened before
 // Raedar started do not open incidents.
 func (e *Engine) Load(ctx context.Context) error {
-	last, err := e.store.LatestEventTime(ctx, "crashed")
+	last, err := e.store.LatestEventTime(ctx, store.EventCrashed)
 	if err != nil {
 		return err
 	}
@@ -218,27 +204,97 @@ func (e *Engine) Evaluate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	changes, err := e.advance(ctx, now, snapshot)
+	if err != nil {
+		return err
+	}
+	// Sending can take as long as a channel's timeout; it happens after the
+	// engine's state is released so that it never delays the next evaluation.
+	e.notify(ctx, changes)
+	return nil
+}
+
+// advance applies one evaluation to the incidents and returns the changes.
+func (e *Engine) advance(ctx context.Context, now time.Time, snapshot *snapshot) ([]Change, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var changes []Change
+	evaluated := make(map[store.IncidentKey]bool)
 	for _, reading := range e.readings(now, snapshot) {
+		evaluated[store.IncidentKey{Rule: reading.rule, Subject: reading.subject}] = true
 		change, err := e.apply(ctx, reading, now, snapshot)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if change != nil {
 			changes = append(changes, *change)
 		}
 	}
+	vanished, err := e.resolveVanished(ctx, now, snapshot, evaluated)
+	if err != nil {
+		return nil, err
+	}
+	changes = append(changes, vanished...)
 	// Crash incidents come last, so that a crash loop opened in this
 	// evaluation keeps the individual crashes quiet.
 	crashChanges, err := e.evaluateCrashes(ctx, now, snapshot)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	changes = append(changes, crashChanges...)
-	e.notify(ctx, changes)
-	return nil
+	return append(changes, crashChanges...), nil
+}
+
+// resolveVanished closes the open incidents that no rule evaluated this time.
+// Every rule reports a reading for each subject it knows, so an incident
+// without one belongs to a container, route, unit, certificate or peer that no
+// longer exists, and nothing would ever resolve it. It closes after the same
+// quiet period as any other incident, so a container that is briefly missing
+// during a redeploy does not close its incident.
+func (e *Engine) resolveVanished(ctx context.Context, now time.Time, snapshot *snapshot, evaluated map[store.IncidentKey]bool) ([]Change, error) {
+	keys := make([]store.IncidentKey, 0, len(snapshot.open))
+	for key, incident := range snapshot.open {
+		if !evaluated[key] && !incident.OneShot {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Rule != keys[j].Rule {
+			return keys[i].Rule < keys[j].Rule
+		}
+		return keys[i].Subject < keys[j].Subject
+	})
+	var changes []Change
+	for _, key := range keys {
+		incident := snapshot.open[key]
+		change, err := e.apply(ctx, reading{
+			rule:         key.Rule,
+			subject:      key.Subject,
+			alerts:       e.alertsFor(snapshot, incident),
+			resolveAfter: e.cfg.Rules.ResolveAfter,
+		}, now, snapshot)
+		if err != nil {
+			return nil, err
+		}
+		if change != nil {
+			changes = append(changes, *change)
+		}
+	}
+	return changes, nil
+}
+
+// alertsFor reports whether messages are sent for an incident's app. An
+// incident of an app that is gone too is announced, since it was announced
+// when it opened unless the app asked for silence, which is no longer known.
+func (e *Engine) alertsFor(snapshot *snapshot, incident store.Incident) bool {
+	if incident.AppID == nil || snapshot.model == nil {
+		return true
+	}
+	for _, app := range snapshot.model.Apps {
+		if app.ID == *incident.AppID {
+			return app.Alerts
+		}
+	}
+	return true
 }
 
 // notify hands the changes to the notifier.
@@ -275,8 +331,8 @@ func (e *Engine) apply(ctx context.Context, reading reading, now time.Time, snap
 			return nil, nil
 		}
 		e.logger.Warn("incident escalated", slog.String("rule", reading.rule),
-			slog.String("subject", reading.subject), slog.String("severity", reading.severity))
-		return &Change{Incident: incident, Kind: "escalated"}, nil
+			slog.String("subject", reading.subject), slog.String("severity", string(reading.severity)))
+		return &Change{Incident: incident, Kind: ChangeEscalated}, nil
 	case reading.firing:
 		delete(e.closing, key)
 		state := e.pending[key]
@@ -297,7 +353,7 @@ func (e *Engine) apply(ctx context.Context, reading reading, now time.Time, snap
 		if !reading.alerts {
 			return nil, nil
 		}
-		return &Change{Incident: *incident, Kind: "opened", Reopened: reopened}, nil
+		return &Change{Incident: *incident, Kind: ChangeOpened, Reopened: reopened}, nil
 	default:
 		delete(e.pending, key)
 		if !isOpen {
@@ -325,7 +381,7 @@ func (e *Engine) apply(ctx context.Context, reading reading, now time.Time, snap
 		resolved := open
 		resolved.ResolvedAt = &now
 		e.logger.Warn("incident resolved", slog.String("rule", reading.rule), slog.String("subject", reading.subject))
-		return &Change{Incident: resolved, Kind: "resolved"}, nil
+		return &Change{Incident: resolved, Kind: ChangeResolved}, nil
 	}
 }
 
@@ -376,14 +432,14 @@ func (e *Engine) open(ctx context.Context, reading reading, now time.Time) (*sto
 	}
 	incident.ID = id
 	e.logger.Warn("incident opened", slog.String("rule", reading.rule),
-		slog.String("subject", reading.subject), slog.String("severity", reading.severity))
+		slog.String("subject", reading.subject), slog.String("severity", string(reading.severity)))
 	return &incident, false, nil
 }
 
 // evaluateCrashes records the one-shot incidents of crashes seen since the
 // last evaluation.
 func (e *Engine) evaluateCrashes(ctx context.Context, now time.Time, snapshot *snapshot) ([]Change, error) {
-	crashes, err := e.store.Events(ctx, "crashed", e.lastCrash, now.Add(time.Second))
+	crashes, err := e.store.Events(ctx, store.EventCrashed, e.lastCrash, now.Add(time.Second))
 	if err != nil {
 		return nil, err
 	}
@@ -411,9 +467,9 @@ func (e *Engine) evaluateCrashes(ctx context.Context, now time.Time, snapshot *s
 		if err := json.Unmarshal(event.Data, &payload); err != nil {
 			return nil, fmt.Errorf("decode crash event %d: %w", event.ID, err)
 		}
-		severity := "warning"
+		severity := store.SeverityWarning
 		if slot.critical {
-			severity = "critical"
+			severity = store.SeverityCritical
 		}
 		resolvedAt := event.TS
 		incident := store.Incident{
@@ -436,7 +492,7 @@ func (e *Engine) evaluateCrashes(ctx context.Context, now time.Time, snapshot *s
 		e.logger.Warn("container crashed", slog.String("slot", slot.subject),
 			slog.Int("exit_code", payload.ExitCode), slog.Bool("oom", payload.OOM))
 		if slot.alerts {
-			changes = append(changes, Change{Incident: incident, Kind: "opened"})
+			changes = append(changes, Change{Incident: incident, Kind: ChangeOpened})
 		}
 	}
 	return changes, nil
@@ -452,7 +508,7 @@ type reading struct {
 	slotID  *int64
 	routeID *int64
 	// severity is the severity the incident has now.
-	severity string
+	severity store.Severity
 	// firing reports whether the condition holds now.
 	firing bool
 	// alerts reports whether the app allows messages.

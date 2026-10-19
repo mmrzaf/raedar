@@ -23,7 +23,7 @@ type Incident struct {
 	SlotID  *int64
 	RouteID *int64
 	// Severity is warning or critical.
-	Severity string
+	Severity Severity
 	// OpenedAt is when the condition started holding.
 	OpenedAt time.Time
 	// ResolvedAt is when the condition stopped holding; nil while open.

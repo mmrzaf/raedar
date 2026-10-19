@@ -9,6 +9,11 @@ import (
 // retentionBatch is how many rows are deleted in one transaction.
 const retentionBatch = 5000
 
+// staleSubjectAfter is how long a systemd unit or a certificate may go
+// without a refresh before it counts as gone and is dropped; a unit that no
+// longer exists would otherwise show as failed forever.
+const staleSubjectAfter = 7 * 24 * time.Hour
+
 // Retention is how long each part of the history is kept.
 type Retention struct {
 	// Minute is the retention of the per-minute tables.
@@ -48,7 +53,10 @@ func (s *Store) Retention(ctx context.Context, policy Retention, now time.Time) 
 	if err := s.deleteBefore(ctx, "events", "ts", now.Add(-policy.Events)); err != nil {
 		return err
 	}
-	return nil
+	if err := s.deleteBefore(ctx, "units", "last_seen", now.Add(-staleSubjectAfter)); err != nil {
+		return err
+	}
+	return s.deleteBefore(ctx, "certs", "checked_at", now.Add(-staleSubjectAfter))
 }
 
 // deleteBefore deletes the rows of one table that are older than cutoff, one

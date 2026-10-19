@@ -10,46 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/store"
 )
-
-// Clock provides the time to the digest, so that tests run without waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
 
 // Composer builds the daily digest.
 type Composer struct {
 	store  *store.Store
 	cfg    *config.Config
 	logger *slog.Logger
-	clock  Clock
+	clock  clock.Clock
 }
 
 // New returns a digest composer.
-func New(st *store.Store, cfg *config.Config, logger *slog.Logger, clock Clock) *Composer {
+func New(st *store.Store, cfg *config.Config, logger *slog.Logger, clock clock.Clock) *Composer {
 	return &Composer{store: st, cfg: cfg, logger: logger, clock: clock}
 }
 
@@ -85,7 +60,7 @@ func (c *Composer) Text(ctx context.Context) (string, error) {
 		}
 	}
 
-	deploys, err := c.store.Events(ctx, "deploy", from, now)
+	deploys, err := c.store.Events(ctx, store.EventDeploy, from, now)
 	if err != nil {
 		return "", err
 	}
@@ -322,7 +297,7 @@ func sortedIncidents(open map[store.IncidentKey]store.Incident) []store.Incident
 	}
 	sort.Slice(incidents, func(i, j int) bool {
 		if incidents[i].Severity != incidents[j].Severity {
-			return incidents[i].Severity == "critical"
+			return incidents[i].Severity == store.SeverityCritical
 		}
 		return incidents[i].OpenedAt.Before(incidents[j].OpenedAt)
 	})

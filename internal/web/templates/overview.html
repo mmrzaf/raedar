@@ -26,7 +26,7 @@
     <div class="metric"><span class="label">Memory available</span><span class="value">{{bytes .MemAvailable}} of {{bytes .MemTotal}}</span></div>
     <div class="metric"><span class="label">Swap used</span><span class="value">{{bytes .SwapUsed}} of {{bytes .SwapTotal}}</span></div>
     {{range .Disks}}
-    <div class="metric"><span class="label">{{.Name}}</span><span class="value">{{printf "%.1f" .Usage}}% used · {{bytes .Free}} free{{if .Growing}} · full in {{printf "%.0f" .DaysUntilFull}} days{{end}}</span></div>
+    <div class="metric"><span class="label">{{.Name}}</span><span class="value">{{printf "%.1f" .Usage}}% used · {{bytes .Free}} free{{if .Growing}} · full in {{forecast .DaysUntilFull}}{{end}}</span></div>
     {{end}}
     {{with .Docker}}
     <div class="metric"><span class="label">Docker disk</span><span class="value">{{bytes .Images}} images · {{bytes .Reclaimable}} reclaimable · {{bytes .Volumes}} volumes</span></div>
@@ -45,12 +45,12 @@
       <tr>
         <td><span class="badge badge-{{.Status}}">{{if eq .Status "ok"}}OK{{else}}{{.Status}}{{end}}</span></td>
         <td><a href="/apps/{{.Name}}">{{.Name}}</a>{{if .Domains}}<div class="muted small">{{range $i, $domain := .Domains}}{{if $i}}, {{end}}{{$domain}}{{end}}</div>{{end}}</td>
-        <td class="num">{{printf "%.0f" .RequestsPerMinute}}/min <span class="spark" data-values="{{range .Sparkline}}{{printf "%.0f" .}},{{end}}" aria-hidden="true"></span></td>
+        <td class="num">{{rate .RequestsPerMinute}} <span class="spark" data-values="{{range .Sparkline}}{{printf "%.0f" .}},{{end}}" aria-hidden="true"></span></td>
         <td class="num">{{printf "%.1f" .ErrorRate}}%{{if gt .ErrorBaseline 0.0}}{{if gt .ErrorRate .ErrorBaseline}} <span class="warn" title="above the usual {{printf "%.1f" .ErrorBaseline}}%">↑</span>{{end}}{{end}}</td>
-        <td class="num">{{printf "%.0f" .P95}} ms{{if gt .P95Baseline 0.0}}{{if gt .P95 (mulf .P95Baseline 1.5)}} <span class="warn" title="usual {{printf "%.0f" .P95Baseline}} ms">↑</span>{{else if lt .P95 (mulf .P95Baseline 0.5)}} <span class="muted" title="usual {{printf "%.0f" .P95Baseline}} ms">↓</span>{{end}}{{end}}</td>
-        <td class="num">{{printf "%.0f" .CPU}} m</td>
+        <td class="num">{{.P95}}{{if and .P95.Known (gt .P95Baseline 0.0)}}{{if gt .P95.MS (mulf .P95Baseline 1.5)}} <span class="warn" title="usual {{latency .P95Baseline}}">↑</span>{{else if lt .P95.MS (mulf .P95Baseline 0.5)}} <span class="muted" title="usual {{latency .P95Baseline}}">↓</span>{{end}}{{end}}</td>
+        <td class="num">{{cpu .CPU}}</td>
         <td class="num">{{bytes .Memory}}{{if gt .MemoryLimit 0}} of {{bytes .MemoryLimit}}{{end}}</td>
-        <td class="num">{{.Running}}/{{.Total}}{{if gt .Restarts 0}} · {{.Restarts}} restarts{{end}}</td>
+        <td class="num">{{.Running}}/{{.Total}}{{if gt .Restarts 0}} · {{plural .Restarts "restart"}} in 24 h{{end}}</td>
         <td>{{if .LastDeploy.IsZero}}never{{else}}{{relative .LastDeploy}}{{end}}</td>
       </tr>
     {{end}}
@@ -63,7 +63,7 @@
   <h2 id="certs-title">Certificates</h2>
   {{$attention := false}}{{range .Certs}}{{if .Attention}}{{$attention = true}}{{end}}{{end}}
   {{if $attention}}
-  <ul class="plain">{{range .Certs}}{{if .Attention}}<li><strong>{{.Domain}}</strong> <span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span> {{if .NotAfter}}expires in {{printf "%.0f" .DaysLeft}} days{{end}} {{if .Error}}<span class="muted">{{.Error}}</span>{{end}}</li>{{end}}{{end}}</ul>
+  <ul class="plain">{{range .Certs}}{{if .Attention}}<li><strong>{{.Domain}}</strong> <span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span> {{if .NotAfter}}expires in {{forecast .DaysLeft}}{{end}} {{if .Error}}<span class="muted">{{.Error}}</span>{{end}}</li>{{end}}{{end}}</ul>
   {{else}}<p>All certificates fine.</p>{{end}}
 </section>
 <section aria-labelledby="units-title">

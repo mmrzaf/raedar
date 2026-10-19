@@ -26,8 +26,8 @@ const maxGroup = 5
 
 // group is the incidents of one kind of change that are sent together.
 type group struct {
-	// kind is opened, escalated, resolved, digest or test.
-	kind string
+	// kind is what the group announces.
+	kind store.DeliveryKind
 	// incidents are the incidents in the group.
 	incidents []store.Incident
 	// reopened marks the incidents that opened again.
@@ -62,8 +62,8 @@ func incidentBefore(a, b store.Incident) bool {
 }
 
 // severityRank orders severities, critical first.
-func severityRank(severity string) int {
-	if severity == "critical" {
+func severityRank(severity store.Severity) int {
+	if severity == store.SeverityCritical {
 		return 0
 	}
 	return 1
@@ -86,7 +86,7 @@ type documentIncident struct {
 	Rule       string         `json:"rule"`
 	Subject    string         `json:"subject"`
 	App        string         `json:"app"`
-	Severity   string         `json:"severity"`
+	Severity   store.Severity `json:"severity"`
 	OpenedAt   time.Time      `json:"opened_at"`
 	ResolvedAt *time.Time     `json:"resolved_at"`
 	Reopened   bool           `json:"reopened"`
@@ -135,9 +135,9 @@ func (f formatter) text(g group) string {
 }
 
 // block returns one incident's Telegram block.
-func (f formatter) block(incident store.Incident, kind string, reopened bool) string {
+func (f formatter) block(incident store.Incident, kind store.DeliveryKind, reopened bool) string {
 	header := incidentHeader(f.host, incident, kind)
-	if kind == "resolved" {
+	if kind == store.DeliveryResolved {
 		return header + " resolved after " + durationText(incidentDuration(incident))
 	}
 	var lines []string
@@ -146,7 +146,7 @@ func (f formatter) block(incident store.Incident, kind string, reopened bool) st
 		lines = append(lines, summary)
 	}
 	since := "since " + f.clock(incident.OpenedAt)
-	if deploy, ok := f.deploys[appIDOf(incident)]; ok && kind != "resolved" {
+	if deploy, ok := f.deploys[appIDOf(incident)]; ok && kind != store.DeliveryResolved {
 		since += fmt.Sprintf(" · %d min after deploy %s %s → %s", deploy.minutes, deploy.app, deploy.from, deploy.to)
 	}
 	lines = append(lines, since)
@@ -159,12 +159,12 @@ func (f formatter) block(incident store.Incident, kind string, reopened bool) st
 }
 
 // incidentHeader returns the first line of an incident's message.
-func incidentHeader(host string, incident store.Incident, kind string) string {
+func incidentHeader(host string, incident store.Incident, kind store.DeliveryKind) string {
 	emoji := emojiWarning
-	if incident.Severity == "critical" {
+	if incident.Severity == store.SeverityCritical {
 		emoji = emojiCritical
 	}
-	if kind == "resolved" {
+	if kind == store.DeliveryResolved {
 		emoji = emojiResolved
 	}
 	name := incidentApp(incident)
@@ -353,13 +353,13 @@ func (f formatter) smsText(g group) string {
 		return ""
 	case 1:
 		incident := incidents[0]
-		severity := strings.ToUpper(incident.Severity)
+		severity := strings.ToUpper(string(incident.Severity))
 		name := incidentApp(incident)
 		if name == "" {
 			name = incident.Subject
 		}
 		summary := smsSummary(incident)
-		if g.kind == "resolved" {
+		if g.kind == store.DeliveryResolved {
 			minutes := int(incidentDuration(incident).Round(time.Minute) / time.Minute)
 			text = fmt.Sprintf("RAEDAR %s RESOLVED %s: %s (%d min)", f.host, name, summary, minutes)
 		} else {
@@ -368,7 +368,7 @@ func (f formatter) smsText(g group) string {
 	default:
 		severity := "WARNING"
 		for _, incident := range incidents {
-			if incident.Severity == "critical" {
+			if incident.Severity == store.SeverityCritical {
 				severity = "CRITICAL"
 				break
 			}
@@ -389,7 +389,7 @@ func (f formatter) smsText(g group) string {
 			names = append(names, fmt.Sprintf("+%d", remaining))
 		}
 		noun := "problems"
-		if g.kind == "resolved" {
+		if g.kind == store.DeliveryResolved {
 			noun = "resolved"
 		}
 		text = fmt.Sprintf("RAEDAR %s %s %d %s: %s", f.host, severity, len(incidents), noun, strings.Join(names, ", "))
@@ -502,7 +502,7 @@ func (f formatter) document(g group) []byte {
 	body := document{
 		Version: 1,
 		Host:    f.host,
-		Kind:    "incident." + g.kind,
+		Kind:    "incident." + string(g.kind),
 		SentAt:  f.now,
 	}
 	incidents := g.sorted()

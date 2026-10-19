@@ -6,9 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,61 +15,18 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mmrzaf/raedar/internal/aggregate"
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/store"
+	"github.com/mmrzaf/raedar/internal/testdb"
 )
-
-// testDatabaseURL returns the disposable test database URL.
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	databaseURL := os.Getenv("RAEDAR_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("RAEDAR_TEST_DATABASE_URL is not set")
-	}
-	return databaseURL
-}
-
-// withSearchPath returns the URL with search_path set to schema.
-func withSearchPath(t *testing.T, databaseURL, schema string) string {
-	t.Helper()
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", databaseURL, err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
-}
 
 // testSchema creates a schema and returns a migrated store on it.
 func testSchema(t *testing.T) (*store.Store, string, string) {
 	t.Helper()
 	ctx := context.Background()
-	databaseURL := testDatabaseURL(t)
-	schema := fmt.Sprintf("raedar_accesslog_%d", time.Now().UnixNano())
-	admin, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to PostgreSQL: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "create schema "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		t.Fatalf("create schema: %v", err)
-	}
-	if err := admin.Close(ctx); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	t.Cleanup(func() {
-		conn, err := pgx.Connect(ctx, databaseURL)
-		if err != nil {
-			t.Errorf("connect to drop schema: %v", err)
-			return
-		}
-		defer conn.Close(ctx)
-		if _, err := conn.Exec(ctx, "drop schema "+pgx.Identifier{schema}.Sanitize()+" cascade"); err != nil {
-			t.Errorf("drop schema: %v", err)
-		}
-	})
-	st, err := store.Open(ctx, withSearchPath(t, databaseURL, schema), discardLogger())
+	databaseURL, schema := testdb.NewSchema(t, "accesslog")
+	st, err := store.Open(ctx, testdb.WithSearchPath(t, databaseURL, schema), discardLogger())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -85,7 +40,7 @@ func testSchema(t *testing.T) (*store.Store, string, string) {
 // testConn returns a connection to the test schema for direct queries.
 func testConn(t *testing.T, databaseURL, schema string) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(context.Background(), withSearchPath(t, databaseURL, schema))
+	conn, err := pgx.Connect(context.Background(), testdb.WithSearchPath(t, databaseURL, schema))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -105,9 +60,9 @@ func TestSourceFeedsTheDatabase(t *testing.T) {
 	conn := testConn(t, databaseURL, schema)
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	discoverer := discovery.New("unix:///var/run/docker.sock", "", "", st, logger, discovery.SystemClock())
-	aggregator := aggregate.New(st, SourceName, logger, aggregate.SystemClock())
-	source := New(Options{Path: path}, discoverer, st, aggregator, logger, SystemClock())
+	discoverer := discovery.New("unix:///var/run/docker.sock", "", "", st, logger, clock.System())
+	aggregator := aggregate.New(st, SourceName, logger, clock.System())
+	source := New(Options{Path: path}, discoverer, st, aggregator, logger, clock.System())
 	source.pollEvery = time.Millisecond
 	go func() { source.Run(ctx) }()
 
