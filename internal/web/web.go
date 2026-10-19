@@ -149,6 +149,8 @@ func (s *Server) serveStatic(w http.ResponseWriter, request *http.Request) {
 	switch path.Ext(name) {
 	case ".css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
 	case ".js":
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	}

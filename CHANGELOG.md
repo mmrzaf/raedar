@@ -28,6 +28,7 @@ All notable changes to Raedar are listed here. The format follows
 - Charts use 24-hour clocks in `RAEDAR_TZ`, 0–100 % axes for percentages, round
   byte ticks, gaps for missing data and labeled empty states, plus a hover
   readout.
+- A favicon.
 - A `Content-Security-Policy` of `default-src 'self'`, and a test that fails on
   any external resource or inline handler in the interface.
 - Hourly rollups, baselines, heatmaps and day profiles follow local hours, so

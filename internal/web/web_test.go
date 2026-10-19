@@ -484,3 +484,20 @@ func TestSparkline(t *testing.T) {
 		t.Errorf("sparkline() sums to %v, want 15 without the hours outside the window", total)
 	}
 }
+
+func TestFaviconIsLinkedAndServed(t *testing.T) {
+	server := newTestServer(t)
+	// Pages need a database, but every page's head comes from this template.
+	body, err := fs.ReadFile(embedded, "templates/base.html")
+	if err != nil {
+		t.Fatalf("read base template: %v", err)
+	}
+	if !strings.Contains(string(body), `rel="icon" href="/static/favicon.ico"`) {
+		t.Error("base.html does not link the favicon")
+	}
+	icon := httptest.NewRecorder()
+	server.Handler().ServeHTTP(icon, httptest.NewRequest(http.MethodGet, "/static/favicon.ico", nil))
+	if icon.Code != http.StatusOK || icon.Header().Get("Content-Type") != "image/x-icon" || icon.Body.Len() == 0 {
+		t.Errorf("favicon status = %d, type = %q, size = %d, want the icon", icon.Code, icon.Header().Get("Content-Type"), icon.Body.Len())
+	}
+}
