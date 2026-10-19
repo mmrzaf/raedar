@@ -23,6 +23,11 @@ All notable changes to Raedar are listed here. The format follows
 
 ### Added
 
+- A redesigned interface: an app shell with a status banner, cards, host tiles
+  with usage meters, tighter typography, a first-class dark theme with a theme
+  switch (system, light, dark), floating chart tooltips, a heatmap legend, a
+  footer with the About page, and a phone layout. The overview refreshes itself
+  every 30 seconds while it is visible.
 - Latency is shown as `63 ms` or `1.5 s`, and a latency beyond the histogram's
   60 s bound as `>60 s` instead of a number; CPU is shown in cores.
 - Charts use 24-hour clocks in `RAEDAR_TZ`, 0–100 % axes for percentages, round
