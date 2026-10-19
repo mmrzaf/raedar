@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  # The release workflow runs the same checks on the tag it publishes.
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to check out. Empty means the ref that triggered the run.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: true
+
+env:
+  STATICCHECK_VERSION: 2026.2.1
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: raedar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      RAEDAR_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/raedar_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+
+      - name: Staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: ${{ env.STATICCHECK_VERSION }}
+          install-go: false
+
+      - name: Build
+        run: go build ./...
+
+      - name: Unit tests
+        run: go test -race -count=1 ./...
+
+      - name: Integration tests
+        run: go test -race -tags integration -count=1 ./...
+
+      - name: Docker image
+        run: |
+          set -euo pipefail
+          version="$(cat VERSION)"
+          docker build --build-arg VERSION="$version" -t raedar:ci .
+          test "$(docker run --rm raedar:ci version)" = "raedar $version"
