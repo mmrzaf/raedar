@@ -1,38 +1,52 @@
 {{template "header" .}}
-<h1>Host</h1>
-<div class="range">
-  {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
+<div class="page-head">
+  <div>
+    <h1>Host</h1>
+    <p class="sub">CPU, memory, swap and filesystems of the server</p>
+  </div>
+  <nav class="segmented" aria-label="Time range">
+    {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
+  </nav>
 </div>
 <div class="charts" data-host="true" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
-  <section><h2>CPU</h2><div class="chart" data-chart="host-cpu"></div></section>
-  <section><h2>Load average</h2><div class="chart" data-chart="host-load"></div></section>
-  <section><h2>Memory available</h2><div class="chart" data-chart="host-memory"></div></section>
-  <section><h2>Swap used</h2><div class="chart" data-chart="host-swap"></div></section>
-  {{with .Host}}{{range .Disks}}<section><h2>Disk {{.Name}}</h2><div class="chart" data-chart="disk-{{.Name}}"></div></section>{{end}}{{end}}
-  {{with .Host}}{{with .Docker}}<section><h2>Docker disk</h2><div class="strip">
-    <div class="metric"><span class="label">Images</span><span class="value">{{bytes .Images}}</span></div>
-    <div class="metric"><span class="label">Reclaimable</span><span class="value">{{bytes .Reclaimable}}</span></div>
-    <div class="metric"><span class="label">Build cache</span><span class="value">{{bytes .BuildCache}}</span></div>
-    <div class="metric"><span class="label">Volumes</span><span class="value">{{bytes .Volumes}}</span></div>
-    <div class="metric"><span class="label">Layers</span><span class="value">{{bytes .Layers}}</span></div>
-  </div></section>{{end}}{{end}}
+  <section class="card"><div class="card-head"><h2>CPU</h2><span class="card-value"></span></div><div class="chart" data-chart="host-cpu"></div></section>
+  <section class="card"><div class="card-head"><h2>Load average</h2><span class="card-value"></span></div><div class="chart" data-chart="host-load"></div></section>
+  <section class="card"><div class="card-head"><h2>Memory available</h2><span class="card-value"></span></div><div class="chart" data-chart="host-memory"></div></section>
+  <section class="card"><div class="card-head"><h2>Swap used</h2><span class="card-value"></span></div><div class="chart" data-chart="host-swap"></div></section>
+  {{with .Host}}{{range .Disks}}<section class="card"><div class="card-head"><h2>Disk {{.Name}} used</h2><span class="card-value"></span></div><div class="chart" data-chart="disk-{{.Name}}"></div></section>{{end}}{{end}}
 </div>
-<section>
-  <h2>systemd</h2>
+{{with .Host}}{{with .Docker}}
+<section class="section">
+  <div class="section-head"><h2>Docker disk</h2></div>
+  <div class="tiles">
+    <div class="card tile"><div class="tile-label">Images</div><div class="tile-value">{{bytes .Images}}</div></div>
+    <div class="card tile"><div class="tile-label">Reclaimable</div><div class="tile-value">{{bytes .Reclaimable}}</div></div>
+    <div class="card tile"><div class="tile-label">Build cache</div><div class="tile-value">{{bytes .BuildCache}}</div></div>
+    <div class="card tile"><div class="tile-label">Volumes</div><div class="tile-value">{{bytes .Volumes}}</div></div>
+    <div class="card tile"><div class="tile-label">Containers</div><div class="tile-value">{{bytes .Layers}}</div></div>
+  </div>
+</section>
+{{end}}{{end}}
+<section class="section" id="systemd">
+  <div class="section-head"><h2>systemd</h2></div>
+  <div class="card">
   {{if .Units}}
   <div class="table-wrap"><table>
     <thead><tr><th>Unit</th><th>State</th><th>Result</th><th>Exit</th><th>Since</th></tr></thead>
-    <tbody>{{range .Units}}<tr><td>{{.Name}}</td><td>{{.ActiveState}} / {{.SubState}}</td><td>{{if .Result}}{{.Result}}{{else}}—{{end}}</td><td>{{if .ExitStatus}}{{.ExitStatus}}{{else}}—{{end}}</td><td>{{if .Since}}{{datetime .Since}}{{else}}—{{end}}</td></tr>{{end}}</tbody>
+    <tbody>{{range .Units}}<tr><td>{{.Name}}</td><td><span class="badge badge-{{if eq .ActiveState "failed"}}critical{{else}}ok{{end}}">{{.ActiveState}} / {{.SubState}}</span></td><td>{{if .Result}}{{.Result}}{{else}}<span class="muted">—</span>{{end}}</td><td>{{if .ExitStatus}}{{.ExitStatus}}{{else}}<span class="muted">—</span>{{end}}</td><td>{{if .Since}}{{datetime .Since}}{{else}}<span class="muted">—</span>{{end}}</td></tr>{{end}}</tbody>
   </table></div>
-  {{else}}<p class="empty">No systemd units recorded. Mount the D-Bus socket or set RAEDAR_SYSTEMD=off.</p>{{end}}
+  {{else}}<div class="card-pad empty">No systemd units recorded. Mount the D-Bus socket or set RAEDAR_SYSTEMD=off.</div>{{end}}
+  </div>
 </section>
-<section>
-  <h2>Certificates</h2>
+<section class="section" id="certificates">
+  <div class="section-head"><h2>Certificates</h2></div>
+  <div class="card">
   {{if .Certs}}
   <div class="table-wrap"><table>
-    <thead><tr><th>Domain</th><th>Status</th><th>Issuer</th><th>Expires</th><th class="num">Days left</th><th>Checked</th></tr></thead>
-    <tbody>{{range .Certs}}<tr><td>{{.Domain}}</td><td><span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span></td><td>{{.Issuer}}</td><td>{{if .NotAfter}}{{datetime .NotAfter}}{{else}}—{{end}}</td><td class="num">{{if .NotAfter}}{{printf "%.0f" .DaysLeft}}{{else}}—{{end}}</td><td>{{relative .CheckedAt}}</td></tr>{{end}}</tbody>
+    <thead><tr><th>Domain</th><th>Status</th><th>Issuer</th><th>Expires</th><th class="num">Left</th><th>Checked</th></tr></thead>
+    <tbody>{{range .Certs}}<tr><td><strong>{{.Domain}}</strong></td><td><span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span></td><td>{{if .Issuer}}{{.Issuer}}{{else}}<span class="muted">—</span>{{end}}</td><td>{{if .NotAfter}}{{datetime .NotAfter}}{{else}}<span class="muted">—</span>{{end}}</td><td class="num">{{if .NotAfter}}{{forecast .DaysLeft}}{{else}}<span class="muted">—</span>{{end}}</td><td>{{relative .CheckedAt}}</td></tr>{{end}}</tbody>
   </table></div>
-  {{else}}<p class="empty">No certificates checked yet. Set RAEDAR_TLS_CHECK_ADDR if Traefik could not be detected.</p>{{end}}
+  {{else}}<div class="card-pad empty">No certificates checked yet. Set RAEDAR_TLS_CHECK_ADDR if Traefik could not be detected.</div>{{end}}
+  </div>
 </section>
 {{template "footer" .}}

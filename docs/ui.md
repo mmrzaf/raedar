@@ -1,6 +1,6 @@
 # User interface
 
-The UI answers "is everything fine?" in seconds and "what happened, and when does it happen?" in a minute. It is read-only, works on a phone (alert links are usually opened from one), and follows the system's light or dark mode.
+The UI answers "is everything fine?" in seconds and "what happened, and when does it happen?" in a minute. It is read-only, works on a phone (alert links are usually opened from one), and follows the system's light or dark mode; a button in the top bar switches between system, light and dark and remembers the choice in the browser.
 
 Pages are rendered on the server. Charts and live logs use a small amount of plain JavaScript (ES modules) and [uPlot](https://github.com/leeoniya/uPlot); there is no front-end build step. Everything the pages load is served by Raedar itself, with no CDN, external font or script, and a `Content-Security-Policy` of `default-src 'self'` enforces it.
 
@@ -8,12 +8,15 @@ Times in tables and on chart axes use 24-hour clocks in `RAEDAR_TZ`, never the b
 
 ## Layout
 
-Every page has a top bar with the host name, the current time in `RAEDAR_TZ`, the navigation (Overview, Host, Patterns, Events) and one dot per source (access log, Docker, host, systemd, TLS, database) that turns amber or red when the source is degraded or unavailable. Hovering or tapping a dot shows its last error.
+Every page has a top bar with the host name, the navigation (Overview, Host, Patterns, Events), one dot per source (access log, Docker, host, systemd, TLS, database), the current time in `RAEDAR_TZ` and the theme button. A source dot turns amber or red, and shows its name, when the source is degraded or unavailable; hovering a dot shows its name and last error. A footer links to the About page.
+
+Content sits in cards. Charts show a floating readout with every series at the pointer, the latest value in the card header for single-series charts, and a legend for two or more series. Usage is shown as meters that turn amber from 75 % and red from 90 %.
 
 ## Overview `/`
 
 The page refreshes itself every 30 seconds.
 
+0. **Status banner.** One line that says whether the host is fine: "All systems normal", or how many incidents are open and whether any is critical.
 1. **Open incidents.** Shown only when there are any, most severe first: rule, subject, value, how long it has been open. Each links to its incident page.
 2. **Host strip.** CPU, load, memory, swap, each filesystem (usage, free space, and "full in N days" when growing, "over a year" beyond 365 days), Docker disk usage with the reclaimable part.
 3. **Apps.** One row per app, apps with problems first, then by traffic:

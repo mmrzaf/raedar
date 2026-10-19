@@ -1,40 +1,47 @@
 {{template "header" .}}
 {{with .Data}}
-<h1>About</h1>
-<div class="strip">
-  <div class="metric"><span class="label">Version</span><span class="value">{{$.Page.Version}}</span></div>
-  <div class="metric"><span class="label">Uptime</span><span class="value">{{duration .Uptime}}</span></div>
-  <div class="metric"><span class="label">Host</span><span class="value">{{$.Page.HostName}}</span></div>
+<div class="page-head">
+  <div>
+    <h1>About</h1>
+    <p class="sub">The running instance and its configuration</p>
+  </div>
 </div>
-<section>
-  <h2>Configuration</h2>
-  <div class="table-wrap"><table><tbody>{{range .Settings}}<tr><th>{{.Name}}</th><td>{{if .Value}}{{.Value}}{{else}}—{{end}}</td></tr>{{end}}</tbody></table></div>
+<div class="tiles">
+  <div class="card tile"><div class="tile-label">Version</div><div class="tile-value">{{$.Page.Version}}</div></div>
+  <div class="card tile"><div class="tile-label">Uptime</div><div class="tile-value">{{duration .Uptime}}</div></div>
+  <div class="card tile"><div class="tile-label">Host</div><div class="tile-value">{{$.Page.HostName}}</div></div>
+</div>
+<section class="section">
+  <div class="section-head"><h2>Configuration</h2><span class="hint">secrets are masked</span></div>
+  <div class="card"><div class="table-wrap"><table class="kv"><tbody>{{range .Settings}}<tr><th>{{.Name}}</th><td class="mono">{{if .Value}}{{.Value}}{{else}}<span class="muted">—</span>{{end}}</td></tr>{{end}}</tbody></table></div></div>
 </section>
-<section>
-  <h2>Notifications</h2>
-  <div class="table-wrap"><table><tbody>
-    {{range .Notify.Channels}}<tr><th>{{.Name}}</th><td>{{if .Configured}}configured, {{.Route}}{{else}}not configured{{end}}</td></tr>{{end}}
+<section class="section">
+  <div class="section-head"><h2>Notifications</h2></div>
+  <div class="card"><div class="table-wrap"><table class="kv"><tbody>
+    {{range .Notify.Channels}}<tr><th>{{.Name}}</th><td>{{if .Configured}}configured, {{.Route}}{{else}}<span class="muted">not configured</span>{{end}}</td></tr>{{end}}
     <tr><th>Warnings</th><td>{{if .Notify.Warning}}{{.Notify.Warning}}{{else}}none{{end}}</td></tr>
     <tr><th>Critical</th><td>{{.Notify.Critical}}</td></tr>
     <tr><th>Digest</th><td>{{.Notify.Digest}}</td></tr>
     <tr><th>Proxy</th><td>{{.Notify.Proxy}}</td></tr>
-  </tbody></table></div>
+  </tbody></table></div></div>
 </section>
-<section>
-  <h2>Sources</h2>
+<section class="section">
+  <div class="section-head"><h2>Sources</h2></div>
+  <div class="card">
   {{if .Sources}}
   <div class="table-wrap"><table>
     <thead><tr><th>Source</th><th>Status</th><th>Last error</th><th>Position</th><th>Updated</th></tr></thead>
-    <tbody>{{range .Sources}}<tr><td>{{.Name}}</td><td>{{.Status}}</td><td>{{if .LastError}}{{.LastError}}{{else}}—{{end}}</td><td class="muted small">{{if .Position}}{{.Position}}{{else}}—{{end}}</td><td>{{relative .UpdatedAt}}</td></tr>{{end}}</tbody>
+    <tbody>{{range .Sources}}<tr><td><strong>{{.Name}}</strong></td><td><span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "degraded"}}warning{{else}}critical{{end}}">{{.Status}}</span></td><td class="wrap">{{if .LastError}}{{.LastError}}{{else}}<span class="muted">—</span>{{end}}</td><td class="muted small">{{if .Position}}{{.Position}}{{else}}—{{end}}</td><td>{{relative .UpdatedAt}}</td></tr>{{end}}</tbody>
   </table></div>
-  {{else}}<p class="empty">No source has reported yet.</p>{{end}}
+  {{else}}<div class="card-pad empty">No source has reported yet.</div>{{end}}
+  </div>
 </section>
-<section>
-  <h2>Database</h2>
-  <div class="table-wrap"><table>
+<section class="section">
+  <div class="section-head"><h2>Database</h2></div>
+  <div class="card"><div class="table-wrap"><table>
     <thead><tr><th>Table</th><th class="num">Size</th></tr></thead>
-    <tbody>{{range .Tables}}<tr><td>{{.Name}}</td><td class="num">{{bytes .Bytes}}</td></tr>{{end}}</tbody>
-  </table></div>
+    <tbody>{{range .Tables}}<tr><td class="mono">{{.Name}}</td><td class="num">{{bytes .Bytes}}</td></tr>{{end}}</tbody>
+  </table></div></div>
 </section>
 {{end}}
 {{template "footer" .}}

@@ -1,32 +1,42 @@
 {{template "header" .}}
 {{with .Data}}
-<h1>Incident {{.Incident.ID}}</h1>
-<p><span class="badge badge-{{.Incident.Severity}}">{{.Incident.Severity}}</span> <strong>{{.Incident.Rule}}</strong> · {{.Incident.Subject}}{{if .App}} · {{.App}}{{end}}</p>
-<div class="strip">
-  <div class="metric"><span class="label">Summary</span><span class="value">{{.Incident.Summary}}</span></div>
-  <div class="metric"><span class="label">Opened</span><span class="value">{{datetime .Incident.OpenedAt}}</span></div>
-  <div class="metric"><span class="label">Resolved</span><span class="value">{{if .Incident.ResolvedAt}}{{datetime .Incident.ResolvedAt}}{{else}}still open{{end}}</span></div>
-  <div class="metric"><span class="label">Duration</span><span class="value">{{duration .Duration}}</span></div>
+<div class="page-head">
+  <div>
+    <div class="title-row">
+      <h1>Incident {{.Incident.ID}}</h1>
+      <span class="badge badge-{{.Incident.Severity}}">{{.Incident.Severity}}</span>
+    </div>
+    <p class="sub"><strong>{{.Incident.Rule}}</strong> · {{.Incident.Subject}}{{if .App}} · <a href="{{.Link}}">{{.App}}</a>{{end}}</p>
+  </div>
 </div>
-<section>
-  <h2>Details</h2>
-  <div class="table-wrap"><table><tbody>{{range $key, $value := .Details}}<tr><th>{{$key}}</th><td>{{$value}}</td></tr>{{end}}</tbody></table></div>
-</section>
+<div class="tiles">
+  <div class="card tile"><div class="tile-label">Summary</div><div class="tile-value">{{.Incident.Summary}}</div></div>
+  <div class="card tile"><div class="tile-label">Opened</div><div class="tile-value">{{datetime .Incident.OpenedAt}}</div></div>
+  <div class="card tile"><div class="tile-label">Resolved</div><div class="tile-value">{{if .Incident.ResolvedAt}}{{datetime .Incident.ResolvedAt}}{{else}}still open{{end}}</div></div>
+  <div class="card tile"><div class="tile-label">Duration</div><div class="tile-value">{{duration .Duration}}</div></div>
+</div>
 {{if .ChartSeries}}
-<section class="charts" data-series="{{.ChartSeries}}" data-from="{{.ChartFrom.Unix}}" data-to="{{.ChartTo.Unix}}">
-  <h2>Around the incident</h2>
-  <div class="chart" data-chart="incident"></div>
-  <p><a href="{{.Link}}?from={{.ChartFrom.Unix}}&to={{.ChartTo.Unix}}">Open the full page for this window</a></p>
+<section class="section">
+  <div class="section-head"><h2>Around the incident</h2><a class="small" href="{{.Link}}?from={{.ChartFrom.Unix}}&to={{.ChartTo.Unix}}">Open the full page for this window →</a></div>
+  <div class="charts" data-series="{{.ChartSeries}}" data-from="{{.ChartFrom.Unix}}" data-to="{{.ChartTo.Unix}}">
+    <section class="card"><div class="card-head"><h2>p95 latency of the route</h2></div><div class="chart" data-chart="incident"></div></section>
+  </div>
 </section>
 {{end}}
-<section>
-  <h2>Deliveries</h2>
+<section class="section">
+  <div class="section-head"><h2>Details</h2></div>
+  <div class="card"><div class="table-wrap"><table class="kv"><tbody>{{range $key, $value := .Details}}<tr><th>{{$key}}</th><td class="mono">{{$value}}</td></tr>{{end}}</tbody></table></div></div>
+</section>
+<section class="section">
+  <div class="section-head"><h2>Deliveries</h2></div>
+  <div class="card">
   {{if .Deliveries}}
   <div class="table-wrap"><table>
     <thead><tr><th>Channel</th><th>Kind</th><th>Created</th><th>Sent</th><th class="num">Attempts</th><th>Status</th><th>Error</th></tr></thead>
-    <tbody>{{range .Deliveries}}<tr><td>{{.Channel}}</td><td>{{.Kind}}</td><td>{{datetime .CreatedAt}}</td><td>{{if .SentAt}}{{datetime .SentAt}}{{else}}—{{end}}</td><td class="num">{{.Attempts}}</td><td>{{.Status}}</td><td>{{if .Error}}{{.Error}}{{else}}—{{end}}</td></tr>{{end}}</tbody>
+    <tbody>{{range .Deliveries}}<tr><td>{{.Channel}}</td><td>{{.Kind}}</td><td>{{datetime .CreatedAt}}</td><td>{{if .SentAt}}{{datetime .SentAt}}{{else}}<span class="muted">—</span>{{end}}</td><td class="num">{{.Attempts}}</td><td><span class="badge badge-{{if eq .Status "sent"}}ok{{else if eq .Status "failed"}}critical{{else}}warning{{end}}">{{.Status}}</span></td><td>{{if .Error}}{{.Error}}{{else}}<span class="muted">—</span>{{end}}</td></tr>{{end}}</tbody>
   </table></div>
-  {{else}}<p class="empty">No deliveries recorded for this incident. Apps labeled raedar.alerts=false are recorded but not sent.</p>{{end}}
+  {{else}}<div class="card-pad empty">No deliveries recorded for this incident. Apps labeled raedar.alerts=false are recorded but not sent.</div>{{end}}
+  </div>
 </section>
 {{end}}
 {{template "footer" .}}
