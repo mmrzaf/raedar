@@ -13,11 +13,11 @@
 <section>
   <h2>Notifications</h2>
   <div class="table-wrap"><table><tbody>
-    {{range .Data.Notify.Channels}}<tr><th>{{.Name}}</th><td>{{if .Configured}}configured, {{.Route}}{{else}}not configured{{end}}</td></tr>{{end}}
-    <tr><th>Warnings</th><td>{{if .Data.Notify.Warning}}{{.Data.Notify.Warning}}{{else}}none{{end}}</td></tr>
-    <tr><th>Critical</th><td>{{.Data.Notify.Critical}}</td></tr>
-    <tr><th>Digest</th><td>{{.Data.Notify.Digest}}</td></tr>
-    <tr><th>Proxy</th><td>{{.Data.Notify.Proxy}}</td></tr>
+    {{range .Notify.Channels}}<tr><th>{{.Name}}</th><td>{{if .Configured}}configured, {{.Route}}{{else}}not configured{{end}}</td></tr>{{end}}
+    <tr><th>Warnings</th><td>{{if .Notify.Warning}}{{.Notify.Warning}}{{else}}none{{end}}</td></tr>
+    <tr><th>Critical</th><td>{{.Notify.Critical}}</td></tr>
+    <tr><th>Digest</th><td>{{.Notify.Digest}}</td></tr>
+    <tr><th>Proxy</th><td>{{.Notify.Proxy}}</td></tr>
   </tbody></table></div>
 </section>
 <section>

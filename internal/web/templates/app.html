@@ -21,7 +21,7 @@
     <thead><tr><th>Slot</th><th>Container</th><th>Image</th><th>State</th><th>Health</th><th>Uptime</th><th class="num">Restarts</th><th class="num">CPU</th><th class="num">Memory</th></tr></thead>
     <tbody>{{range .Containers}}<tr>
       <td>{{.Slot}}</td><td>{{.Name}}</td><td class="muted">{{.Image}}</td><td>{{.State}}</td><td>{{if .Health}}{{.Health}}{{else}}—{{end}}</td>
-      <td>{{if gt .Uptime 0.0}}{{duration .Uptime}}{{else}}—{{end}}</td><td class="num">{{.Restarts}}</td>
+      <td>{{if .Uptime}}{{duration .Uptime}}{{else}}—{{end}}</td><td class="num">{{.Restarts}}</td>
       <td class="num">{{printf "%.0f" .CPU}} m</td><td class="num">{{bytes .Memory}}</td>
     </tr>{{end}}</tbody>
   </table></div>

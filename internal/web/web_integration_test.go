@@ -359,15 +359,23 @@ func TestPatternsAPI(t *testing.T) {
 func TestPagesAndHealth(t *testing.T) {
 	server, _, _, _ := newIntegrationServer(t)
 	handler := server.Handler()
-	pages := []string{"/", "/apps/shop", "/host", "/patterns", "/events", "/about"}
-	for _, page := range pages {
+	pages := map[string]string{
+		"/":            "Apps",
+		"/apps/shop":   "Paths",
+		"/host":        "Certificates",
+		"/patterns":    "Day profile",
+		"/events":      "Events",
+		"/incidents/1": "Deliveries",
+		"/about":       "Notifications",
+	}
+	for page, marker := range pages {
 		recorder := get(t, handler, page)
 		if recorder.Code != http.StatusOK {
 			t.Errorf("GET %s status = %d, want 200 (body %q)", page, recorder.Code, recorder.Body.String())
 			continue
 		}
-		if !strings.Contains(recorder.Body.String(), "Raedar") {
-			t.Errorf("GET %s body does not look like a Raedar page", page)
+		if !strings.Contains(recorder.Body.String(), marker) {
+			t.Errorf("GET %s body does not contain %q, the page was not rendered fully", page, marker)
 		}
 	}
 	if _, err := server.loadOverview(context.Background()); err != nil {

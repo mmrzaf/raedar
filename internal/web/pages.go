@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -565,12 +566,17 @@ func decodeJSON(data []byte, value any) error {
 	return json.Unmarshal(data, value)
 }
 
-// render writes one page.
+// render writes one page. A template error becomes a 500 instead of a
+// half-written page.
 func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
+	var page bytes.Buffer
+	if err := s.templates.ExecuteTemplate(&page, name, data); err != nil {
 		s.logger.Error("render page", "page", name, "error", err)
+		http.Error(w, "cannot render the page", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(page.Bytes())
 }
 
 // settings returns the effective configuration with secrets masked.
