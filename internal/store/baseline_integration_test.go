@@ -322,6 +322,9 @@ func TestHostAndDiskSeries(t *testing.T) {
 	if len(hosts) != 1 || hosts[0].CPUAvg != 20 || hosts[0].CPUMax != 30 {
 		t.Errorf("host bins = %+v, want one bin with 20/30 CPU", hosts)
 	}
+	if hosts[0].SwapUsedAvg != 1 {
+		t.Errorf("swap average = %v, want the seeded 1 byte", hosts[0].SwapUsedAvg)
+	}
 	disks, err := st.DiskSeries(ctx, []string{"/"}, Range{From: base, To: base.Add(2 * time.Minute)}, SourceMinutes, 2*time.Minute)
 	if err != nil {
 		t.Fatalf("DiskSeries() error = %v", err)

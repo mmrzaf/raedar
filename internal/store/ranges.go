@@ -185,6 +185,8 @@ type HostBin struct {
 	Load1Avg float64
 	// MemAvailableAvg and MemAvailableMin are the available memory in bytes.
 	MemAvailableAvg, MemAvailableMin float64
+	// SwapUsedAvg is the swap in use, in bytes.
+	SwapUsedAvg float64
 }
 
 // HostSeries reads host data, grouped into bins.
@@ -193,7 +195,8 @@ func (s *Store) HostSeries(ctx context.Context, r Range, source RangeSource, bin
 	if source == SourceHours {
 		query = `
 			select date_bin($3::double precision * interval '1 second', ts, $1::timestamptz) as bin,
-			       avg(cpu_avg), max(cpu_max), avg(load1_avg), avg(mem_available_avg), min(mem_available_min)
+			       avg(cpu_avg), max(cpu_max), avg(load1_avg), avg(mem_available_avg), min(mem_available_min),
+		       avg(swap_used_max)
 			from host_hour
 			where ts >= $1 and ts < $2
 			group by bin
@@ -201,7 +204,8 @@ func (s *Store) HostSeries(ctx context.Context, r Range, source RangeSource, bin
 	} else {
 		query = `
 			select date_bin($3::double precision * interval '1 second', ts, $1::timestamptz) as bin,
-			       avg(cpu_percent), max(cpu_percent), avg(load1), avg(mem_available), min(mem_available)
+			       avg(cpu_percent), max(cpu_percent), avg(load1), avg(mem_available), min(mem_available),
+		       avg(swap_used)
 			from host_minute
 			where ts >= $1 and ts < $2
 			group by bin
@@ -216,7 +220,7 @@ func (s *Store) HostSeries(ctx context.Context, r Range, source RangeSource, bin
 	for rows.Next() {
 		var entry HostBin
 		if err := rows.Scan(&entry.TS, &entry.CPUAvg, &entry.CPUMax, &entry.Load1Avg,
-			&entry.MemAvailableAvg, &entry.MemAvailableMin); err != nil {
+			&entry.MemAvailableAvg, &entry.MemAvailableMin, &entry.SwapUsedAvg); err != nil {
 			return nil, fmt.Errorf("scan host series: %w", err)
 		}
 		bins = append(bins, entry)
