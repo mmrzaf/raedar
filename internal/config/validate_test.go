@@ -1,0 +1,208 @@
+package config
+
+import "testing"
+
+// checkConfig loads a configuration with the given overrides and asserts that
+// it either loads or fails with an error containing wantErr.
+func checkConfig(t *testing.T, extras map[string]string, wantErr string) {
+	t.Helper()
+	_, err := loadWithExtras(t, extras)
+	if wantErr == "" {
+		if err != nil {
+			t.Fatalf("Load() error = %v, want nil", err)
+		}
+		return
+	}
+	assertErrorContains(t, err, wantErr)
+}
+
+func TestValidateRules(t *testing.T) {
+	tests := []struct {
+		name    string
+		extras  map[string]string
+		wantErr string
+	}{
+		{name: "default thresholds agree"},
+		{
+			name:    "disk critical below warning",
+			extras:  map[string]string{"RAEDAR_DISK_WARN": "90", "RAEDAR_DISK_CRIT": "80"},
+			wantErr: "RAEDAR_DISK_CRIT must not be lower than RAEDAR_DISK_WARN",
+		},
+		{
+			name:   "disk critical equal to warning",
+			extras: map[string]string{"RAEDAR_DISK_WARN": "90", "RAEDAR_DISK_CRIT": "90"},
+		},
+		{
+			name:    "certificate critical longer than warning",
+			extras:  map[string]string{"RAEDAR_CERT_WARN": "3d", "RAEDAR_CERT_CRIT": "14d"},
+			wantErr: "RAEDAR_CERT_CRIT must not be longer than RAEDAR_CERT_WARN",
+		},
+		{
+			name:   "certificate critical equal to warning",
+			extras: map[string]string{"RAEDAR_CERT_WARN": "3d", "RAEDAR_CERT_CRIT": "3d"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkConfig(t, tt.extras, tt.wantErr)
+		})
+	}
+}
+
+func TestValidateNotify(t *testing.T) {
+	tests := []struct {
+		name    string
+		extras  map[string]string
+		wantErr string
+	}{
+		{name: "nothing configured"},
+		{
+			name:    "telegram token without chat IDs",
+			extras:  map[string]string{"RAEDAR_TELEGRAM_TOKEN": "123456:abcdef"},
+			wantErr: "RAEDAR_TELEGRAM_CHAT_IDS is required when RAEDAR_TELEGRAM_TOKEN is set",
+		},
+		{
+			name:    "telegram chat IDs without token",
+			extras:  map[string]string{"RAEDAR_TELEGRAM_CHAT_IDS": "123456789"},
+			wantErr: "RAEDAR_TELEGRAM_TOKEN is required when RAEDAR_TELEGRAM_CHAT_IDS is set",
+		},
+		{
+			name: "telegram complete",
+			extras: map[string]string{
+				"RAEDAR_TELEGRAM_TOKEN":    "123456:abcdef",
+				"RAEDAR_TELEGRAM_CHAT_IDS": "123456789",
+			},
+		},
+		{
+			name:    "SMS recipients without provider",
+			extras:  map[string]string{"RAEDAR_SMS_TO": "+989120000000"},
+			wantErr: "RAEDAR_SMS_PROVIDER is required when RAEDAR_SMS_TO is set",
+		},
+		{
+			name:    "SMS provider without recipients",
+			extras:  map[string]string{"RAEDAR_SMS_PROVIDER": "kavenegar"},
+			wantErr: "RAEDAR_SMS_TO is required when RAEDAR_SMS_PROVIDER is set",
+		},
+		{
+			name: "kavenegar without API key",
+			extras: map[string]string{
+				"RAEDAR_SMS_PROVIDER": "kavenegar",
+				"RAEDAR_SMS_TO":       "+989120000000",
+			},
+			wantErr: "RAEDAR_KAVENEGAR_API_KEY is required when RAEDAR_SMS_PROVIDER is kavenegar",
+		},
+		{
+			name: "kavenegar complete",
+			extras: map[string]string{
+				"RAEDAR_SMS_PROVIDER":      "kavenegar",
+				"RAEDAR_SMS_TO":            "+989120000000",
+				"RAEDAR_KAVENEGAR_API_KEY": "key-1",
+			},
+		},
+		{
+			name: "http provider without URL",
+			extras: map[string]string{
+				"RAEDAR_SMS_PROVIDER": "http",
+				"RAEDAR_SMS_TO":       "+989120000000",
+			},
+			wantErr: "RAEDAR_SMS_HTTP_URL is required when RAEDAR_SMS_PROVIDER is http",
+		},
+		{
+			name:   "http provider complete",
+			extras: smsHTTPEnv(),
+		},
+		{
+			name:    "webhook secret without URL",
+			extras:  map[string]string{"RAEDAR_WEBHOOK_SECRET": "s3cret"},
+			wantErr: "RAEDAR_WEBHOOK_SECRET requires RAEDAR_WEBHOOK_URL",
+		},
+		{
+			name:    "proxy scope without proxy",
+			extras:  map[string]string{"RAEDAR_OUTBOUND_PROXY_FOR": "sms"},
+			wantErr: "RAEDAR_OUTBOUND_PROXY_FOR requires RAEDAR_OUTBOUND_PROXY",
+		},
+		{
+			name: "proxy scope with proxy",
+			extras: map[string]string{
+				"RAEDAR_OUTBOUND_PROXY":     "http://proxy.example.com:3128",
+				"RAEDAR_OUTBOUND_PROXY_FOR": "telegram,sms",
+			},
+		},
+		{
+			name: "webhook complete",
+			extras: map[string]string{
+				"RAEDAR_WEBHOOK_URL":    "https://hooks.example.com/raedar",
+				"RAEDAR_WEBHOOK_SECRET": "s3cret",
+			},
+		},
+		{
+			name:    "digest without channels",
+			extras:  map[string]string{"RAEDAR_DIGEST_CHANNELS": " , "},
+			wantErr: "RAEDAR_DIGEST_CHANNELS must not be empty when RAEDAR_DIGEST_AT is set",
+		},
+		{
+			name: "disabled digest without channels",
+			extras: map[string]string{
+				"RAEDAR_DIGEST_AT":       "",
+				"RAEDAR_DIGEST_CHANNELS": " , ",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkConfig(t, tt.extras, tt.wantErr)
+		})
+	}
+}
+
+func TestValidateHeartbeat(t *testing.T) {
+	tests := []struct {
+		name    string
+		extras  map[string]string
+		wantErr string
+	}{
+		{name: "nothing configured"},
+		{
+			name:    "peers without receive token",
+			extras:  map[string]string{"RAEDAR_HEARTBEAT_PEERS": "host-2"},
+			wantErr: "RAEDAR_HEARTBEAT_RECEIVE_TOKEN is required when RAEDAR_HEARTBEAT_PEERS is set",
+		},
+		{
+			name:    "receive token without peers",
+			extras:  map[string]string{"RAEDAR_HEARTBEAT_RECEIVE_TOKEN": "token"},
+			wantErr: "RAEDAR_HEARTBEAT_PEERS is required when RAEDAR_HEARTBEAT_RECEIVE_TOKEN is set",
+		},
+		{
+			name: "receiver complete",
+			extras: map[string]string{
+				"RAEDAR_HEARTBEAT_PEERS":         "host-2,host-3",
+				"RAEDAR_HEARTBEAT_RECEIVE_TOKEN": "token",
+			},
+		},
+		{
+			name: "duplicate peers",
+			extras: map[string]string{
+				"RAEDAR_HEARTBEAT_PEERS":         "host-2, host-2",
+				"RAEDAR_HEARTBEAT_RECEIVE_TOKEN": "token",
+			},
+			wantErr: "RAEDAR_HEARTBEAT_PEERS lists a peer twice",
+		},
+		{
+			name:    "header without URL",
+			extras:  map[string]string{"RAEDAR_HEARTBEAT_HEADER": "Authorization: Bearer token"},
+			wantErr: "RAEDAR_HEARTBEAT_HEADER requires RAEDAR_HEARTBEAT_URL",
+		},
+		{
+			name: "sender complete",
+			extras: map[string]string{
+				"RAEDAR_HEARTBEAT_URL":    "https://hb.example.com/host-1",
+				"RAEDAR_HEARTBEAT_HEADER": "Authorization: Bearer token",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checkConfig(t, tt.extras, tt.wantErr)
+		})
+	}
+}
