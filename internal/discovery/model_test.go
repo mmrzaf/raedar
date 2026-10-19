@@ -54,8 +54,8 @@ func TestAppNamePrecedence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inspect := inspectFixture("c1", "standalone-web", tt.labels)
-			if got := appName(inspect); got != tt.want {
-				t.Errorf("appName() = %q, want %q", got, tt.want)
+			if got := identify(inspect.Name, inspect.Labels).App; got != tt.want {
+				t.Errorf("identify().App = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -88,8 +88,8 @@ func TestSlotKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inspect := inspectFixture("c1", "standalone-web", tt.labels)
-			if got := slotKey(inspect); got != tt.want {
-				t.Errorf("slotKey() = %q, want %q", got, tt.want)
+			if got := identify(inspect.Name, inspect.Labels).SlotKey; got != tt.want {
+				t.Errorf("identify().SlotKey = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -190,8 +190,8 @@ func TestBuildResolvesAppLabels(t *testing.T) {
 	if !app.Alerts {
 		t.Error("Alerts = false, want the default true")
 	}
-	if app.Hidden {
-		t.Error("Hidden = true, want false while one container is not ignored")
+	if len(app.Slots) != 1 {
+		t.Errorf("slots = %v, want only the container that is not ignored", app.Slots)
 	}
 	if want := []string{"/ws", "/events"}; !reflect.DeepEqual(app.LatencyIgnore, want) {
 		t.Errorf("LatencyIgnore = %v, want %v", app.LatencyIgnore, want)
@@ -204,7 +204,7 @@ func TestBuildResolvesAppLabels(t *testing.T) {
 	}
 }
 
-func TestBuildHidesFullyIgnoredApps(t *testing.T) {
+func TestBuildSkipsIgnoredApps(t *testing.T) {
 	first := inspectFixture("c1", "shop-api-1", map[string]string{
 		labelComposeProject: "shop",
 		labelComposeService: "api",
@@ -219,12 +219,97 @@ func TestBuildHidesFullyIgnoredApps(t *testing.T) {
 	})
 	second.Labels["traefik.http.routers.shop-db.rule"] = "Host(`db.example.com`)"
 	model := build([]docker.ContainerInspect{first, second}, "", "", discardLogger())
-	app := model.Apps["shop"]
-	if app == nil || !app.Hidden {
-		t.Fatalf("app = %+v, want a hidden app", app)
+	if app := model.Apps["shop"]; app != nil {
+		t.Errorf("app = %+v, want no app when every container is ignored", app)
 	}
-	if len(app.Routes) != 0 {
-		t.Errorf("routes = %+v, want none for ignored containers", app.Routes)
+	if len(model.Routes) != 0 {
+		t.Errorf("routes = %+v, want none for ignored containers", model.Routes)
+	}
+	for _, id := range []string{"c1", "c2"} {
+		container := model.Containers[id]
+		if container == nil || container.Slot != nil || container.App != nil {
+			t.Errorf("container %s = %+v, want it known but without app or slot", id, container)
+		}
+	}
+}
+
+func TestBuildSkipsOneOffContainers(t *testing.T) {
+	service := inspectFixture("c1", "shop-api-1", map[string]string{
+		labelComposeProject: "shop",
+		labelComposeService: "api",
+		labelComposeNumber:  "1",
+		labelComposeOneOff:  "False",
+	})
+	oneOff := inspectFixture("c2", "shop-api-run-1a2b3c", map[string]string{
+		labelComposeProject: "shop",
+		labelComposeService: "api",
+		labelComposeNumber:  "1",
+		labelComposeOneOff:  "True",
+	})
+	oneOff.Created = oneOff.Created.Add(time.Hour)
+	model := build([]docker.ContainerInspect{service, oneOff}, "", "", discardLogger())
+	slot := model.Apps["shop"].Slots["api #1"]
+	if slot == nil || slot.Container == nil || slot.Container.ID != "c1" {
+		t.Fatalf("slot = %+v, want the service container, not the newer one-off", slot)
+	}
+	if got := model.Containers["c2"]; got == nil || got.Slot != nil {
+		t.Errorf("one-off container = %+v, want it known but without a slot", got)
+	}
+}
+
+func TestIdentify(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   identity
+	}{
+		{
+			name: "compose replica",
+			labels: map[string]string{
+				labelComposeProject: "shop", labelComposeService: "api", labelComposeNumber: "2",
+			},
+			want: identity{App: "shop", SlotKey: "api #2", Service: "api", Replica: 2},
+		},
+		{
+			name:   "standalone",
+			labels: nil,
+			want:   identity{App: "c", SlotKey: "c", Service: "c", Replica: 1},
+		},
+		{
+			name:   "ignored and one-off flags",
+			labels: map[string]string{labelIgnore: "true", labelComposeOneOff: "True"},
+			want:   identity{App: "c", SlotKey: "c", Service: "c", Replica: 1, Ignored: true, OneOff: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := identify("c", tt.labels); got != tt.want {
+				t.Errorf("identify() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+	if !identify("c", nil).Tracked() || identify("c", map[string]string{labelIgnore: "true"}).Tracked() {
+		t.Error("Tracked() must be true for plain containers and false for ignored ones")
+	}
+}
+
+func TestContainerFinished(t *testing.T) {
+	tests := []struct {
+		name      string
+		container Container
+		want      bool
+	}{
+		{name: "migration job", container: Container{State: "exited", ExitCode: 0, RestartPolicy: "no"}, want: true},
+		{name: "crashed", container: Container{State: "exited", ExitCode: 1, RestartPolicy: "no"}},
+		{name: "restarts on exit", container: Container{State: "exited", ExitCode: 0, RestartPolicy: "always"}},
+		{name: "running", container: Container{State: "running", RestartPolicy: "no"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.container.Finished(); got != tt.want {
+				t.Errorf("Finished() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

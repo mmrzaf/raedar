@@ -94,7 +94,7 @@ func (e *Engine) collect(ctx context.Context, now time.Time) (*snapshot, error) 
 			s.baselines[baseline.RouteID] = baseline
 		}
 	}
-	for _, length := range []time.Duration{2 * time.Minute, 5 * time.Minute, 10 * time.Minute} {
+	for _, length := range []time.Duration{routeDownWindow, routeErrorsWindow, routeSlowWindow} {
 		windows, err := e.window(ctx, now, length)
 		if err != nil {
 			return nil, err
@@ -102,20 +102,20 @@ func (e *Engine) collect(ctx context.Context, now time.Time) (*snapshot, error) 
 		s.windows[length] = windows
 	}
 	end := now.Truncate(time.Minute)
-	errors, err := e.store.PathWindows(ctx, end.Add(-5*time.Minute), end)
+	errors, err := e.store.PathWindows(ctx, end.Add(-routeErrorsWindow), end)
 	if err != nil {
 		return nil, err
 	}
 	s.pathErrors = topByErrors(errors)
-	slow, err := e.store.PathWindows(ctx, end.Add(-10*time.Minute), end)
+	slow, err := e.store.PathWindows(ctx, end.Add(-routeSlowWindow), end)
 	if err != nil {
 		return nil, err
 	}
-	s.pathSlow = topByLatency(slow, 10)
-	if s.slotSamples, err = e.store.SlotSamples(ctx, now.Add(-10*time.Minute)); err != nil {
+	s.pathSlow = topByLatency(slow, routeSlowPathMinRequests)
+	if s.slotSamples, err = e.store.SlotSamples(ctx, now.Add(-slotSampleWindow)); err != nil {
 		return nil, err
 	}
-	crashes, err := e.store.Events(ctx, "crashed", now.Add(-30*time.Minute), now.Add(time.Second))
+	crashes, err := e.store.Events(ctx, store.EventCrashed, now.Add(-crashLookback), now.Add(time.Second))
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func (e *Engine) collect(ctx context.Context, now time.Time) (*snapshot, error) 
 	if s.host, err = e.store.LatestHostSample(ctx); err != nil {
 		return nil, err
 	}
-	if s.disks, err = e.store.DiskSamples(ctx, now.Add(-24*time.Hour)); err != nil {
+	if s.disks, err = e.store.DiskSamples(ctx, now.Add(-diskHistory)); err != nil {
 		return nil, err
 	}
 	if s.units, err = e.store.Units(ctx); err != nil {
@@ -276,8 +276,8 @@ func (e *Engine) routeReadings(now time.Time, s *snapshot) []reading {
 	// A route that is down stays quiet for the error and latency rules.
 	down := make(map[int64]bool)
 	for routeID, info := range s.routes {
-		window := s.windows[2*time.Minute][routeID]
-		firing := window != nil && window.Requests >= 3 && window.NoBackend*2 >= window.Requests
+		window := s.windows[routeDownWindow][routeID]
+		firing := window != nil && window.Requests >= routeDownMinRequests && window.NoBackend*2 >= window.Requests
 		if firing {
 			down[routeID] = true
 		}
@@ -286,7 +286,7 @@ func (e *Engine) routeReadings(now time.Time, s *snapshot) []reading {
 			subject:      info.route.Name,
 			appID:        appIDOf(info.app),
 			routeID:      idOf(routeID),
-			severity:     "critical",
+			severity:     store.SeverityCritical,
 			firing:       firing,
 			alerts:       alertsOf(info.app),
 			summary:      "no backend for requests",
@@ -300,9 +300,9 @@ func (e *Engine) routeReadings(now time.Time, s *snapshot) []reading {
 		if info.app != nil && info.app.ErrorsMinRate != nil {
 			minRate = *info.app.ErrorsMinRate
 		}
-		severity := "warning"
+		severity := store.SeverityWarning
 		if info.app != nil && info.app.Critical {
-			severity = "critical"
+			severity = store.SeverityCritical
 		}
 		readings = append(readings, e.routeErrorReading(info, s, minRate, severity, down[routeID]))
 		slowMin := e.cfg.Rules.SlowMinP95
@@ -315,7 +315,7 @@ func (e *Engine) routeReadings(now time.Time, s *snapshot) []reading {
 }
 
 // routeErrorReading evaluates route.errors for one route.
-func (e *Engine) routeErrorReading(info *routeInfo, s *snapshot, minRate config.Percent, severity string, down bool) reading {
+func (e *Engine) routeErrorReading(info *routeInfo, s *snapshot, minRate config.Percent, severity store.Severity, down bool) reading {
 	reading := reading{
 		rule:         RuleRouteErrors,
 		subject:      info.route.Name,
@@ -323,11 +323,11 @@ func (e *Engine) routeErrorReading(info *routeInfo, s *snapshot, minRate config.
 		routeID:      idOf(info.routeID),
 		severity:     severity,
 		alerts:       alertsOf(info.app),
-		openAfter:    2 * time.Minute,
+		openAfter:    routeErrorsOpenAfter,
 		resolveAfter: e.cfg.Rules.ResolveAfter,
 		summary:      "5xx errors",
 	}
-	window := s.windows[5*time.Minute][info.routeID]
+	window := s.windows[routeErrorsWindow][info.routeID]
 	if window == nil || down {
 		return reading
 	}
@@ -342,7 +342,7 @@ func (e *Engine) routeErrorReading(info *routeInfo, s *snapshot, minRate config.
 		baseline = *computed.ErrorRate
 		baselineOK = rate >= e.cfg.Rules.ErrorsFactor*baseline
 	}
-	reading.firing = requests >= int64(e.cfg.Rules.ErrorsMinRequests) && window.S5xx >= 5 &&
+	reading.firing = requests >= int64(e.cfg.Rules.ErrorsMinRequests) && window.S5xx >= routeErrorsMinErrors &&
 		rate*100 >= float64(minRate) && baselineOK
 	reading.details = map[string]any{
 		"requests": requests,
@@ -361,7 +361,7 @@ func (e *Engine) routeErrorReading(info *routeInfo, s *snapshot, minRate config.
 }
 
 // routeSlowReading evaluates route.slow for one route.
-func (e *Engine) routeSlowReading(info *routeInfo, s *snapshot, minP95 time.Duration, severity string, down bool) reading {
+func (e *Engine) routeSlowReading(info *routeInfo, s *snapshot, minP95 time.Duration, severity store.Severity, down bool) reading {
 	reading := reading{
 		rule:         RuleRouteSlow,
 		subject:      info.route.Name,
@@ -369,11 +369,11 @@ func (e *Engine) routeSlowReading(info *routeInfo, s *snapshot, minP95 time.Dura
 		routeID:      idOf(info.routeID),
 		severity:     severity,
 		alerts:       alertsOf(info.app),
-		openAfter:    5 * time.Minute,
+		openAfter:    routeSlowOpenAfter,
 		resolveAfter: e.cfg.Rules.ResolveAfter,
 		summary:      "slow responses",
 	}
-	window := s.windows[10*time.Minute][info.routeID]
+	window := s.windows[routeSlowWindow][info.routeID]
 	if window == nil || down {
 		return reading
 	}
@@ -412,9 +412,9 @@ func (e *Engine) containerReadings(now time.Time, s *snapshot) []reading {
 	sort.Slice(slotIDs, func(i, j int) bool { return slotIDs[i] < slotIDs[j] })
 	for _, slotID := range slotIDs {
 		slot := s.slots[slotID]
-		severity := "warning"
+		severity := store.SeverityWarning
 		if slot.critical {
-			severity = "critical"
+			severity = store.SeverityCritical
 		}
 		readings = append(readings, reading{
 			rule:         RuleContainerUnhealthy,
@@ -424,7 +424,7 @@ func (e *Engine) containerReadings(now time.Time, s *snapshot) []reading {
 			severity:     severity,
 			firing:       slot.health == "unhealthy",
 			alerts:       slot.alerts,
-			openAfter:    2 * time.Minute,
+			openAfter:    unhealthyOpenAfter,
 			resolveAfter: e.cfg.Rules.ResolveAfter,
 			summary:      "health check failing",
 			details:      map[string]any{"health": slot.health},
@@ -443,9 +443,9 @@ func (e *Engine) memoryReading(slot *slotInfo, s *snapshot) reading {
 		subject:      slot.subject,
 		appID:        slot.appID,
 		slotID:       idOf(slot.slotID),
-		severity:     "warning",
+		severity:     store.SeverityWarning,
 		alerts:       slot.alerts,
-		openAfter:    10 * time.Minute,
+		openAfter:    memoryOpenAfter,
 		resolveAfter: e.cfg.Rules.ResolveAfter,
 		summary:      "memory near the limit",
 	}
@@ -471,19 +471,19 @@ func (e *Engine) restartingReading(now time.Time, slot *slotInfo, s *snapshot) r
 		subject:      slot.subject,
 		appID:        slot.appID,
 		slotID:       idOf(slot.slotID),
-		severity:     "critical",
+		severity:     store.SeverityCritical,
 		alerts:       slot.alerts,
-		resolveAfter: 10 * time.Minute,
+		resolveAfter: crashLoopResolveAfter,
 		summary:      "container restarting",
 	}
 	var exitCodes []int
 	for _, event := range s.crashes[slot.slotID] {
-		if event.TS.Before(now.Add(-10 * time.Minute)) {
+		if event.TS.Before(now.Add(-crashLoopWindow)) {
 			continue
 		}
 		exitCodes = append(exitCodes, crashExitCode(event))
 	}
-	reading.firing = len(exitCodes) >= 3
+	reading.firing = len(exitCodes) >= crashLoopCrashes
 	details := map[string]any{"crashes": len(exitCodes)}
 	if len(exitCodes) > 0 {
 		details["last_exit_code"] = exitCodes[len(exitCodes)-1]
@@ -493,7 +493,7 @@ func (e *Engine) restartingReading(now time.Time, slot *slotInfo, s *snapshot) r
 }
 
 // stoppedReading evaluates container.stopped for one slot.
-func (e *Engine) stoppedReading(now time.Time, slot *slotInfo, s *snapshot, severity string) reading {
+func (e *Engine) stoppedReading(now time.Time, slot *slotInfo, s *snapshot, severity store.Severity) reading {
 	reading := reading{
 		rule:         RuleContainerStopped,
 		subject:      slot.subject,
@@ -501,14 +501,14 @@ func (e *Engine) stoppedReading(now time.Time, slot *slotInfo, s *snapshot, seve
 		slotID:       idOf(slot.slotID),
 		severity:     severity,
 		alerts:       slot.alerts,
-		openAfter:    time.Minute,
+		openAfter:    stoppedOpenAfter,
 		resolveAfter: 0,
 		summary:      "container stopped after a crash",
 	}
 	var last *store.Event
 	for i := range s.crashes[slot.slotID] {
 		event := &s.crashes[slot.slotID][i]
-		if event.TS.Before(now.Add(-30 * time.Minute)) {
+		if event.TS.Before(now.Add(-crashLookback)) {
 			continue
 		}
 		last = event

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 )
 
@@ -25,33 +26,6 @@ const peerInterval = 5 * time.Second
 // hitTimeout bounds one heartbeat request.
 const hitTimeout = 15 * time.Second
 
-// Clock provides the time to the heartbeat code, so that tests run without
-// waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
-
 // Sender pings an external URL while Raedar is healthy.
 type Sender struct {
 	url      string
@@ -59,13 +33,13 @@ type Sender struct {
 	interval time.Duration
 	client   *http.Client
 	logger   *slog.Logger
-	clock    Clock
+	clock    clock.Clock
 	healthy  func(context.Context) bool
 }
 
 // NewSender returns a heartbeat sender. healthy reports whether Raedar may
 // report itself alive.
-func NewSender(cfg *config.Config, client *http.Client, logger *slog.Logger, clock Clock, healthy func(context.Context) bool) *Sender {
+func NewSender(cfg *config.Config, client *http.Client, logger *slog.Logger, clock clock.Clock, healthy func(context.Context) bool) *Sender {
 	return &Sender{
 		url:      cfg.Heartbeat.URL,
 		header:   cfg.Heartbeat.Header,
@@ -131,7 +105,7 @@ type Receiver struct {
 	token  string
 	store  Store
 	logger *slog.Logger
-	clock  Clock
+	clock  clock.Clock
 
 	mu   sync.Mutex
 	last map[string]time.Time
@@ -144,7 +118,7 @@ type Store interface {
 }
 
 // NewReceiver returns a heartbeat receiver for the configured peers.
-func NewReceiver(peers []string, token string, st Store, logger *slog.Logger, clock Clock) *Receiver {
+func NewReceiver(peers []string, token string, st Store, logger *slog.Logger, clock clock.Clock) *Receiver {
 	return &Receiver{
 		peers:  peers,
 		token:  token,

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/notify"
 )
@@ -26,7 +27,7 @@ func runNotifyTest(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return exitError
 	}
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
-	results, err := notify.Test(ctx, cfg, logger, notify.SystemClock(), channel)
+	results, err := notify.Test(ctx, cfg, logger, clock.System(), channel)
 	if err != nil {
 		fmt.Fprintf(stderr, "raedar: %v\n", err)
 		return exitError

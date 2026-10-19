@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 )
 
@@ -52,7 +53,7 @@ type Channel interface {
 // newChannels returns the configured channels by kind. proxied and direct
 // are the HTTP clients for requests that use the outbound proxy and requests
 // that do not.
-func newChannels(cfg *config.Config, proxied, direct *http.Client, clock Clock) map[Kind]Channel {
+func newChannels(cfg *config.Config, proxied, direct *http.Client, clock clock.Clock) map[Kind]Channel {
 	channels := make(map[Kind]Channel)
 	clientFor := func(kind Kind) *http.Client {
 		if cfg.UsesProxy(proxyTarget(kind)) {
@@ -270,7 +271,7 @@ type webhookChannel struct {
 	url    string
 	secret string
 	client *http.Client
-	clock  Clock
+	clock  clock.Clock
 }
 
 // Kind returns the channel kind.

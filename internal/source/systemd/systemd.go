@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
+	"github.com/mmrzaf/raedar/internal/sourcestatus"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -18,36 +21,7 @@ const SourceName = "systemd"
 const (
 	// interval is how often the units are read.
 	interval = 60 * time.Second
-	// retryBase and retryMax bound the delay after a failed pass.
-	retryBase = time.Second
-	retryMax  = 30 * time.Second
 )
-
-// Clock provides timers to the source, so that tests run without waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
 
 // Store records unit state and events.
 type Store interface {
@@ -67,20 +41,19 @@ type Source struct {
 	reader   Reader
 	store    Store
 	logger   *slog.Logger
-	clock    Clock
+	status   *sourcestatus.Reporter
+	clock    clock.Clock
 	ignore   []string
 	critical []string
 	interval time.Duration
 
-	mu          sync.Mutex
-	known       map[string]bool
-	failed      map[string]bool
-	status      string
-	statusError string
+	mu     sync.Mutex
+	known  map[string]bool
+	failed map[string]bool
 }
 
 // New returns a systemd reader source.
-func New(reader Reader, st Store, logger *slog.Logger, clock Clock, ignore, critical []string) *Source {
+func New(reader Reader, st Store, logger *slog.Logger, clock clock.Clock, ignore, critical []string) *Source {
 	return &Source{
 		reader:   reader,
 		store:    st,
@@ -91,7 +64,7 @@ func New(reader Reader, st Store, logger *slog.Logger, clock Clock, ignore, crit
 		interval: interval,
 		known:    make(map[string]bool),
 		failed:   make(map[string]bool),
-		status:   store.StatusUnavailable,
+		status:   sourcestatus.New(SourceName, st, clock, logger),
 	}
 }
 
@@ -100,7 +73,6 @@ func (s *Source) Run(ctx context.Context) error {
 	if err := s.loadKnown(ctx); err != nil {
 		return err
 	}
-	delay := retryBase
 	next := s.clock.After(0)
 	for {
 		select {
@@ -108,14 +80,10 @@ func (s *Source) Run(ctx context.Context) error {
 			return nil
 		case <-next:
 		}
-		err := s.collect(ctx)
-		if err != nil {
+		if err := s.collect(ctx); err != nil {
 			s.logger.Warn("systemd read failed", slog.String("error", err.Error()))
-			delay = min(delay*2, retryMax)
-		} else {
-			delay = retryBase
 		}
-		next = s.clock.After(max(s.interval, delay))
+		next = s.clock.After(s.interval)
 	}
 }
 
@@ -138,7 +106,7 @@ func (s *Source) loadKnown(ctx context.Context) error {
 func (s *Source) collect(ctx context.Context) error {
 	units, err := s.reader.ListUnits(ctx)
 	if err != nil {
-		s.recordStatus(ctx, store.StatusUnavailable, err)
+		s.status.Report(ctx, store.StatusUnavailable, err)
 		return err
 	}
 	now := s.clock.Now()
@@ -174,7 +142,7 @@ func (s *Source) collect(ctx context.Context) error {
 			Since:       unit.Since,
 			LastSeen:    now,
 		}); err != nil {
-			s.recordStatus(ctx, store.StatusUnavailable, err)
+			s.status.Report(ctx, store.StatusUnavailable, err)
 			return err
 		}
 	}
@@ -193,7 +161,7 @@ func (s *Source) collect(ctx context.Context) error {
 	s.mu.Lock()
 	s.failed = failedNow
 	s.mu.Unlock()
-	s.recordStatus(ctx, store.StatusOK, nil)
+	s.status.Report(ctx, store.StatusOK, nil)
 	return nil
 }
 
@@ -201,13 +169,13 @@ func (s *Source) collect(ctx context.Context) error {
 func (s *Source) recordFailedEvent(ctx context.Context, units []Unit, name string, now time.Time) {
 	event := store.Event{
 		TS:       now,
-		Kind:     "unit_failed",
-		Severity: "warning",
+		Kind:     store.EventUnitFailed,
+		Severity: store.SeverityWarning,
 		Subject:  name,
 		Title:    "unit failed",
 	}
 	if Matches(s.critical, name) {
-		event.Severity = "critical"
+		event.Severity = store.SeverityCritical
 	}
 	var data struct {
 		Result     string `json:"result,omitempty"`
@@ -233,8 +201,8 @@ func (s *Source) recordFailedEvent(ctx context.Context, units []Unit, name strin
 func (s *Source) recordRecoveredEvent(ctx context.Context, name string, now time.Time) {
 	event := store.Event{
 		TS:       now,
-		Kind:     "unit_recovered",
-		Severity: "info",
+		Kind:     store.EventUnitRecovered,
+		Severity: store.SeverityInfo,
 		Subject:  name,
 		Title:    "unit recovered",
 		Data:     marshal(struct{}{}),
@@ -253,23 +221,13 @@ func marshal(payload any) []byte {
 	return data
 }
 
-// recordStatus stores the state of the source when it changed.
-func (s *Source) recordStatus(ctx context.Context, status string, cause error) {
-	message := ""
-	if cause != nil {
-		message = cause.Error()
-	}
-	s.mu.Lock()
-	changed := s.status != status || s.statusError != message
-	s.status = status
-	s.statusError = message
-	s.mu.Unlock()
-	if !changed {
-		return
-	}
-	if err := s.store.RecordSourceStatus(ctx, SourceName, status, message, s.clock.Now()); err != nil {
-		s.logger.Warn("record systemd source status", slog.String("error", err.Error()))
-	}
+// BusSocket is where the host's system D-Bus socket is mounted.
+const BusSocket = "/run/dbus/system_bus_socket"
+
+// BusAvailable reports whether the system D-Bus socket exists.
+func BusAvailable() bool {
+	_, err := os.Stat(BusSocket)
+	return err == nil
 }
 
 // Enabled reports whether the systemd source should run for a mode and the

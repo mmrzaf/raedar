@@ -1,42 +1,88 @@
 {{template "header" .}}
-<h1>Overview</h1>
 {{with .Overview}}
+<div class="page-head" data-refresh="30">
+  <div>
+    <h1>Overview</h1>
+    <p class="sub">{{$.Page.HostName}}, as of {{$.Page.Now.In $.Page.Location | time}}</p>
+  </div>
+</div>
+
+<div class="banner banner-{{.Summary.State}}" role="status">
+  <span class="banner-icon" aria-hidden="true">
+    {{if eq .Summary.State "ok"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+    {{else}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5v.01"/><path d="M10.3 4.3 2.6 17.6A2 2 0 0 0 4.3 20.6h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z"/></svg>{{end}}
+  </span>
+  <div>
+    <div class="banner-title">{{.Summary.Title}}</div>
+    <div class="banner-detail">{{.Summary.Detail}}</div>
+  </div>
+</div>
+
 {{if .Incidents}}
-<section class="problems" aria-labelledby="incidents-title">
-  <h2 id="incidents-title">Open incidents</h2>
-  <ul class="incident-list">
-  {{range .Incidents}}
-    <li class="severity-{{.Severity}}">
-      <a href="/incidents/{{.ID}}">
-        <span class="badge badge-{{.Severity}}">{{.Severity}}</span>
-        <strong>{{.Subject}}</strong> — {{.Summary}}
-        <span class="muted">open for {{duration .Duration}}</span>
-      </a>
-    </li>
-  {{end}}
-  </ul>
+<section class="section" aria-labelledby="incidents-title">
+  <div class="section-head"><h2 id="incidents-title">Open incidents</h2></div>
+  <div class="card {{if eq (index .Incidents 0).Severity "critical"}}card-critical{{else}}card-warning{{end}}">
+    <ul class="incident-list">
+    {{range .Incidents}}
+      <li>
+        <a href="/incidents/{{.ID}}">
+          <span class="badge badge-{{.Severity}}">{{.Severity}}</span>
+          <span class="subject">{{.Subject}}</span>
+          <span>{{.Summary}}</span>
+          <span class="when">open for {{duration .Duration}}</span>
+        </a>
+      </li>
+    {{end}}
+    </ul>
+  </div>
 </section>
 {{end}}
-<section aria-labelledby="host-title">
-  <h2 id="host-title">Host</h2>
+
+<section class="section" aria-labelledby="host-title">
+  <div class="section-head"><h2 id="host-title">Host</h2><a class="small" href="/host">History →</a></div>
   {{with .Host}}
-  <div class="strip">
-    <div class="metric"><span class="label">CPU</span><span class="value">{{printf "%.0f" .CPU}}%</span></div>
-    <div class="metric"><span class="label">Load</span><span class="value">{{printf "%.2f" .Load1}}</span></div>
-    <div class="metric"><span class="label">Memory available</span><span class="value">{{bytes .MemAvailable}} of {{bytes .MemTotal}}</span></div>
-    <div class="metric"><span class="label">Swap used</span><span class="value">{{bytes .SwapUsed}} of {{bytes .SwapTotal}}</span></div>
+  <div class="tiles">
+    <div class="card tile">
+      <div class="tile-label"><span>CPU</span></div>
+      <div class="tile-value">{{printf "%.0f" .CPU}}<small>%</small></div>
+      <progress class="meter meter-{{level .CPU}}" max="100" value="{{printf "%.0f" .CPU}}" aria-label="CPU usage"></progress>
+      <div class="tile-note">load average <strong>{{printf "%.2f" .Load1}}</strong></div>
+    </div>
+    <div class="card tile">
+      <div class="tile-label"><span>Memory</span></div>
+      <div class="tile-value">{{bytes .MemAvailable}} <small>available</small></div>
+      <progress class="meter meter-{{level .MemUsage}}" max="100" value="{{printf "%.0f" .MemUsage}}" aria-label="Memory in use"></progress>
+      <div class="tile-note">{{printf "%.0f" .MemUsage}}% of {{bytes .MemTotal}} in use</div>
+    </div>
+    <div class="card tile">
+      <div class="tile-label"><span>Swap</span></div>
+      <div class="tile-value">{{bytes .SwapUsed}} <small>used</small></div>
+      <progress class="meter meter-{{level .SwapUsage}}" max="100" value="{{printf "%.0f" .SwapUsage}}" aria-label="Swap in use"></progress>
+      <div class="tile-note">{{printf "%.0f" .SwapUsage}}% of {{bytes .SwapTotal}}</div>
+    </div>
     {{range .Disks}}
-    <div class="metric"><span class="label">{{.Name}}</span><span class="value">{{printf "%.1f" .Usage}}% used · {{bytes .Free}} free{{if .Growing}} · full in {{printf "%.0f" .DaysUntilFull}} days{{end}}</span></div>
+    <div class="card tile">
+      <div class="tile-label"><span>Disk {{.Name}}</span></div>
+      <div class="tile-value">{{bytes .Free}} <small>free</small></div>
+      <progress class="meter meter-{{level .Usage}}" max="100" value="{{printf "%.0f" .Usage}}" aria-label="Disk {{.Name}} in use"></progress>
+      <div class="tile-note">{{printf "%.1f" .Usage}}% used{{if .Growing}} · full in <strong>{{forecast .DaysUntilFull}}</strong>{{end}}</div>
+    </div>
     {{end}}
     {{with .Docker}}
-    <div class="metric"><span class="label">Docker disk</span><span class="value">{{bytes .Images}} images · {{bytes .Reclaimable}} reclaimable · {{bytes .Volumes}} volumes</span></div>
+    <div class="card tile">
+      <div class="tile-label"><span>Docker disk</span></div>
+      <div class="tile-value">{{bytes .Reclaimable}} <small>reclaimable</small></div>
+      <div class="tile-note">{{bytes .Images}} images · {{bytes .Volumes}} volumes</div>
+    </div>
     {{end}}
   </div>
   {{end}}
 </section>
-<section aria-labelledby="apps-title">
-  <h2 id="apps-title">Apps</h2>
+
+<section class="section" aria-labelledby="apps-title">
+  <div class="section-head"><h2 id="apps-title">Apps</h2><span class="hint">{{len .Apps}} · problems first, then by traffic</span></div>
   {{if .Apps}}
+  <div class="card">
   <div class="table-wrap">
   <table>
     <thead><tr><th>Status</th><th>App</th><th class="num">Traffic</th><th class="num">Errors</th><th class="num">p95</th><th class="num">CPU</th><th class="num">Memory</th><th class="num">Containers</th><th>Last deploy</th></tr></thead>
@@ -44,40 +90,51 @@
     {{range .Apps}}
       <tr>
         <td><span class="badge badge-{{.Status}}">{{if eq .Status "ok"}}OK{{else}}{{.Status}}{{end}}</span></td>
-        <td><a href="/apps/{{.Name}}">{{.Name}}</a>{{if .Domains}}<div class="muted small">{{range $i, $domain := .Domains}}{{if $i}}, {{end}}{{$domain}}{{end}}</div>{{end}}</td>
-        <td class="num">{{printf "%.0f" .RequestsPerMinute}}/min <span class="spark" data-values="{{range .Sparkline}}{{printf "%.0f" .}},{{end}}" aria-hidden="true"></span></td>
+        <td class="wrap"><a class="app-name" href="/apps/{{.Name}}">{{.Name}}</a>{{if .Domains}}<div class="app-domains">{{range $i, $domain := .Domains}}{{if $i}}, {{end}}{{$domain}}{{end}}</div>{{end}}</td>
+        <td class="num">{{rate .RequestsPerMinute}}<span class="spark" data-values="{{range .Sparkline}}{{printf "%.0f" .}},{{end}}" aria-hidden="true"></span></td>
         <td class="num">{{printf "%.1f" .ErrorRate}}%{{if gt .ErrorBaseline 0.0}}{{if gt .ErrorRate .ErrorBaseline}} <span class="warn" title="above the usual {{printf "%.1f" .ErrorBaseline}}%">↑</span>{{end}}{{end}}</td>
-        <td class="num">{{printf "%.0f" .P95}} ms{{if gt .P95Baseline 0.0}}{{if gt .P95 (mulf .P95Baseline 1.5)}} <span class="warn" title="usual {{printf "%.0f" .P95Baseline}} ms">↑</span>{{else if lt .P95 (mulf .P95Baseline 0.5)}} <span class="muted" title="usual {{printf "%.0f" .P95Baseline}} ms">↓</span>{{end}}{{end}}</td>
-        <td class="num">{{printf "%.0f" .CPU}} m</td>
-        <td class="num">{{bytes .Memory}}{{if gt .MemoryLimit 0}} of {{bytes .MemoryLimit}}{{end}}</td>
-        <td class="num">{{.Running}}/{{.Total}}{{if gt .Restarts 0}} · {{.Restarts}} restarts{{end}}</td>
-        <td>{{if .LastDeploy.IsZero}}never{{else}}{{relative .LastDeploy}}{{end}}</td>
+        <td class="num">{{.P95}}{{if and .P95.Known (gt .P95Baseline 0.0)}}{{if gt .P95.MS (mulf .P95Baseline 1.5)}} <span class="warn" title="usual {{latency .P95Baseline}}">↑</span>{{else if lt .P95.MS (mulf .P95Baseline 0.5)}} <span class="muted" title="usual {{latency .P95Baseline}}">↓</span>{{end}}{{end}}</td>
+        <td class="num">{{cpu .CPU}}</td>
+        <td class="num">{{if gt .MemoryLimit 0}}<div class="cell-meter"><span>{{bytes .Memory}} <span class="muted">of {{bytes .MemoryLimit}}</span></span><progress class="meter meter-sm meter-{{level .MemoryUsage}}" max="100" value="{{printf "%.0f" .MemoryUsage}}" aria-label="Memory in use"></progress></div>{{else}}{{bytes .Memory}}{{end}}</td>
+        <td class="num">{{.Running}}/{{.Total}}{{if gt .Restarts 0}} <span class="muted">· {{plural .Restarts "restart"}} in 24 h</span>{{end}}</td>
+        <td>{{relative .LastDeploy}}</td>
       </tr>
     {{end}}
     </tbody>
   </table>
   </div>
-  {{else}}<p class="empty">No apps yet. Raedar reads them from the Docker API; check that it is reachable.</p>{{end}}
+  </div>
+  {{else}}<div class="card card-pad empty">No apps yet. Raedar reads them from the Docker API; check that it is reachable.</div>{{end}}
 </section>
-<section aria-labelledby="certs-title">
-  <h2 id="certs-title">Certificates</h2>
-  {{$attention := false}}{{range .Certs}}{{if .Attention}}{{$attention = true}}{{end}}{{end}}
-  {{if $attention}}
-  <ul class="plain">{{range .Certs}}{{if .Attention}}<li><strong>{{.Domain}}</strong> <span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span> {{if .NotAfter}}expires in {{printf "%.0f" .DaysLeft}} days{{end}} {{if .Error}}<span class="muted">{{.Error}}</span>{{end}}</li>{{end}}{{end}}</ul>
-  {{else}}<p>All certificates fine.</p>{{end}}
-</section>
-<section aria-labelledby="units-title">
-  <h2 id="units-title">Host jobs</h2>
-  {{$failed := false}}{{range .Units}}{{if eq .ActiveState "failed"}}{{$failed = true}}{{end}}{{end}}
-  {{if $failed}}
-  <ul class="plain">{{range .Units}}{{if eq .ActiveState "failed"}}<li><strong>{{.Name}}</strong> <span class="badge badge-critical">failed</span> {{.Result}}{{if .ExitStatus}} · exit {{.ExitStatus}}{{end}}</li>{{end}}{{end}}</ul>
-  {{else}}<p>No failed units.</p>{{end}}
-</section>
-<section aria-labelledby="events-title">
-  <h2 id="events-title">Recent events</h2>
+
+<div class="split">
+  <section class="section" aria-labelledby="certs-title">
+    <div class="section-head"><h2 id="certs-title">Certificates</h2><a class="small" href="/host#certificates">All →</a></div>
+    <div class="card">
+    {{$attention := false}}{{range .Certs}}{{if .Attention}}{{$attention = true}}{{end}}{{end}}
+    {{if $attention}}
+    <ul class="plain">{{range .Certs}}{{if .Attention}}<li><strong>{{.Domain}}</strong> <span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span>{{if .NotAfter}}<span class="muted">expires in {{forecast .DaysLeft}}</span>{{end}}{{if .Error}}<span class="muted">{{.Error}}</span>{{end}}</li>{{end}}{{end}}</ul>
+    {{else}}<div class="ok-line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>All certificates are fine</div>{{end}}
+    </div>
+  </section>
+  <section class="section" aria-labelledby="units-title">
+    <div class="section-head"><h2 id="units-title">Host jobs</h2><a class="small" href="/host#systemd">All →</a></div>
+    <div class="card">
+    {{$failed := false}}{{range .Units}}{{if eq .ActiveState "failed"}}{{$failed = true}}{{end}}{{end}}
+    {{if $failed}}
+    <ul class="plain">{{range .Units}}{{if eq .ActiveState "failed"}}<li><strong>{{.Name}}</strong> <span class="badge badge-critical">failed</span><span class="muted">{{.Result}}{{if .ExitStatus}} · exit {{.ExitStatus}}{{end}}</span></li>{{end}}{{end}}</ul>
+    {{else}}<div class="ok-line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>No failed units</div>{{end}}
+    </div>
+  </section>
+</div>
+
+<section class="section" aria-labelledby="events-title">
+  <div class="section-head"><h2 id="events-title">Recent events</h2><a class="small" href="/events">All events →</a></div>
+  <div class="card">
   {{if .Events}}
-  <ul class="timeline">{{range .Events}}<li><time>{{datetime .TS}}</time> <span class="badge badge-{{.Severity}}">{{.Kind}}</span> {{.Title}} <span class="muted">{{.Subject}}</span></li>{{end}}</ul>
-  {{else}}<p>No events yet.</p>{{end}}
+  <ul class="timeline">{{range .Events}}<li><time datetime="{{.TS.Format "2006-01-02T15:04:05Z07:00"}}">{{datetime .TS}}</time><span class="badge badge-{{.Severity}}">{{.Kind}}</span><span class="what">{{.Title}}{{if or .Subject .App}} <span class="where">{{.Subject}}{{if and .App (ne .App .Subject)}} · {{.App}}{{end}}</span>{{end}}</span></li>{{end}}</ul>
+  {{else}}<div class="card-pad empty">No events yet.</div>{{end}}
+  </div>
 </section>
 {{end}}
 {{template "footer" .}}

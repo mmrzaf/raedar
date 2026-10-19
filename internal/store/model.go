@@ -106,10 +106,10 @@ type Event struct {
 	ID int64
 	// TS is when the event happened.
 	TS time.Time
-	// Kind is what happened, for example deploy, crashed or incident.
-	Kind string
-	// Severity is info, warning or critical.
-	Severity string
+	// Kind is what happened.
+	Kind EventKind
+	// Severity is how serious it is.
+	Severity Severity
 	// AppID, SlotID and RouteID link the event to the model; all may be nil.
 	AppID   *int64
 	SlotID  *int64
@@ -194,20 +194,9 @@ func (s *Store) containers(ctx context.Context) ([]Container, error) {
 	defer rows.Close()
 	var containers []Container
 	for rows.Next() {
-		var (
-			container Container
-			createdAt *time.Time
-			startedAt *time.Time
-		)
-		if err := rows.Scan(&container.DockerID, &container.SlotID, &container.Name, &container.ImageRef,
-			&container.ImageID, &createdAt, &startedAt, &container.RemovedAt); err != nil {
-			return nil, fmt.Errorf("scan container: %w", err)
-		}
-		if createdAt != nil {
-			container.CreatedAt = *createdAt
-		}
-		if startedAt != nil {
-			container.StartedAt = *startedAt
+		container, err := scanContainer(rows)
+		if err != nil {
+			return nil, err
 		}
 		containers = append(containers, container)
 	}
@@ -215,6 +204,27 @@ func (s *Store) containers(ctx context.Context) ([]Container, error) {
 		return nil, fmt.Errorf("read containers: %w", err)
 	}
 	return containers, nil
+}
+
+// scanContainer reads one containers row in the column order of the queries
+// above.
+func scanContainer(row interface{ Scan(dest ...any) error }) (Container, error) {
+	var (
+		container Container
+		createdAt *time.Time
+		startedAt *time.Time
+	)
+	if err := row.Scan(&container.DockerID, &container.SlotID, &container.Name, &container.ImageRef,
+		&container.ImageID, &createdAt, &startedAt, &container.RemovedAt); err != nil {
+		return Container{}, fmt.Errorf("scan container: %w", err)
+	}
+	if createdAt != nil {
+		container.CreatedAt = createdAt.UTC()
+	}
+	if startedAt != nil {
+		container.StartedAt = startedAt.UTC()
+	}
+	return container, nil
 }
 
 // routes reads every route.
@@ -286,6 +296,33 @@ func (s *Store) UpsertContainer(ctx context.Context, container Container) error 
 		return fmt.Errorf("upsert container %s: %w", container.DockerID, err)
 	}
 	return nil
+}
+
+// LatestSlotContainers returns, for each slot, the newest container ever
+// recorded in it, including containers that no longer exist. Deploys are
+// detected against it, so a container that was removed before its replacement
+// appeared still counts as the previous one.
+func (s *Store) LatestSlotContainers(ctx context.Context) (map[int64]Container, error) {
+	rows, err := s.pool.Query(ctx, `
+		select distinct on (slot_id) docker_id, slot_id, name, image_ref, image_id, created_at, started_at, removed_at
+		from containers
+		order by slot_id, created_at desc nulls last, docker_id`)
+	if err != nil {
+		return nil, fmt.Errorf("read latest slot containers: %w", err)
+	}
+	defer rows.Close()
+	latest := make(map[int64]Container)
+	for rows.Next() {
+		container, err := scanContainer(rows)
+		if err != nil {
+			return nil, err
+		}
+		latest[container.SlotID] = container
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read latest slot containers: %w", err)
+	}
+	return latest, nil
 }
 
 // MarkContainersRemoved records that containers no longer exist.
@@ -360,7 +397,7 @@ func (s *Store) AddEvent(ctx context.Context, event Event) (int64, error) {
 
 // RecentEvent returns the newest event of one kind for an app at or after
 // since. It returns nil when there is none.
-func (s *Store) RecentEvent(ctx context.Context, appID int64, kind string, since time.Time) (*Event, error) {
+func (s *Store) RecentEvent(ctx context.Context, appID int64, kind EventKind, since time.Time) (*Event, error) {
 	var event Event
 	err := s.pool.QueryRow(ctx, `
 		select id, ts, kind, severity, app_id, slot_id, route_id, subject, title, data

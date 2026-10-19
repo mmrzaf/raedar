@@ -34,18 +34,18 @@ Raedar stores everything in its own PostgreSQL database. Most Docker + Traefik h
 | `disk_hour` | `disk`, `ts` | `size_bytes`, `used_bytes_max`, `avail_bytes_min`, `inodes`, `inodes_used_max` |
 | `docker_disk` | `ts` | `images_bytes`, `images_reclaimable_bytes`, `build_cache_bytes`, `volumes_bytes`, `containers_bytes` |
 
-`route_minute` holds a row only for minutes with at least one request. `ts` is always the start of the minute, hour or window, in UTC.
+`route_minute` holds a row only for minutes with at least one request. `ts` is always the start of the minute, hour or window, stored in UTC. Hourly rows start on local hour boundaries of `RAEDAR_TZ`, so in a zone such as `Asia/Tehran` (UTC+03:30) they start at :30 UTC and every hour belongs to exactly one local hour of the day.
 
 ### State and history
 
 | Table | Content |
 |---|---|
-| `units` | Current state of systemd units that are failed or have failed within retention: `name`, `active_state`, `sub_state`, `result`, `exit_status`, `since`, `last_seen` |
+| `units` | Current state of the systemd units Raedar has seen; units not seen for 7 days are dropped: `name`, `active_state`, `sub_state`, `result`, `exit_status`, `since`, `last_seen` |
 | `certs` | Latest check per domain: `domain`, `route_id`, `checked_at`, `status`, `not_after`, `issuer`, `subject`, `sans`, `error` |
 | `baselines` | `route_id`, `hour_of_day` (0–23 in `RAEDAR_TZ`), `error_rate`, `p95_ms`, `days_used`, `computed_at` |
 | `events` | `id`, `ts`, `kind`, `severity`, `app_id`, `slot_id`, `route_id`, `subject`, `title`, `data` (jsonb) |
 | `incidents` | `id`, `rule`, `subject`, `app_id`, `slot_id`, `route_id`, `severity`, `opened_at`, `resolved_at`, `one_shot`, `summary`, `details` (jsonb) |
-| `deliveries` | `id`, `incident_id`, `kind` (`opened`, `resolved`, `digest`, `test`), `channel`, `created_at`, `sent_at`, `attempts`, `status`, `error` |
+| `deliveries` | `id`, `incident_id`, `kind` (`opened`, `escalated`, `resolved`, `digest`, `test`), `channel`, `created_at`, `sent_at`, `attempts`, `status`, `error` |
 | `schema_migrations` | applied migration versions |
 
 ## Histograms in SQL
@@ -59,7 +59,7 @@ Percentiles are computed in Go from the summed histogram.
 
 ## Rollups
 
-Every hour at :05, Raedar recomputes the hourly tables for the last 3 complete hours from the minute tables and replaces those rows. Recomputing more than one hour absorbs late access log lines and restarts.
+Every local hour at :05, Raedar recomputes the hourly tables for the last 3 complete local hours from the minute tables and replaces those rows. Recomputing more than one hour absorbs late access log lines and restarts. At startup, hourly rows that do not start on a local hour boundary of the configured zone (after changing `RAEDAR_TZ`, or from before hours followed the zone) are rebuilt from the minute tables for as far back as those still exist; older rows stay as they are.
 
 Rollups use:
 

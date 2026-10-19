@@ -10,13 +10,13 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/docker"
@@ -25,33 +25,6 @@ import (
 
 //go:embed templates/*.html static/*
 var embedded embed.FS
-
-// Clock provides the time to the web interface, so that tests run without
-// waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
 
 // Model provides the live model of the host.
 type Model interface {
@@ -76,7 +49,7 @@ type Server struct {
 	connector *docker.Connector
 	model     Model
 	logger    *slog.Logger
-	clock     Clock
+	clock     clock.Clock
 	version   string
 	startedAt time.Time
 	templates *template.Template
@@ -86,7 +59,7 @@ type Server struct {
 }
 
 // New returns the web server.
-func New(st *store.Store, cfg *config.Config, connector *docker.Connector, model Model, logger *slog.Logger, clock Clock, options Options) (*Server, error) {
+func New(st *store.Store, cfg *config.Config, connector *docker.Connector, model Model, logger *slog.Logger, clock clock.Clock, options Options) (*Server, error) {
 	templates, err := template.New("").Funcs(templateFuncs(cfg.Location, clock)).ParseFS(embedded, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -134,7 +107,23 @@ func (s *Server) Handler() http.Handler {
 	if s.heartbeat != nil {
 		mux.Handle("/heartbeat/", s.heartbeat)
 	}
-	return mux
+	return withSecurityHeaders(mux)
+}
+
+// contentSecurityPolicy limits every page to resources served by Raedar
+// itself. The pages load no scripts, styles, fonts or images from elsewhere,
+// and this keeps it that way.
+const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
+// withSecurityHeaders adds the headers every response carries.
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		header := w.Header()
+		header.Set("Content-Security-Policy", contentSecurityPolicy)
+		header.Set("X-Content-Type-Options", "nosniff")
+		header.Set("Referrer-Policy", "same-origin")
+		next.ServeHTTP(w, request)
+	})
 }
 
 // serveStatic serves the embedded or development static files.
@@ -160,6 +149,8 @@ func (s *Server) serveStatic(w http.ResponseWriter, request *http.Request) {
 	switch path.Ext(name) {
 	case ".css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
 	case ".js":
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	}
@@ -184,7 +175,7 @@ func (s *Server) healthz(w http.ResponseWriter, request *http.Request) {
 }
 
 // templateFuncs returns the helpers the templates use.
-func templateFuncs(location *time.Location, clock Clock) template.FuncMap {
+func templateFuncs(location *time.Location, clock clock.Clock) template.FuncMap {
 	return template.FuncMap{
 		"time": func(at time.Time) string {
 			return at.In(location).Format("15:04")
@@ -198,83 +189,16 @@ func templateFuncs(location *time.Location, clock Clock) template.FuncMap {
 		"duration": durationText,
 		"bytes":    bytesText,
 		"count":    countText,
-		"percent": func(value float64) string {
-			return strconv.FormatFloat(value, 'f', 1, 64) + "%"
-		},
+		"cpu":      cpuText,
+		"rate":     rateText,
+		"forecast": forecastText,
+		"plural":   plural,
+		"level":    meterLevel,
+		"latency":  latencyText,
 		"mulf": func(value, factor float64) float64 {
 			return value * factor
 		},
-		"query": func(values url.Values) string {
-			return values.Encode()
-		},
 	}
-}
-
-// relativeTime returns a compact relative time such as "3 h ago".
-func relativeTime(now, at time.Time) string {
-	if at.IsZero() {
-		return "never"
-	}
-	delta := now.Sub(at)
-	if delta < 0 {
-		delta = 0
-	}
-	switch {
-	case delta < time.Minute:
-		return "just now"
-	case delta < time.Hour:
-		return fmt.Sprintf("%d min ago", int(delta.Minutes()))
-	case delta < 24*time.Hour:
-		return fmt.Sprintf("%d h ago", int(delta.Hours()))
-	default:
-		return fmt.Sprintf("%d d ago", int(delta.Hours()/24))
-	}
-}
-
-// durationText returns a compact duration.
-func durationText(d time.Duration) string {
-	if d <= 0 {
-		return "0 min"
-	}
-	if d < time.Minute {
-		return "less than a minute"
-	}
-	minutes := int(d.Round(time.Minute) / time.Minute)
-	if minutes < 60 {
-		return fmt.Sprintf("%d min", minutes)
-	}
-	hours := minutes / 60
-	minutes -= hours * 60
-	if minutes == 0 {
-		return fmt.Sprintf("%d h", hours)
-	}
-	return fmt.Sprintf("%d h %d min", hours, minutes)
-}
-
-// bytesText formats a byte count.
-func bytesText(value int64) string {
-	number := float64(value)
-	if number <= 0 {
-		return "0 B"
-	}
-	units := []string{"B", "KB", "MB", "GB", "TB"}
-	unit := 0
-	for number >= 1024 && unit < len(units)-1 {
-		number /= 1024
-		unit++
-	}
-	if unit == 0 {
-		return fmt.Sprintf("%.0f %s", number, units[unit])
-	}
-	return fmt.Sprintf("%.1f %s", number, units[unit])
-}
-
-// countText formats a count with a k suffix.
-func countText(value int64) string {
-	if value >= 1000 {
-		return fmt.Sprintf("%.1fk", float64(value)/1000)
-	}
-	return strconv.FormatInt(value, 10)
 }
 
 // parseTime parses a query timestamp, in Unix seconds or RFC3339.

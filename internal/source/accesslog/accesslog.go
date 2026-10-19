@@ -13,8 +13,11 @@ import (
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/aggregate"
+	"github.com/mmrzaf/raedar/internal/backoff"
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/docker"
+	"github.com/mmrzaf/raedar/internal/sourcestatus"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -33,32 +36,6 @@ const (
 	// Traefik container to follow.
 	reconnectInterval = 10 * time.Second
 )
-
-// Clock provides timers to the source, so that tests run without waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
 
 // Model provides the parts of the host model the source needs.
 type Model interface {
@@ -106,18 +83,17 @@ type Source struct {
 	state     State
 	counter   Counter
 	logger    *slog.Logger
-	clock     Clock
+	status    *sourcestatus.Reporter
+	clock     clock.Clock
 	pollEvery time.Duration
 
 	mu        sync.Mutex
 	connected *docker.Client
-	status    string
-	statusErr string
 	lastTime  time.Time
 }
 
 // New returns an access log source.
-func New(options Options, model Model, state State, counter Counter, logger *slog.Logger, clock Clock) *Source {
+func New(options Options, model Model, state State, counter Counter, logger *slog.Logger, clock clock.Clock) *Source {
 	return &Source{
 		options:   options,
 		model:     model,
@@ -126,14 +102,15 @@ func New(options Options, model Model, state State, counter Counter, logger *slo
 		logger:    logger,
 		clock:     clock,
 		pollEvery: pollInterval,
-		status:    store.StatusUnavailable,
+		status:    sourcestatus.New(SourceName, state, clock, logger),
 	}
 }
 
 // Run reads the access log until ctx is done, retrying after failures.
 func (s *Source) Run(ctx context.Context) error {
-	delay := retryBase
+	retries := backoff.New(retryBase, retryMax)
 	for ctx.Err() == nil {
+		started := s.clock.Now()
 		var err error
 		if s.options.Path != "" {
 			err = s.runFile(ctx)
@@ -144,15 +121,17 @@ func (s *Source) Run(ctx context.Context) error {
 			return nil
 		}
 		if err != nil {
-			s.recordStatus(ctx, store.StatusUnavailable, err)
+			s.status.Report(ctx, store.StatusUnavailable, err)
 			s.logger.Warn("access log source failed", slog.String("error", err.Error()))
+		}
+		if s.clock.Now().Sub(started) > retryMax {
+			retries.Reset() // it ran for a while before failing
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-s.clock.After(delay):
+		case <-s.clock.After(retries.Next()):
 		}
-		delay = min(delay*2, retryMax)
 	}
 	return nil
 }
@@ -168,7 +147,7 @@ func (s *Source) runFile(ctx context.Context) error {
 		return err
 	}
 	defer reader.close()
-	s.recordStatus(ctx, store.StatusOK, nil)
+	s.status.Report(ctx, store.StatusOK, nil)
 	for ctx.Err() == nil {
 		text, at, err := reader.next()
 		switch {
@@ -200,7 +179,7 @@ func (s *Source) runContainer(ctx context.Context) error {
 	for ctx.Err() == nil {
 		traefik := s.model.TraefikContainer()
 		if traefik == nil {
-			s.recordStatus(ctx, store.StatusUnavailable, errors.New("no Traefik container found"))
+			s.status.Report(ctx, store.StatusUnavailable, errors.New("no Traefik container found"))
 			if !s.wait(ctx, reconnectInterval) {
 				return nil
 			}
@@ -219,7 +198,7 @@ func (s *Source) runContainer(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		s.recordStatus(ctx, store.StatusOK, nil)
+		s.status.Report(ctx, store.StatusOK, nil)
 		readErr := s.readLogs(ctx, logs)
 		logs.Close()
 		if ctx.Err() != nil {
@@ -387,23 +366,4 @@ func marshalPosition(position any) []byte {
 		return nil
 	}
 	return data
-}
-
-// recordStatus stores the state of the source when it changed.
-func (s *Source) recordStatus(ctx context.Context, status string, cause error) {
-	message := ""
-	if cause != nil {
-		message = cause.Error()
-	}
-	s.mu.Lock()
-	changed := s.status != status || s.statusErr != message
-	s.status = status
-	s.statusErr = message
-	s.mu.Unlock()
-	if !changed {
-		return
-	}
-	if err := s.state.RecordSourceStatus(ctx, SourceName, status, message, s.clock.Now()); err != nil {
-		s.logger.Warn("record access log status", slog.String("error", err.Error()))
-	}
 }

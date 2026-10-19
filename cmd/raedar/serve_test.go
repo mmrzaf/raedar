@@ -1,15 +1,24 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/mmrzaf/raedar/internal/store"
 )
 
 func TestNextRollupTime(t *testing.T) {
+	tehran, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
 	tests := []struct {
-		name string
-		now  time.Time
-		want time.Time
+		name     string
+		location *time.Location
+		now      time.Time
+		want     time.Time
 	}{
 		{
 			name: "at the hour boundary",
@@ -26,10 +35,27 @@ func TestNextRollupTime(t *testing.T) {
 			now:  time.Date(2026, 10, 18, 10, 5, 0, 0, time.UTC),
 			want: time.Date(2026, 10, 18, 11, 5, 0, 0, time.UTC),
 		},
+		{
+			name:     "half-hour zone follows local hours",
+			location: tehran,
+			now:      time.Date(2026, 10, 18, 10, 10, 0, 0, time.UTC),
+			want:     time.Date(2026, 10, 18, 10, 35, 0, 0, time.UTC),
+		},
+		{
+			name:     "half-hour zone after the rollup",
+			location: tehran,
+			now:      time.Date(2026, 10, 18, 10, 40, 0, 0, time.UTC),
+			want:     time.Date(2026, 10, 18, 11, 35, 0, 0, time.UTC),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := nextRollupTime(tt.now); !got.Equal(tt.want) {
+			location := tt.location
+			if location == nil {
+				location = time.UTC
+			}
+			got := nextRollupTime(tt.now, location)
+			if !got.Equal(tt.want) {
 				t.Errorf("nextRollupTime(%v) = %v, want %v", tt.now, got, tt.want)
 			}
 		})
@@ -75,5 +101,37 @@ func TestNextDaily(t *testing.T) {
 	want := time.Date(2026, 10, 19, 3, 0, 0, 0, location)
 	if got := nextTimeOfDay(now, location, 3, 0); !got.Equal(want) {
 		t.Errorf("nextTimeOfDay(%v) = %v, want %v", now, got, want)
+	}
+}
+
+// fakeSamples returns a fixed host sample or error.
+type fakeSamples struct {
+	sample *store.HostMinute
+	err    error
+}
+
+func (f fakeSamples) LatestHostSample(context.Context) (*store.HostMinute, error) {
+	return f.sample, f.err
+}
+
+func TestDatabaseWritable(t *testing.T) {
+	now := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		samples fakeSamples
+		want    bool
+	}{
+		{name: "fresh sample", samples: fakeSamples{sample: &store.HostMinute{TS: now.Add(-time.Minute)}}, want: true},
+		{name: "sample at the limit", samples: fakeSamples{sample: &store.HostMinute{TS: now.Add(-maxSampleAge)}}, want: true},
+		{name: "stale sample", samples: fakeSamples{sample: &store.HostMinute{TS: now.Add(-maxSampleAge - time.Second)}}},
+		{name: "no sample yet", samples: fakeSamples{}},
+		{name: "database error", samples: fakeSamples{err: errors.New("connection refused")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := databaseWritable(context.Background(), tt.samples, now); got != tt.want {
+				t.Errorf("databaseWritable() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

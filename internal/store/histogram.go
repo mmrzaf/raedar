@@ -1,5 +1,3 @@
-// Package aggregate turns access log measurements into per-minute and
-// per-path buckets and writes them to the database.
 package store
 
 import (
@@ -10,17 +8,16 @@ import (
 // Buckets is the number of latency histogram buckets.
 const Buckets = 21
 
-// HistogramBound is where a percentile falls in the open-ended last bucket;
-// such values are shown as "over 60 s".
+// HistogramBound is the upper bound of the last bounded bucket, in
+// milliseconds. A percentile in the open-ended last bucket is reported as this
+// value with the over flag set, and shown as "over 60 s".
 const HistogramBound = 60000
 
-// bucketBounds returns the upper bounds of the first Buckets-1 latency
-// buckets, in milliseconds; the last bucket is open-ended.
-func bucketBounds() []float64 {
-	return []float64{
-		5, 10, 25, 50, 75, 100, 150, 200, 300, 400,
-		500, 750, 1000, 1500, 2000, 3000, 5000, 10000, 30000, 60000,
-	}
+// bucketBounds are the upper bounds of the first Buckets-1 latency buckets, in
+// milliseconds; the last bucket is open-ended. It is never modified.
+var bucketBounds = [Buckets - 1]float64{
+	5, 10, 25, 50, 75, 100, 150, 200, 300, 400,
+	500, 750, 1000, 1500, 2000, 3000, 5000, 10000, 30000, 60000,
 }
 
 // Histogram counts observations per latency bucket. Counts are kept as int64
@@ -30,8 +27,7 @@ type Histogram [Buckets]int64
 // Add records one observation in milliseconds. Negative values count in the
 // first bucket.
 func (h *Histogram) Add(milliseconds float64) {
-	bounds := bucketBounds()
-	for i, upper := range bounds {
+	for i, upper := range bucketBounds {
 		if milliseconds <= upper {
 			h[i]++
 			return
@@ -66,7 +62,6 @@ func (h *Histogram) Percentile(p float64) (float64, bool) {
 	}
 	p = math.Min(math.Max(p, 0), 100)
 	target := p / 100 * float64(total)
-	bounds := bucketBounds()
 	var before int64
 	for i := range h {
 		if h[i] == 0 {
@@ -77,13 +72,13 @@ func (h *Histogram) Percentile(p float64) (float64, bool) {
 			before = after
 			continue
 		}
-		if i >= len(bounds) {
+		if i >= len(bucketBounds) {
 			return HistogramBound, true
 		}
-		upper := bounds[i]
+		upper := bucketBounds[i]
 		lower := 0.0
 		if i > 0 {
-			lower = bounds[i-1]
+			lower = bucketBounds[i-1]
 		}
 		position := 1.0
 		if h[i] > 0 {

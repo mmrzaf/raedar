@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -27,33 +28,6 @@ const (
 	// windowSize is the length of a path window.
 	windowSize = 10 * time.Minute
 )
-
-// Clock provides the time to the aggregator, so that tests run without
-// waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
 
 // Measurement is one access log line reduced to what the aggregator counts.
 type Measurement struct {
@@ -85,7 +59,7 @@ type Aggregator struct {
 	store  *store.Store
 	source string
 	logger *slog.Logger
-	clock  Clock
+	clock  clock.Clock
 
 	mu          sync.Mutex
 	minutes     map[routeMinuteKey]*minuteBucket
@@ -93,7 +67,6 @@ type Aggregator struct {
 	patterns    map[routeWindowKey]map[string]bool
 	position    []byte
 	positionNew bool
-	lastWrite   time.Time
 	latePending int64
 	gaps        []gap
 	writeFailed bool
@@ -142,7 +115,7 @@ type gap struct {
 }
 
 // New returns an aggregator that writes through st for the given source.
-func New(st *store.Store, source string, logger *slog.Logger, clock Clock) *Aggregator {
+func New(st *store.Store, source string, logger *slog.Logger, clock clock.Clock) *Aggregator {
 	return &Aggregator{
 		store:    st,
 		source:   source,
@@ -263,7 +236,6 @@ func (a *Aggregator) Flush(ctx context.Context) error {
 		return err
 	}
 	a.writeFailed = false
-	a.lastWrite = now
 	for _, bucket := range a.minutes {
 		if bucket.dirty {
 			bucket.clear()
@@ -470,8 +442,8 @@ func (a *Aggregator) gapEvents(now time.Time) []store.Event {
 		}
 		events = append(events, store.Event{
 			TS:       now,
-			Kind:     "gap",
-			Severity: "warning",
+			Kind:     store.EventGap,
+			Severity: store.SeverityWarning,
 			Subject:  a.source,
 			Title:    fmt.Sprintf("dropped %s of traffic", minutesText(minutes)),
 			Data:     payload,
@@ -562,11 +534,4 @@ func (a *Aggregator) Deltas(from time.Time) []Delta {
 		return deltas[i].TS.Before(deltas[j].TS)
 	})
 	return deltas
-}
-
-// LastWrite returns when the buckets were last written successfully.
-func (a *Aggregator) LastWrite() time.Time {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.lastWrite
 }

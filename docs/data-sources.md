@@ -73,7 +73,7 @@ A percentile is computed by finding the bucket that contains it and interpolatin
 
 ### Late lines
 
-Traefik can buffer access log lines (`bufferingSize`) and write them in batches. Raedar keeps each minute's bucket open for 5 minutes and adds late lines to the minute they belong to. Lines more than 5 minutes late are added to the oldest open minute and counted in the source's `late_lines` statistic. For timely alerts, set `bufferingSize` to 0 or a small value.
+Traefik can buffer access log lines (`bufferingSize`) and write them in batches. Raedar keeps each minute's bucket open for 5 minutes and adds late lines to the minute they belong to. Lines more than 5 minutes late are added to the oldest open minute and a warning is logged. For timely alerts, set `bufferingSize` to 0 or a small value.
 
 ## Docker
 

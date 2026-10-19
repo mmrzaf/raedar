@@ -2,15 +2,21 @@ package web
 
 import (
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/config"
+	"github.com/mmrzaf/raedar/internal/discovery"
+	"github.com/mmrzaf/raedar/internal/store"
 )
 
 // testClock is a clock the tests set.
@@ -64,17 +70,19 @@ func TestParameterValidation(t *testing.T) {
 		status int
 		want   string
 	}{
-		{name: "series without keys", path: "/api/series", status: 400, want: "keys"},
-		{name: "series with a bad range", path: "/api/series?keys=host:cpu&from=x&to=y", status: 400, want: "from and to"},
-		{name: "series with a reversed range", path: "/api/series?keys=host:cpu&from=100&to=50", status: 400, want: "after"},
-		{name: "series with too many points", path: "/api/series?keys=host:cpu&from=100&to=200&points=99999", status: 400, want: "points"},
-		{name: "series with an unknown kind", path: "/api/series?keys=foo:bar:baz&from=100&to=200", status: 400, want: "unknown kind"},
+		{name: "series without a series", path: "/api/series", status: 400, want: "series is required"},
+		{name: "series with a bad range", path: "/api/series?series=host//cpu&from=x&to=y", status: 400, want: "from and to"},
+		{name: "series with a reversed range", path: "/api/series?series=host//cpu&from=100&to=50", status: 400, want: "after"},
+		{name: "series with too many points", path: "/api/series?series=host//cpu&from=100&to=200&points=99999", status: 400, want: "points"},
+		{name: "series with an unknown kind", path: "/api/series?series=foo/bar/baz&from=100&to=200", status: 400, want: "unknown kind"},
+		{name: "series with an unknown metric", path: "/api/series?series=host//p95&from=100&to=200", status: 400, want: "no metric"},
+		{name: "series with a malformed reference", path: "/api/series?series=host:cpu&from=100&to=200", status: 400, want: "want kind/subject/metric"},
 		{name: "baseline without a route", path: "/api/baseline", status: 400, want: "route"},
 		{name: "paths without a subject", path: "/api/paths?from=100&to=200", status: 400, want: "app or route"},
 		{name: "paths with a bad range", path: "/api/paths?app=x", status: 400, want: "from and to"},
 		{name: "events with a bad range", path: "/api/events?from=1", status: 400, want: "from and to"},
-		{name: "patterns without a key", path: "/api/patterns", status: 400, want: "key"},
-		{name: "patterns with too many weeks", path: "/api/patterns?key=host:load1:load1&weeks=100", status: 400, want: "weeks"},
+		{name: "patterns without a series", path: "/api/patterns", status: 400, want: "series is required"},
+		{name: "patterns with too many weeks", path: "/api/patterns?series=host//load1&weeks=100", status: 400, want: "weeks"},
 		{name: "logs without a container", path: "/api/logs", status: 400, want: "container"},
 		{name: "logs without since", path: "/api/logs?container=x", status: 400, want: "since"},
 		{name: "health without a database", path: "/healthz", status: 503, want: "database"},
@@ -162,36 +170,80 @@ func TestMaskURL(t *testing.T) {
 	}
 }
 
-func TestParseSeriesKey(t *testing.T) {
-	tests := []struct {
-		name    string
-		key     string
-		want    seriesKey
-		wantErr bool
-	}{
-		{name: "route", key: "route:shop@docker:p95", want: seriesKey{kind: "route", subject: "shop@docker", metric: "p95"}},
-		{name: "slot", key: "slot:shop / api #1:cpu", want: seriesKey{kind: "slot", subject: "shop / api #1", metric: "cpu"}},
-		{name: "host", key: "host:load1", want: seriesKey{kind: "host", subject: "", metric: "load1"}},
-		{name: "disk", key: "disk:/:used", want: seriesKey{kind: "disk", subject: "/", metric: "used"}},
-		{name: "unknown kind", key: "foo:bar:baz", wantErr: true},
-		{name: "too short", key: "host", wantErr: true},
+func TestSeriesRefRoundTrip(t *testing.T) {
+	tests := []seriesRef{
+		{Kind: subjectRoute, Subject: "shop@docker", Metric: "p95"},
+		{Kind: subjectApp, Subject: "my/app: a,b #1", Metric: "requests"},
+		{Kind: subjectSlot, Subject: "42", Metric: "cpu"},
+		{Kind: subjectHost, Metric: "load1"},
+		{Kind: subjectDisk, Subject: "/", Metric: "used"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseSeriesKey(tt.key)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("parseSeriesKey() error = nil, want an error")
-				}
-				return
-			}
+	for _, want := range tests {
+		t.Run(want.String(), func(t *testing.T) {
+			got, err := parseSeriesRef(want.String())
 			if err != nil {
-				t.Fatalf("parseSeriesKey() error = %v", err)
+				t.Fatalf("parseSeriesRef(%q) error = %v", want.String(), err)
 			}
-			if got != tt.want {
-				t.Errorf("parseSeriesKey(%q) = %+v, want %+v", tt.key, got, tt.want)
+			if got != want {
+				t.Errorf("parseSeriesRef(%q) = %+v, want %+v", want.String(), got, want)
 			}
 		})
+	}
+}
+
+func TestParseSeriesRefRejects(t *testing.T) {
+	for name, raw := range map[string]string{
+		"unknown kind":     "foo/bar/baz",
+		"too few parts":    "host/cpu",
+		"too many parts":   "app/a/b/p95",
+		"unknown metric":   "app/shop/cpu",
+		"metric of a kind": "host//requests",
+		"bad escape":       "app/%zz/p95",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseSeriesRef(raw); !errors.Is(err, errBadSeries) {
+				t.Errorf("parseSeriesRef(%q) error = %v, want errBadSeries", raw, err)
+			}
+		})
+	}
+}
+
+func TestPatternMetricNames(t *testing.T) {
+	if got := patternMetricNames(subjectDisk); !reflect.DeepEqual(got, []string{"used", "inodes"}) {
+		t.Errorf("patternMetricNames(disk) = %v, want used and inodes", got)
+	}
+	for _, kind := range []subjectKind{subjectApp, subjectRoute, subjectSlot, subjectHost, subjectDisk} {
+		for _, name := range patternMetricNames(kind) {
+			if !metricExists(kind, name) {
+				t.Errorf("pattern metric %s/%s is not in the registry", kind, name)
+			}
+		}
+	}
+	if dailyAggregation(seriesRef{Kind: subjectApp, Metric: "requests"}) != aggregateSum ||
+		dailyAggregation(seriesRef{Kind: subjectDisk, Metric: "used"}) != aggregateMax ||
+		dailyAggregation(seriesRef{Kind: subjectRoute, Metric: "p95"}) != aggregateMean {
+		t.Error("dailyAggregation() must sum counts, take the maximum of fill levels and average the rest")
+	}
+}
+
+func TestRegistryUnitsAreKnownToTheUI(t *testing.T) {
+	known := map[string]bool{"count": true, "percent": true, "ms": true, "bytes": true, "millicores": true, "load": true}
+	check := func(kind string, name, unit string) {
+		if !known[unit] {
+			t.Errorf("%s metric %s has the unit %q, which format.js does not know", kind, name, unit)
+		}
+	}
+	for _, m := range routeMetrics {
+		check("route", m.name, m.unit)
+	}
+	for _, m := range slotMetrics {
+		check("slot", m.name, m.unit)
+	}
+	for _, m := range hostMetrics {
+		check("host", m.name, m.unit)
+	}
+	for _, m := range diskMetrics {
+		check("disk", m.name, m.unit)
 	}
 }
 
@@ -217,17 +269,27 @@ func TestRelativeTime(t *testing.T) {
 	}
 }
 
-func TestStreamLines(t *testing.T) {
+func TestStreamLinesFollowsPastTheWindow(t *testing.T) {
 	server := newTestServer(t)
 	var written strings.Builder
-	until := time.Date(2026, 10, 18, 12, 2, 0, 0, time.UTC)
-	logs := strings.NewReader("2026-10-18T12:00:00Z first\n2026-10-18T12:03:00Z after\n")
-	server.streamLines(&stringBuilderWriter{&written}, logs, until)
-	if !strings.Contains(written.String(), "first") {
-		t.Errorf("events = %q, want the first line", written.String())
+	logs := strings.NewReader("2026-10-18T12:00:00Z first\n2026-10-18T12:03:00Z later\n")
+	server.streamLines(&stringBuilderWriter{&written}, logs)
+	for _, want := range []string{"first", "later"} {
+		if !strings.Contains(written.String(), want) {
+			t.Errorf("events = %q, want the %s line", written.String(), want)
+		}
 	}
-	if strings.Contains(written.String(), "after") {
-		t.Error("a line after the window was streamed")
+}
+
+func TestTrimLines(t *testing.T) {
+	until := time.Date(2026, 10, 18, 12, 2, 0, 0, time.UTC)
+	body := []byte("2026-10-18T12:00:00Z first\n2026-10-18T12:03:00Z after\n")
+	got := string(trimLines(body, until))
+	if !strings.Contains(got, "first") || strings.Contains(got, "after") {
+		t.Errorf("trimLines() = %q, want only the line inside the window", got)
+	}
+	if got := trimLines(body, time.Time{}); string(got) != string(body) {
+		t.Errorf("trimLines() without a limit = %q, want the whole body", got)
 	}
 }
 
@@ -272,5 +334,211 @@ func TestNotificationView(t *testing.T) {
 	}
 	if !strings.Contains(view.Proxy, "telegram") || strings.Contains(view.Proxy, "sms") {
 		t.Errorf("proxy = %q, want only the selected request", view.Proxy)
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	newTestServer(t).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/static/style.css", nil))
+	if got := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
+		t.Errorf("Content-Security-Policy = %q, want default-src 'self'", got)
+	}
+	if got := recorder.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
+// TestPagesLoadNothingExternal keeps the interface self-contained: no CDN, no
+// external fonts, and no inline handlers or styles the CSP would block.
+func TestPagesLoadNothingExternal(t *testing.T) {
+	external := regexp.MustCompile(`(?:https?:)?//[a-z0-9.-]+\.[a-z]{2,}`)
+	inline := regexp.MustCompile(`\s(?:on[a-z]+|style)=`)
+	err := fs.WalkDir(embedded, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || strings.Contains(name, "uplot.min") || !strings.HasSuffix(name, ".html") && !strings.HasSuffix(name, ".css") && !strings.HasSuffix(name, ".js") {
+			return err
+		}
+		body, err := fs.ReadFile(embedded, name)
+		if err != nil {
+			return err
+		}
+		text := strings.ReplaceAll(string(body), "http://www.w3.org/2000/svg", "")
+		if match := external.FindString(text); match != "" {
+			t.Errorf("%s references %q, want only same-origin resources", name, match)
+		}
+		if strings.HasSuffix(name, ".html") {
+			if match := inline.FindString(text); match != "" {
+				t.Errorf("%s has the inline attribute %q, which the CSP blocks", name, strings.TrimSpace(match))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk embedded files: %v", err)
+	}
+}
+
+func TestEventKinds(t *testing.T) {
+	events := []eventView{{Kind: "started"}, {Kind: "deploy"}, {Kind: "started"}, {Kind: "removed"}}
+	want := []string{"deploy", "removed", "started"}
+	if got := eventKinds(events); !reflect.DeepEqual(got, want) {
+		t.Errorf("eventKinds() = %v, want %v", got, want)
+	}
+	if got := eventKinds(nil); len(got) != 0 {
+		t.Errorf("eventKinds(nil) = %v, want none", got)
+	}
+}
+
+func TestDiskOf(t *testing.T) {
+	start := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+	sample := func(hours int, used, avail int64) store.DiskMinute {
+		return store.DiskMinute{Disk: "/", TS: start.Add(time.Duration(hours) * time.Hour), SizeBytes: used + avail + 10, UsedBytes: used, AvailBytes: avail}
+	}
+	t.Run("growing fills up in days", func(t *testing.T) {
+		// 10 GB used grows by 1 GB in 10 hours; 24 GB are left: 240 hours.
+		got := diskOf("/", []store.DiskMinute{sample(0, 10<<30, 25<<30), sample(10, 11<<30, 24<<30)})
+		if !got.Growing || got.DaysUntilFull < 9.9 || got.DaysUntilFull > 10.1 {
+			t.Errorf("diskOf() = %+v, want growing and full in about 10 days", got)
+		}
+		if got.Free != 24<<30 {
+			t.Errorf("Free = %d, want the available space the forecast uses", got.Free)
+		}
+		if want := 100 * float64(11<<30) / float64(35<<30); got.Usage < want-0.01 || got.Usage > want+0.01 {
+			t.Errorf("Usage = %v, want %v", got.Usage, want)
+		}
+	})
+	t.Run("shrinking is not forecast", func(t *testing.T) {
+		got := diskOf("/", []store.DiskMinute{sample(0, 11<<30, 24<<30), sample(10, 10<<30, 25<<30)})
+		if got.Growing {
+			t.Errorf("diskOf() = %+v, want no forecast for a shrinking disk", got)
+		}
+	})
+	t.Run("too short a period gives no forecast", func(t *testing.T) {
+		got := diskOf("/", []store.DiskMinute{sample(0, 10<<30, 25<<30), {TS: start.Add(30 * time.Minute), UsedBytes: 20 << 30, AvailBytes: 15 << 30}})
+		if got.Growing {
+			t.Errorf("diskOf() = %+v, want no forecast from under an hour of samples", got)
+		}
+	})
+	t.Run("single sample", func(t *testing.T) {
+		got := diskOf("/", []store.DiskMinute{sample(0, 10<<30, 25<<30)})
+		if got.Growing || got.Name != "/" {
+			t.Errorf("diskOf() = %+v, want just the usage", got)
+		}
+	})
+}
+
+func TestAppStatus(t *testing.T) {
+	app := &discovery.App{ID: 7, Slots: map[string]*discovery.Slot{}}
+	add := func(key string, container discovery.Container) {
+		app.Slots[key] = &discovery.Slot{Key: key, Container: &container}
+	}
+	appID := int64(7)
+	otherID := int64(8)
+	warning := store.Incident{AppID: &appID, Severity: store.SeverityWarning}
+	critical := store.Incident{AppID: &appID, Severity: store.SeverityCritical}
+	elsewhere := store.Incident{AppID: &otherID, Severity: store.SeverityCritical}
+	tests := []struct {
+		name       string
+		incidents  map[store.IncidentKey]store.Incident
+		containers map[string]discovery.Container
+		want       appHealth
+	}{
+		{name: "quiet", containers: map[string]discovery.Container{"api #1": {State: "running"}}, want: healthOK},
+		{name: "incident of another app", incidents: map[store.IncidentKey]store.Incident{{Rule: "r", Subject: "s"}: elsewhere}, want: healthOK},
+		{name: "warning incident", incidents: map[store.IncidentKey]store.Incident{{Rule: "r", Subject: "s"}: warning}, want: healthWarning},
+		{name: "critical wins", incidents: map[store.IncidentKey]store.Incident{{Rule: "a", Subject: "s"}: warning, {Rule: "b", Subject: "s"}: critical}, want: healthCritical},
+		{name: "unhealthy container", containers: map[string]discovery.Container{"api #1": {State: "running", Health: "unhealthy"}}, want: healthWarning},
+		{name: "stopped container", containers: map[string]discovery.Container{"api #1": {State: "exited", ExitCode: 1, RestartPolicy: "always"}}, want: healthWarning},
+		{name: "finished job is fine", containers: map[string]discovery.Container{"migrate #1": {State: "exited", RestartPolicy: "no"}}, want: healthOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app.Slots = map[string]*discovery.Slot{}
+			for key, container := range tt.containers {
+				add(key, container)
+			}
+			if got := appStatus(tt.incidents, app); got != tt.want {
+				t.Errorf("appStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSparkline(t *testing.T) {
+	from := time.Date(2026, 10, 18, 9, 30, 0, 0, time.UTC) // a local hour start in Asia/Tehran
+	requests := map[time.Time]int64{
+		from:                     5,
+		from.Add(23 * time.Hour): 7,
+		from.Add(24 * time.Hour): 99, // beyond the 24 hours
+		from.Add(-time.Hour):     99, // before them
+		from.Add(2 * time.Hour):  3,
+	}
+	got := sparkline(requests, from)
+	if len(got) != 24 || got[0] != 5 || got[2] != 3 || got[23] != 7 {
+		t.Errorf("sparkline() = %v, want 5, 3 and 7 in their hours of 24", got)
+	}
+	var total float64
+	for _, value := range got {
+		total += value
+	}
+	if total != 15 {
+		t.Errorf("sparkline() sums to %v, want 15 without the hours outside the window", total)
+	}
+}
+
+func TestFaviconIsLinkedAndServed(t *testing.T) {
+	server := newTestServer(t)
+	// Pages need a database, but every page's head comes from this template.
+	body, err := fs.ReadFile(embedded, "templates/base.html")
+	if err != nil {
+		t.Fatalf("read base template: %v", err)
+	}
+	if !strings.Contains(string(body), `rel="icon" href="/static/favicon.ico"`) {
+		t.Error("base.html does not link the favicon")
+	}
+	icon := httptest.NewRecorder()
+	server.Handler().ServeHTTP(icon, httptest.NewRequest(http.MethodGet, "/static/favicon.ico", nil))
+	if icon.Code != http.StatusOK || icon.Header().Get("Content-Type") != "image/x-icon" || icon.Body.Len() == 0 {
+		t.Errorf("favicon status = %d, type = %q, size = %d, want the icon", icon.Code, icon.Header().Get("Content-Type"), icon.Body.Len())
+	}
+}
+
+// TestTemplatesReferenceExistingStaticFiles catches a page that links a script,
+// stylesheet or icon the binary does not embed.
+func TestTemplatesReferenceExistingStaticFiles(t *testing.T) {
+	reference := regexp.MustCompile(`(?:src|href)="/static/([^"]+)"`)
+	templates, err := fs.Glob(embedded, "templates/*.html")
+	if err != nil || len(templates) == 0 {
+		t.Fatalf("Glob() = %v, %v, want the templates", templates, err)
+	}
+	for _, name := range templates {
+		body, err := fs.ReadFile(embedded, name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, match := range reference.FindAllStringSubmatch(string(body), -1) {
+			if _, err := fs.Stat(embedded, "static/"+match[1]); err != nil {
+				t.Errorf("%s references /static/%s, which is not embedded", name, match[1])
+			}
+		}
+	}
+}
+
+// TestModulesImportExistingFiles does the same for the script modules.
+func TestModulesImportExistingFiles(t *testing.T) {
+	imported := regexp.MustCompile(`from "\./([^"]+)"`)
+	modules, err := fs.Glob(embedded, "static/*.js")
+	if err != nil {
+		t.Fatalf("Glob() error = %v", err)
+	}
+	for _, name := range modules {
+		body, err := fs.ReadFile(embedded, name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, match := range imported.FindAllStringSubmatch(string(body), -1) {
+			if _, err := fs.Stat(embedded, "static/"+match[1]); err != nil {
+				t.Errorf("%s imports ./%s, which is not embedded", name, match[1])
+			}
+		}
 	}
 }

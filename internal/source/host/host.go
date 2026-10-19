@@ -16,8 +16,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/docker"
+	"github.com/mmrzaf/raedar/internal/sourcestatus"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -29,36 +31,7 @@ const (
 	interval = 60 * time.Second
 	// diskUsageInterval is how often Docker's disk usage is read.
 	diskUsageInterval = 15 * time.Minute
-	// retryBase and retryMax bound the delay after a failed pass.
-	retryBase = time.Second
-	retryMax  = 30 * time.Second
 )
-
-// Clock provides timers to the source, so that tests run without waiting.
-type Clock interface {
-	// Now returns the current time.
-	Now() time.Time
-	// After returns a channel that receives the current time after d.
-	After(d time.Duration) <-chan time.Time
-}
-
-// SystemClock returns the clock used outside tests.
-func SystemClock() Clock {
-	return systemClock{}
-}
-
-// systemClock is the clock of the running process.
-type systemClock struct{}
-
-// Now returns the current time in UTC.
-func (systemClock) Now() time.Time {
-	return time.Now().UTC()
-}
-
-// After returns a channel that receives the current time after d.
-func (systemClock) After(d time.Duration) <-chan time.Time {
-	return time.After(d)
-}
 
 // Docker reads the daemon's disk usage.
 type Docker interface {
@@ -86,7 +59,8 @@ type Source struct {
 	docker   Docker
 	store    Store
 	logger   *slog.Logger
-	clock    Clock
+	status   *sourcestatus.Reporter
+	clock    clock.Clock
 
 	interval  time.Duration
 	diskEvery time.Duration
@@ -95,8 +69,6 @@ type Source struct {
 	previous    *cpuSample
 	uptime      time.Duration
 	nextDiskUse time.Time
-	status      string
-	statusError string
 }
 
 // cpuSample is the previous /proc/stat reading, used for the CPU delta.
@@ -108,7 +80,7 @@ type cpuSample struct {
 
 // New returns a host collector. disks are the filesystems to watch, procRoot
 // is where the process sees /proc.
-func New(disks []config.Disk, procRoot string, client Docker, st Store, logger *slog.Logger, clock Clock) *Source {
+func New(disks []config.Disk, procRoot string, client Docker, st Store, logger *slog.Logger, clock clock.Clock) *Source {
 	return &Source{
 		disks:     disks,
 		procRoot:  procRoot,
@@ -118,13 +90,12 @@ func New(disks []config.Disk, procRoot string, client Docker, st Store, logger *
 		clock:     clock,
 		interval:  interval,
 		diskEvery: diskUsageInterval,
-		status:    store.StatusUnavailable,
+		status:    sourcestatus.New(SourceName, st, clock, logger),
 	}
 }
 
 // Run samples the host every interval until ctx is done.
 func (s *Source) Run(ctx context.Context) error {
-	delay := retryBase
 	next := s.clock.After(0)
 	for {
 		select {
@@ -132,14 +103,10 @@ func (s *Source) Run(ctx context.Context) error {
 			return nil
 		case <-next:
 		}
-		err := s.collect(ctx)
-		if err != nil {
+		if err := s.collect(ctx); err != nil {
 			s.logger.Warn("host sample failed", slog.String("error", err.Error()))
-			delay = min(delay*2, retryMax)
-		} else {
-			delay = retryBase
 		}
-		next = s.clock.After(max(s.interval, delay))
+		next = s.clock.After(s.interval)
 	}
 }
 
@@ -149,7 +116,7 @@ func (s *Source) collect(ctx context.Context) error {
 	now := s.clock.Now()
 	moment := now.Truncate(time.Minute)
 	if err := s.collectHost(ctx, moment); err != nil {
-		s.recordStatus(ctx, store.StatusUnavailable, err)
+		s.status.Report(ctx, store.StatusUnavailable, err)
 		return err
 	}
 	failures := 0
@@ -161,7 +128,7 @@ func (s *Source) collect(ctx context.Context) error {
 			continue
 		}
 		if err := s.store.InsertDiskMinute(ctx, sample); err != nil {
-			s.recordStatus(ctx, store.StatusUnavailable, err)
+			s.status.Report(ctx, store.StatusUnavailable, err)
 			return err
 		}
 	}
@@ -170,10 +137,10 @@ func (s *Source) collect(ctx context.Context) error {
 		s.collectDockerDisk(ctx, now)
 	}
 	if failures > 0 {
-		s.recordStatus(ctx, store.StatusDegraded, fmt.Errorf("%d of %d filesystems could not be read", failures, len(s.disks)))
+		s.status.Report(ctx, store.StatusDegraded, fmt.Errorf("%d of %d filesystems could not be read", failures, len(s.disks)))
 		return nil
 	}
-	s.recordStatus(ctx, store.StatusOK, nil)
+	s.status.Report(ctx, store.StatusOK, nil)
 	return nil
 }
 
@@ -427,23 +394,4 @@ func diskSample(disk config.Disk, moment time.Time) (store.DiskMinute, error) {
 		Inodes:     int64(stat.Files),
 		InodesUsed: int64(stat.Files - stat.Ffree),
 	}, nil
-}
-
-// recordStatus stores the state of the source when it changed.
-func (s *Source) recordStatus(ctx context.Context, status string, cause error) {
-	message := ""
-	if cause != nil {
-		message = cause.Error()
-	}
-	s.mu.Lock()
-	changed := s.status != status || s.statusError != message
-	s.status = status
-	s.statusError = message
-	s.mu.Unlock()
-	if !changed {
-		return
-	}
-	if err := s.store.RecordSourceStatus(ctx, SourceName, status, message, s.clock.Now()); err != nil {
-		s.logger.Warn("record host source status", slog.String("error", err.Error()))
-	}
 }

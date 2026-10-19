@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mmrzaf/raedar/internal/clock"
 )
 
 // maxConnections is the number of connections the pool may open.
@@ -63,7 +64,7 @@ func openStore(ctx context.Context, databaseURL string, logger *slog.Logger, ret
 		}
 		return s, nil
 	}
-	err = retry(ctx, systemClock{}, retryBase, retryMax, logger, func(ctx context.Context) error {
+	err = retry(ctx, clock.System(), retryBase, retryMax, logger, func(ctx context.Context) error {
 		pingErr := pool.Ping(ctx)
 		if pingErr != nil && unrecoverable(pingErr) {
 			return fatalError{err: pingErr}

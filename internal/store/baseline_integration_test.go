@@ -176,6 +176,20 @@ func TestRetention(t *testing.T) {
 		now.Add(-24*time.Hour)); err != nil {
 		t.Fatalf("insert fresh event: %v", err)
 	}
+	for _, name := range []string{"gone.service", "alive.service"} {
+		seen := now.Add(-8 * 24 * time.Hour)
+		if name == "alive.service" {
+			seen = now.Add(-time.Minute)
+		}
+		if _, err := st.pool.Exec(ctx, `insert into units (name, active_state, sub_state, result, last_seen) values ($1, 'failed', 'failed', 'exit-code', $2)`, name, seen); err != nil {
+			t.Fatalf("insert unit: %v", err)
+		}
+	}
+	for domain, checked := range map[string]time.Time{"old.example.com": now.Add(-8 * 24 * time.Hour), "new.example.com": now.Add(-time.Hour)} {
+		if _, err := st.pool.Exec(ctx, `insert into certs (domain, checked_at, status) values ($1, $2, 'ok')`, domain, checked); err != nil {
+			t.Fatalf("insert cert: %v", err)
+		}
+	}
 	policy := Retention{Minute: 14 * 24 * time.Hour, Paths: 7 * 24 * time.Hour, Hour: 400 * 24 * time.Hour, Events: 400 * 24 * time.Hour}
 	if err := st.Retention(ctx, policy, now); err != nil {
 		t.Fatalf("Retention() error = %v", err)
@@ -204,6 +218,19 @@ func TestRetention(t *testing.T) {
 	}
 	if events != 1 {
 		t.Errorf("events = %d, want the fresh event only", events)
+	}
+	var units, certs int
+	if err := st.pool.QueryRow(ctx, `select count(*) from units`).Scan(&units); err != nil {
+		t.Fatalf("count units: %v", err)
+	}
+	if err := st.pool.QueryRow(ctx, `select count(*) from units where name = 'alive.service'`).Scan(&certs); err != nil || units != 1 || certs != 1 {
+		t.Errorf("units = %d, alive = %d (%v), want only the unit seen recently", units, certs, err)
+	}
+	if err := st.pool.QueryRow(ctx, `select count(*) from certs`).Scan(&certs); err != nil {
+		t.Fatalf("count certs: %v", err)
+	}
+	if certs != 1 {
+		t.Errorf("certs = %d, want only the recently checked domain", certs)
 	}
 }
 

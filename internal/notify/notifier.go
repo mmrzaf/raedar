@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/rules"
@@ -31,7 +32,7 @@ type Store interface {
 	// Deliveries returns the deliveries of an incident.
 	Deliveries(ctx context.Context, incidentID int64) ([]store.Delivery, error)
 	// Events returns the events of one kind in a time range.
-	Events(ctx context.Context, kind string, from, to time.Time) ([]store.Event, error)
+	Events(ctx context.Context, kind store.EventKind, from, to time.Time) ([]store.Event, error)
 }
 
 // Model provides the app names in messages.
@@ -47,7 +48,7 @@ type Notifier struct {
 	store     Store
 	model     Model
 	logger    *slog.Logger
-	clock     Clock
+	clock     clock.Clock
 	channels  map[Kind]Channel
 	formatter formatter
 	limiters  map[Kind]*limiter
@@ -96,7 +97,7 @@ func (l *limiter) prune(now time.Time) {
 }
 
 // New returns a notifier for the configured channels.
-func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock Clock) (*Notifier, error) {
+func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock clock.Clock) (*Notifier, error) {
 	proxied, err := OutboundClient(cfg, true)
 	if err != nil {
 		return nil, err
@@ -130,22 +131,35 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock C
 	return notifier, nil
 }
 
+// deliveryKind returns the delivery kind that announces a change.
+func deliveryKind(kind rules.ChangeKind) store.DeliveryKind {
+	switch kind {
+	case rules.ChangeEscalated:
+		return store.DeliveryEscalated
+	case rules.ChangeResolved:
+		return store.DeliveryResolved
+	default:
+		return store.DeliveryOpened
+	}
+}
+
 // IncidentsChanged delivers the changes of one evaluation, grouping the
 // incidents of the same kind into one message per channel.
 func (n *Notifier) IncidentsChanged(ctx context.Context, changes []rules.Change) {
 	if len(changes) == 0 {
 		return
 	}
-	groups := make(map[string]*group)
-	var order []string
+	groups := make(map[store.DeliveryKind]*group)
+	var order []store.DeliveryKind
 	for _, change := range changes {
 		incident := change.Incident
 		incident.Details = n.withAppName(incident)
-		g := groups[change.Kind]
+		kind := deliveryKind(change.Kind)
+		g := groups[kind]
 		if g == nil {
-			g = &group{kind: change.Kind, reopened: make(map[int64]bool)}
-			groups[change.Kind] = g
-			order = append(order, change.Kind)
+			g = &group{kind: kind, reopened: make(map[int64]bool)}
+			groups[kind] = g
+			order = append(order, kind)
 		}
 		g.incidents = append(g.incidents, incident)
 		if change.Reopened {
@@ -193,7 +207,7 @@ func (n *Notifier) channelsFor(ctx context.Context, g *group) []Channel {
 				continue
 			}
 			for _, delivery := range deliveries {
-				if delivery.Kind == "opened" || delivery.Kind == "test" {
+				if delivery.Kind == store.DeliveryOpened || delivery.Kind == store.DeliveryEscalated || delivery.Kind == store.DeliveryTest {
 					add(Kind(delivery.Channel))
 				}
 			}
@@ -209,8 +223,8 @@ func (n *Notifier) channelsFor(ctx context.Context, g *group) []Channel {
 }
 
 // routing returns the channels of one severity.
-func (n *Notifier) routing(severity string) []Kind {
-	if severity == "critical" {
+func (n *Notifier) routing(severity store.Severity) []Kind {
+	if severity == store.SeverityCritical {
 		if n.cfg.Notify.CriticalChannels == nil {
 			return n.configured()
 		}
@@ -251,7 +265,7 @@ func (n *Notifier) digestChannels() []Channel {
 }
 
 // deliver sends one message through a channel unless the rate limit holds it.
-func (n *Notifier) deliver(ctx context.Context, channel Channel, kind string, incidents []store.Incident, message Message) {
+func (n *Notifier) deliver(ctx context.Context, channel Channel, kind store.DeliveryKind, incidents []store.Incident, message Message) {
 	limit := n.limiters[channel.Kind()]
 	if limit != nil && !limit.allow(n.clock.Now()) {
 		n.mu.Lock()
@@ -261,15 +275,23 @@ func (n *Notifier) deliver(ctx context.Context, channel Channel, kind string, in
 			slog.Int("incidents", len(incidents)))
 		return
 	}
-	var ids []int64
+	// One delivery row per incident; a message without incidents, like the
+	// digest, gets a single row that belongs to no incident.
+	subjects := make([]*int64, 0, max(len(incidents), 1))
 	for _, incident := range incidents {
 		id := incident.ID
-		now := n.clock.Now()
+		subjects = append(subjects, &id)
+	}
+	if len(subjects) == 0 {
+		subjects = append(subjects, nil)
+	}
+	var ids []int64
+	for _, incidentID := range subjects {
 		deliveryID, err := n.store.AddDelivery(ctx, store.Delivery{
-			IncidentID: &id,
+			IncidentID: incidentID,
 			Kind:       kind,
 			Channel:    string(channel.Kind()),
-			CreatedAt:  now,
+			CreatedAt:  n.clock.Now(),
 			Status:     "pending",
 		})
 		if err != nil {
@@ -405,7 +427,7 @@ func (n *Notifier) SendDigest(ctx context.Context, text string) {
 		Document: digestDocument(n.cfg.HostName, now, text),
 	}
 	for _, channel := range n.digestChannels() {
-		n.deliver(ctx, channel, "digest", nil, message)
+		n.deliver(ctx, channel, store.DeliveryDigest, nil, message)
 	}
 }
 
@@ -416,7 +438,7 @@ func (n *Notifier) deployContexts(ctx context.Context, g *group) map[int64]deplo
 		if incident.AppID == nil || g.kind == "resolved" {
 			continue
 		}
-		events, err := n.store.Events(ctx, "deploy", incident.OpenedAt.Add(-30*time.Minute), incident.OpenedAt)
+		events, err := n.store.Events(ctx, store.EventDeploy, incident.OpenedAt.Add(-30*time.Minute), incident.OpenedAt)
 		if err != nil || len(events) == 0 {
 			continue
 		}
@@ -492,7 +514,7 @@ type TestResult struct {
 
 // Test sends a test message through the configured channels, or through one
 // channel.
-func Test(ctx context.Context, cfg *config.Config, logger *slog.Logger, clock Clock, only string) ([]TestResult, error) {
+func Test(ctx context.Context, cfg *config.Config, logger *slog.Logger, clock clock.Clock, only string) ([]TestResult, error) {
 	proxied, err := OutboundClient(cfg, true)
 	if err != nil {
 		return nil, err
@@ -538,7 +560,7 @@ func Test(ctx context.Context, cfg *config.Config, logger *slog.Logger, clock Cl
 // memory, without a delivery record, because the database cannot store one.
 func (n *Notifier) DatabaseDown(ctx context.Context, since time.Time) {
 	incident := n.databaseIncident("database writes are failing", since)
-	n.sendFromMemory(ctx, incident, "opened")
+	n.sendFromMemory(ctx, incident, store.DeliveryOpened)
 }
 
 // DatabaseUp reports that the database works again.
@@ -546,7 +568,7 @@ func (n *Notifier) DatabaseUp(ctx context.Context) {
 	now := n.clock.Now()
 	incident := n.databaseIncident("database writes work again", now)
 	incident.ResolvedAt = &now
-	n.sendFromMemory(ctx, incident, "resolved")
+	n.sendFromMemory(ctx, incident, store.DeliveryResolved)
 }
 
 // databaseIncident returns the synthetic incident of a database outage.
@@ -554,7 +576,7 @@ func (n *Notifier) databaseIncident(summary string, at time.Time) store.Incident
 	return store.Incident{
 		Rule:     "raedar.database",
 		Subject:  n.cfg.HostName,
-		Severity: "critical",
+		Severity: store.SeverityCritical,
 		OpenedAt: at,
 		Summary:  summary,
 		Details:  []byte(`{}`),
@@ -562,7 +584,7 @@ func (n *Notifier) databaseIncident(summary string, at time.Time) store.Incident
 }
 
 // sendFromMemory delivers one incident through the channels of its severity.
-func (n *Notifier) sendFromMemory(ctx context.Context, incident store.Incident, kind string) {
+func (n *Notifier) sendFromMemory(ctx context.Context, incident store.Incident, kind store.DeliveryKind) {
 	f := n.formatter
 	f.now = n.clock.Now()
 	g := group{kind: kind, incidents: []store.Incident{incident}, reopened: map[int64]bool{}}
@@ -582,7 +604,7 @@ func (n *Notifier) sendFromMemory(ctx context.Context, incident store.Incident, 
 
 // severityChannels returns the configured channels of one severity, in a
 // fixed order.
-func (n *Notifier) severityChannels(severity string) []Channel {
+func (n *Notifier) severityChannels(severity store.Severity) []Channel {
 	seen := make(map[Kind]bool)
 	var channels []Channel
 	for _, kind := range n.routing(severity) {
