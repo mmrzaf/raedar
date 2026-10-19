@@ -1,0 +1,21 @@
+# Build output
+/raedar
+/bin/
+/dist/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+/secrets/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
