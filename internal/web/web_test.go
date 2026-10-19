@@ -110,6 +110,11 @@ func TestStaticFilesAndHeartbeat(t *testing.T) {
 		t.Errorf("static status = %d, type = %q, want the stylesheet", recorder.Code, recorder.Header().Get("Content-Type"))
 	}
 	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/static/uplot.min.js", nil))
+	if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/javascript") {
+		t.Errorf("uplot status = %d, type = %q, want the chart library", recorder.Code, recorder.Header().Get("Content-Type"))
+	}
+	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/heartbeat/host-2", nil))
 	if recorder.Code != http.StatusNoContent {
 		t.Errorf("heartbeat status = %d, want the receiver", recorder.Code)
