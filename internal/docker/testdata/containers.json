@@ -1,0 +1,71 @@
+[
+  {
+    "Id": "1f8a4c2d9e7b6a5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c",
+    "Names": ["/shop-api-1"],
+    "Image": "shop/api:2.4.0",
+    "ImageID": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "Command": "/app/server",
+    "Created": 1725000000,
+    "Ports": [],
+    "Labels": {
+      "com.docker.compose.project": "shop",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.container-number": "1",
+      "traefik.enable": "true",
+      "traefik.http.routers.shop-api.rule": "Host(`shop.example.com`)",
+      "traefik.http.routers.shop-api.entrypoints": "websecure",
+      "traefik.http.routers.shop-api.tls": "true",
+      "traefik.http.routers.shop-api.tls.certresolver": "letsencrypt"
+    },
+    "State": "running",
+    "Status": "Up 2 hours",
+    "HostConfig": {"NetworkMode": "atlas_web"},
+    "NetworkSettings": {"Networks": {"atlas_web": {"IPAddress": "172.20.0.4"}}},
+    "Mounts": []
+  },
+  {
+    "Id": "2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b",
+    "Names": ["/shop-db-1"],
+    "Image": "postgres:16.3-alpine",
+    "ImageID": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "Command": "postgres",
+    "Created": 1725000100,
+    "Ports": [],
+    "Labels": {
+      "com.docker.compose.project": "shop",
+      "com.docker.compose.service": "db",
+      "com.docker.compose.container-number": "1"
+    },
+    "State": "running",
+    "Status": "Up 2 hours",
+    "HostConfig": {"NetworkMode": "atlas_web"},
+    "NetworkSettings": {"Networks": {"atlas_web": {"IPAddress": "172.20.0.5"}}},
+    "Mounts": []
+  },
+  {
+    "Id": "3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c",
+    "Names": ["/traefik"],
+    "Image": "traefik:v3.1",
+    "ImageID": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "Command": "/entrypoint.sh traefik",
+    "Created": 1724900000,
+    "Ports": [
+      {
+        "IP": "0.0.0.0",
+        "PrivatePort": 443,
+        "PublicPort": 443,
+        "Type": "tcp"
+      }
+    ],
+    "Labels": {
+      "com.docker.compose.project": "edge",
+      "com.docker.compose.service": "traefik",
+      "com.docker.compose.container-number": "1"
+    },
+    "State": "running",
+    "Status": "Up 2 days",
+    "HostConfig": {"NetworkMode": "atlas_web"},
+    "NetworkSettings": {"Networks": {"atlas_web": {"IPAddress": "172.20.0.2"}}},
+    "Mounts": []
+  }
+]

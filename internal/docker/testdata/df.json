@@ -1,0 +1,23 @@
+{
+  "LayersSize": 10737418240,
+  "Images": [
+    {"Id": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "Size": 524288000, "Containers": 1},
+    {"Id": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "Size": 419430400, "Containers": 1},
+    {"Id": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "Size": 209715200, "Containers": 1},
+    {"Id": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "Size": 157286400, "Containers": 0},
+    {"Id": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "Size": 104857600, "Containers": 0}
+  ],
+  "Containers": [
+    {"Id": "1f8a4c2d9e7b", "SizeRw": 2048000, "SizeRootFs": 526336000},
+    {"Id": "2a3b4c5d6e7f", "SizeRw": 1048576, "SizeRootFs": 420478976}
+  ],
+  "Volumes": [
+    {"Name": "shop_db_data", "Driver": "local", "UsageData": {"Size": 1073741824, "RefCount": 1}},
+    {"Name": "shop_uploads", "Driver": "local", "UsageData": {"Size": 536870912, "RefCount": 1}},
+    {"Name": "orphan_data", "Driver": "local", "UsageData": {"Size": 262144000, "RefCount": 0}}
+  ],
+  "BuildCache": [
+    {"ID": "abc", "Size": 314572800, "InUse": false},
+    {"ID": "def", "Size": 104857600, "InUse": true}
+  ]
+}

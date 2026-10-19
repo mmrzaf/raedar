@@ -1,0 +1,46 @@
+{
+  "read": "2024-08-30T11:30:00.000000001Z",
+  "preread": "2024-08-30T11:29:00.000000001Z",
+  "cpu_stats": {
+    "cpu_usage": {
+      "total_usage": 12345678900,
+      "usage_in_kernelmode": 1000000000,
+      "usage_in_usermode": 11345678900
+    },
+    "system_cpu_usage": 987654321000,
+    "online_cpus": 8,
+    "throttling_data": {"periods": 0, "throttled_periods": 0, "throttled_time": 0}
+  },
+  "precpu_stats": {
+    "cpu_usage": {"total_usage": 12000000000},
+    "system_cpu_usage": 987000000000,
+    "online_cpus": 8
+  },
+  "memory_stats": {
+    "usage": 188743680,
+    "max_usage": 201326592,
+    "stats": {
+      "active_anon": 125829120,
+      "active_file": 10485760,
+      "anon": 125829120,
+      "anon_thp": 0,
+      "cache": 52428800,
+      "dirty": 0,
+      "hierarchical_memory_limit": 536870912,
+      "inactive_anon": 31457280,
+      "inactive_file": 41943040,
+      "pgfault": 12345,
+      "rss": 125829120,
+      "rss_huge": 0,
+      "total_cache": 52428800,
+      "total_inactive_file": 41943040,
+      "total_rss": 125829120
+    },
+    "limit": 536870912
+  },
+  "pids_stats": {"current": 12},
+  "networks": {
+    "eth0": {"rx_bytes": 1048576, "rx_packets": 2048, "rx_errors": 0, "rx_dropped": 0, "tx_bytes": 2097152, "tx_packets": 1024, "tx_errors": 0, "tx_dropped": 0},
+    "eth1": {"rx_bytes": 512, "rx_packets": 8, "rx_errors": 0, "rx_dropped": 0, "tx_bytes": 256, "tx_packets": 4, "tx_errors": 0, "tx_dropped": 0}
+  }
+}

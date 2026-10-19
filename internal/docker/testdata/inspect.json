@@ -1,0 +1,109 @@
+{
+  "Id": "1f8a4c2d9e7b6a5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c",
+  "Created": "2024-08-30T09:20:00.123456789Z",
+  "Path": "/app/server",
+  "Args": [],
+  "State": {
+    "Status": "running",
+    "Running": true,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 4242,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2024-08-30T09:20:01.987654321Z",
+    "FinishedAt": "2024-08-29T18:00:00.111111111Z",
+    "Health": {
+      "Status": "healthy",
+      "FailingStreak": 0,
+      "Log": []
+    }
+  },
+  "Image": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "ResolvConfPath": "/var/lib/docker/containers/1f8a/resolv.conf",
+  "HostnamePath": "/var/lib/docker/containers/1f8a/hostname",
+  "Name": "/shop-api-1",
+  "RestartCount": 0,
+  "Driver": "overlay2",
+  "Platform": "linux",
+  "MountLabel": "",
+  "ProcessLabel": "",
+  "AppArmorProfile": "",
+  "Config": {
+    "Hostname": "1f8a4c2d9e7b",
+    "Domainname": "",
+    "User": "",
+    "Hostname2": "",
+    "AttachStdin": false,
+    "AttachStdout": true,
+    "AttachStderr": true,
+    "ExposedPorts": {
+      "8080/tcp": {}
+    },
+    "Tty": false,
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Env": [
+      "DATABASE_PASSWORD=a-secret-that-must-never-be-kept",
+      "PATH=/usr/local/bin:/usr/bin:/bin"
+    ],
+    "Cmd": ["/app/server"],
+    "Image": "shop/api:2.4.0",
+    "Volumes": null,
+    "WorkingDir": "/app",
+    "Entrypoint": null,
+    "Labels": {
+      "com.docker.compose.project": "shop",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.container-number": "1",
+      "traefik.enable": "true",
+      "traefik.http.routers.shop-api.rule": "Host(`shop.example.com`)",
+      "traefik.http.routers.shop-api.entrypoints": "websecure",
+      "traefik.http.routers.shop-api.tls": "true",
+      "traefik.http.routers.shop-api.tls.certresolver": "letsencrypt",
+      "traefik.http.routers.shop-api.service": "shop-api"
+    }
+  },
+  "HostConfig": {
+    "Binds": null,
+    "ContainerIDFile": "",
+    "LogConfig": {"Type": "json-file", "Config": {}},
+    "NetworkMode": "atlas_web",
+    "PortBindings": {},
+    "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0},
+    "AutoRemove": false,
+    "VolumeDriver": "",
+    "Memory": 0,
+    "NanoCpus": 0,
+    "CpuShares": 0
+  },
+  "NetworkSettings": {
+    "Bridge": "",
+    "SandboxID": "abcdef",
+    "Ports": {
+      "8080/tcp": null
+    },
+    "SandboxKey": "/var/run/docker/netns/abcdef",
+    "Networks": {
+      "atlas_web": {
+        "IPAMConfig": null,
+        "Links": null,
+        "Aliases": ["shop-api-1", "api"],
+        "MacAddress": "02:42:ac:14:00:04",
+        "DriverOpts": null,
+        "NetworkID": "3f2b1a0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a",
+        "EndpointID": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
+        "Gateway": "172.20.0.1",
+        "IPAddress": "172.20.0.4",
+        "IPPrefixLen": 16,
+        "IPv6Gateway": "",
+        "GlobalIPv6Address": "",
+        "GlobalIPv6PrefixLen": 0,
+        "MacAddress": "02:42:ac:14:00:04",
+        "DriverOpts": null
+      }
+    }
+  }
+}
