@@ -4,6 +4,45 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-10-20
+
+### Added
+
+- A `silences` table backs every kind of "do not page this now" —
+  maintenance windows, one-shot mutes, quiet hours, pager cooldowns and
+  auto-deploy silences. Rule and subject are nullable so wildcards work;
+  the partial `(kind, dedup_key)` unique index makes idempotent inserts
+  possible (for example, a deploy that re-arms the same silence).
+- `incidents.acked_at` and `incidents.acked_by` columns so an operator's
+  ack is durable. Every query that reads an incident now exposes them.
+- A paging `Gate` in `internal/notify` that every delivery must pass
+  through. Today `Evaluate` returns `GateSilenced` when an active
+  silence covers the (rule, subject) and `GateAcked` when the incident
+  has been acked. The other five statuses (`cooldown`, `held`,
+  `stand_down`, `recorded`, `escalated_blocked`) are wired into the
+  deliveries status check but unused; phase 3 of 0.3.0 turns them on.
+- `telegram_inbox` table for inbound command dedup (later phase).
+- New env vars registered and validated, but with their default behaviour
+  unchanged: `RAEDAR_QUIET_FROM`, `RAEDAR_QUIET_TO`, `RAEDAR_QUIET_TZ`,
+  `RAEDAR_QUIET_PAGE_CRITICAL`, `RAEDAR_PAGER_COOLDOWN`,
+  `RAEDAR_STAND_DOWN_AFTER`, `RAEDAR_DEPLOY_SILENCE`.
+
+### Fixed
+
+- `Docker disk usage is unavailable` no longer logs at WARN every 15
+  minutes. The 403 from a read-only socket-proxy is the well-known
+  expected answer for `/system/df`; Raedar detects it and demotes the
+  log line to Debug. `raedar check` still surfaces it in the
+  docker-source line so the operator sees "Docker disk usage stays
+  empty" by design.
+
+### Upgrading
+
+- Existing deployments need no changes. Migrating from 0.2.1 brings two
+  forward-only migrations (0003_silences, 0004_inbox_ack). The
+  deliveries.status check widens; the rows already in production are
+  unaffected.
+
 ## [0.2.1] - 2026-10-20
 
 ### Fixed
