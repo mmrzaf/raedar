@@ -76,6 +76,16 @@ func variables() []variable {
 		{name: "RAEDAR_WEBHOOK_URL", apply: parseVar(func(c *Config) *string { return &c.Notify.Webhook.URL }, parseHTTPURL)},
 		{name: "RAEDAR_WEBHOOK_SECRET", apply: parseVar(func(c *Config) *string { return &c.Notify.Webhook.Secret }, parseString)},
 
+		// Silencing (quiet hours, pager cooldown, stand-down, deploy silence,
+		// per-rule cooldown overrides, subject naming).
+		{name: "RAEDAR_QUIET_FROM", apply: parseVar(func(c *Config) **TimeOfDay { return &c.Notify.Silent.QuietFrom }, parseOptionalTimeOfDay)},
+		{name: "RAEDAR_QUIET_TO", apply: parseVar(func(c *Config) **TimeOfDay { return &c.Notify.Silent.QuietTo }, parseOptionalTimeOfDay)},
+		{name: "RAEDAR_QUIET_TZ", apply: parseVar(func(c *Config) **time.Location { return &c.Notify.Silent.QuietZone }, parseLocation)},
+		{name: "RAEDAR_QUIET_PAGE_CRITICAL", apply: parseVar(func(c *Config) *bool { return &c.Notify.Silent.QuietPageCritical }, parseBool)},
+		{name: "RAEDAR_PAGER_COOLDOWN", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.PagerCooldown }, parseDuration)},
+		{name: "RAEDAR_STAND_DOWN_AFTER", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.StandDownAfter }, parseDuration)},
+		{name: "RAEDAR_DEPLOY_SILENCE", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.DeploySilence }, parseDuration)},
+
 		// Heartbeats
 		{name: "RAEDAR_HEARTBEAT_URL", apply: parseVar(func(c *Config) *string { return &c.Heartbeat.URL }, parseHTTPURL)},
 		{name: "RAEDAR_HEARTBEAT_HEADER", apply: parseVar(func(c *Config) **Header { return &c.Heartbeat.Header }, parseOneHeader)},

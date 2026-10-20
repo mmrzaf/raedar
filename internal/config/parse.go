@@ -167,6 +167,30 @@ func parseTimeOfDay(s string) (TimeOfDay, error) {
 	return TimeOfDay{Hour: hour, Minute: minute}, nil
 }
 
+// parseOptionalTimeOfDay parses RAEDAR_QUIET_FROM/TO. An empty value keeps
+// the side disabled; a valid HH:MM value returns a TimeOfDay pointer.
+func parseOptionalTimeOfDay(s string) (*TimeOfDay, error) {
+	if s == "" {
+		return nil, nil
+	}
+	at, err := parseTimeOfDay(s)
+	if err != nil {
+		return nil, err
+	}
+	return &at, nil
+}
+
+// parseBool parses a boolean in the usual "true/false/1/0/yes/no" forms.
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "y", "on":
+		return true, nil
+	case "false", "0", "no", "n", "off":
+		return false, nil
+	}
+	return false, errors.New(`must be one of "true", "false", "1", "0", "yes", "no", "on", "off"`)
+}
+
 // parseList splits a comma-separated list, trimming spaces around items and
 // dropping empty items.
 func parseList(s string) []string {

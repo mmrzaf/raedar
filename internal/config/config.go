@@ -137,6 +137,9 @@ type NotifyConfig struct {
 	SMS SMSConfig
 	// Webhook holds the webhook channel settings.
 	Webhook WebhookConfig
+	// Silent holds the silencing settings: quiet hours, ack persistence,
+	// pager cooldown and stand-down.
+	Silent SilentConfig
 }
 
 // TelegramConfig holds the Telegram channel settings.
@@ -205,6 +208,28 @@ type HeartbeatConfig struct {
 	ReceiveToken string
 	// Timeout is the silence after which a peer is reported.
 	Timeout time.Duration
+}
+
+// SilentConfig holds the silencing settings shared by the gate and the UI.
+//
+// QuietFrom and QuietTo form an optional [from, to) window in QuietZone.
+// Overnight windows (QuietFrom > QuietTo) span midnight. A nil side
+// disables that edge.
+//
+// PagerCooldown is the minimum time between two pages for the same
+// (rule, subject). Per-rule overrides are set by PagerCooldownByRule.
+//
+// StandDownAfter is the idle duration after which Raedar emits a single
+// 'all quiet for N h' message; the disabled default is 0 (never).
+type SilentConfig struct {
+	QuietFrom           *TimeOfDay
+	QuietTo             *TimeOfDay
+	QuietZone           *time.Location
+	QuietPageCritical   bool
+	PagerCooldown       time.Duration
+	PagerCooldownByRule map[string]time.Duration
+	StandDownAfter      time.Duration
+	DeploySilence       time.Duration
 }
 
 // RetentionConfig holds how long history is kept.

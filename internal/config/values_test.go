@@ -114,6 +114,42 @@ func wantTimeOfDay(want TimeOfDay) func(*testing.T, *Config) {
 	}
 }
 
+// wantQuietTimeOfDay checks the quiet-hours time-of-day pointer.
+func wantQuietTimeOfDay(get func(*Config) *TimeOfDay, want TimeOfDay) func(*testing.T, *Config) {
+	return func(t *testing.T, cfg *Config) {
+		t.Helper()
+		value := get(cfg)
+		if value == nil || *value != want {
+			t.Errorf("got %v, want %v", value, want)
+		}
+	}
+}
+
+// wantQuietLocation checks the quiet-hours location.
+func wantQuietLocation(wantName string) func(*testing.T, *Config) {
+	return func(t *testing.T, cfg *Config) {
+		t.Helper()
+		zone := cfg.Notify.Silent.QuietZone
+		if zone == nil {
+			t.Errorf("QuietZone = nil, want %q", wantName)
+			return
+		}
+		if zone.String() != wantName {
+			t.Errorf("QuietZone = %q, want %q", zone.String(), wantName)
+		}
+	}
+}
+
+// wantBoolField checks a bool config field.
+func wantBoolField(get func(*Config) bool, want bool) func(*testing.T, *Config) {
+	return func(t *testing.T, cfg *Config) {
+		t.Helper()
+		if got := get(cfg); got != want {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	}
+}
+
 // wantLocation checks the time zone by name.
 func wantLocation(want string) func(*testing.T, *Config) {
 	return func(t *testing.T, cfg *Config) {
@@ -433,6 +469,36 @@ func variableCases() map[string]valueCase {
 			check: wantDuration(func(c *Config) time.Duration { return c.Heartbeat.Timeout }, 5*time.Minute),
 		},
 
+		// Silencing (quiet hours, pager cooldown, stand-down, deploy silence).
+		"RAEDAR_QUIET_FROM": {
+			value: "22:00",
+			check: wantQuietTimeOfDay(func(c *Config) *TimeOfDay { return c.Notify.Silent.QuietFrom }, TimeOfDay{Hour: 22}),
+		},
+		"RAEDAR_QUIET_TO": {
+			value: "07:00",
+			check: wantQuietTimeOfDay(func(c *Config) *TimeOfDay { return c.Notify.Silent.QuietTo }, TimeOfDay{Hour: 7}),
+		},
+		"RAEDAR_QUIET_TZ": {
+			value: "Asia/Tehran",
+			check: wantQuietLocation("Asia/Tehran"),
+		},
+		"RAEDAR_QUIET_PAGE_CRITICAL": {
+			value: "false",
+			check: wantBoolField(func(c *Config) bool { return c.Notify.Silent.QuietPageCritical }, false),
+		},
+		"RAEDAR_PAGER_COOLDOWN": {
+			value: "30m",
+			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.PagerCooldown }, 30*time.Minute),
+		},
+		"RAEDAR_STAND_DOWN_AFTER": {
+			value: "24h",
+			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.StandDownAfter }, 24*time.Hour),
+		},
+		"RAEDAR_DEPLOY_SILENCE": {
+			value: "5m",
+			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.DeploySilence }, 5*time.Minute),
+		},
+
 		// Retention
 		"RAEDAR_RETENTION_MINUTE": {
 			value: "30d",
@@ -556,6 +622,13 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_HEARTBEAT_PEERS",
 		"RAEDAR_HEARTBEAT_RECEIVE_TOKEN",
 		"RAEDAR_HEARTBEAT_TIMEOUT",
+		"RAEDAR_QUIET_FROM",
+		"RAEDAR_QUIET_TO",
+		"RAEDAR_QUIET_TZ",
+		"RAEDAR_QUIET_PAGE_CRITICAL",
+		"RAEDAR_PAGER_COOLDOWN",
+		"RAEDAR_STAND_DOWN_AFTER",
+		"RAEDAR_DEPLOY_SILENCE",
 		"RAEDAR_RETENTION_MINUTE",
 		"RAEDAR_RETENTION_PATHS",
 		"RAEDAR_RETENTION_HOUR",
