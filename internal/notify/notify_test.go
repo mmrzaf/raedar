@@ -469,6 +469,8 @@ type fakeStore struct {
 	deliveries map[int64]store.Delivery
 	nextID     int64
 	events     map[store.EventKind][]store.Event
+	silences   []store.Silence
+	incidents  []store.Incident
 }
 
 func (s *fakeStore) AddDelivery(ctx context.Context, delivery store.Delivery) (int64, error) {
@@ -513,6 +515,24 @@ func (s *fakeStore) Events(ctx context.Context, kind store.EventKind, from, to t
 	return s.events[kind], nil
 }
 
+func (s *fakeStore) FindActiveSilence(ctx context.Context, rule, subject string, now time.Time) (*store.Silence, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return matchSilenceLocal(s.silences, rule, subject), nil
+}
+
+func (s *fakeStore) IncidentByID(ctx context.Context, id int64) (*store.Incident, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, incident := range s.incidents {
+		if incident.ID == id {
+			copy := incident
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+
 // byChannel returns the deliveries of one channel.
 func (s *fakeStore) byChannel(channel Kind) []store.Delivery {
 	s.mu.Lock()
@@ -541,6 +561,7 @@ func newTestNotifier(t *testing.T, channels ...Channel) (*Notifier, *fakeStore, 
 		clock:     clock,
 		channels:  map[Kind]Channel{},
 		limiters:  map[Kind]*limiter{},
+		gate:      &Gate{Store: st, Logger: discardLogger()},
 		held:      map[Kind]int{},
 		formatter: formatter{host: cfg.HostName, publicURL: cfg.PublicURL, location: time.UTC, now: clock.now},
 	}

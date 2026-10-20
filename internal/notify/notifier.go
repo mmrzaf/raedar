@@ -33,6 +33,12 @@ type Store interface {
 	Deliveries(ctx context.Context, incidentID int64) ([]store.Delivery, error)
 	// Events returns the events of one kind in a time range.
 	Events(ctx context.Context, kind store.EventKind, from, to time.Time) ([]store.Event, error)
+	// FindActiveSilence reports the most-specific active silence for the
+	// (rule, subject) at now, or nil when nothing matches. Used by the
+	// gate to suppress pages without changing the engine.
+	FindActiveSilence(ctx context.Context, rule, subject string, now time.Time) (*store.Silence, error)
+	// IncidentByID returns one incident, including its ack metadata.
+	IncidentByID(ctx context.Context, id int64) (*store.Incident, error)
 }
 
 // Model provides the app names in messages.
@@ -52,6 +58,7 @@ type Notifier struct {
 	channels  map[Kind]Channel
 	formatter formatter
 	limiters  map[Kind]*limiter
+	gate      *Gate
 
 	mu      sync.Mutex
 	retries []*pendingDelivery
@@ -121,6 +128,16 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 		publicURL: cfg.PublicURL,
 		location:  cfg.Location,
 	}
+	notifier.gate = &Gate{
+		Store:          st,
+		Logger:         logger,
+		Cooldown:       cfg.Notify.Silent.PagerCooldown,
+		PageCritical:   cfg.Notify.Silent.QuietPageCritical,
+		QuietFrom:      silentFrom(cfg.Notify.Silent.QuietFrom),
+		QuietTo:        silentFrom(cfg.Notify.Silent.QuietTo),
+		QuietZone:      cfg.Notify.Silent.QuietZone,
+		StandDownAfter: cfg.Notify.Silent.StandDownAfter,
+	}
 	for kind := range notifier.channels {
 		limit := cfg.Notify.RateLimit
 		if kind == KindSMS {
@@ -141,6 +158,16 @@ func deliveryKind(kind rules.ChangeKind) store.DeliveryKind {
 	default:
 		return store.DeliveryOpened
 	}
+}
+
+// silentFrom turns an optional TimeOfDay into a clock time at the start of
+// today. The gate only reads Hour and Minute, so the date does not matter.
+func silentFrom(at *config.TimeOfDay) *time.Time {
+	if at == nil {
+		return nil
+	}
+	t := time.Date(0, 1, 1, at.Hour, at.Minute, 0, 0, time.UTC)
+	return &t
 }
 
 // IncidentsChanged delivers the changes of one evaluation, grouping the
@@ -172,17 +199,60 @@ func (n *Notifier) IncidentsChanged(ctx context.Context, changes []rules.Change)
 }
 
 // sendGroup builds the message of one group and delivers it to its channels.
+//
+// The gate decides, per (incident × change-kind × channel), whether to send
+// the message now, hold it, mute it, or skip it entirely. We always record a
+// delivery row so the deliveries page (and the rule engine) can see what
+// happened with every incident change.
+//
+// When one or more incidents are suppressed, the visible message lists only
+// the incidents that still page, and the rest of the row is recorded with
+// the gate status so the audit trail stays complete.
 func (n *Notifier) sendGroup(ctx context.Context, g *group) {
-	f := n.formatter
-	f.now = n.clock.Now()
-	f.deploys = n.deployContexts(ctx, g)
-	message := Message{
-		Text:     f.text(*g),
-		SMS:      f.smsText(*g),
-		Document: f.document(*g),
-	}
+	now := n.clock.Now()
 	for _, channel := range n.channelsFor(ctx, g) {
-		n.deliver(ctx, channel, g.kind, g.incidents, message)
+		kept := make([]store.Incident, 0, len(g.incidents))
+		suppressed := make(map[int64]GateStatus)
+		for _, incident := range g.incidents {
+			decision := n.gate.Evaluate(ctx, DecisionInputs{
+				Incident:   incident,
+				ChangeKind: g.kind,
+				Channel:    channel.Kind(),
+				Now:        now,
+			}, Message{})
+			if decision.Status == GateRecorded {
+				kept = append(kept, incident)
+				continue
+			}
+			suppressed[incident.ID] = decision.Status
+		}
+		// Record the suppressed deliveries first so the audit row exists even
+		// when no Telegram POST happens.
+		for incidentID, status := range suppressed {
+			if _, err := n.store.AddDelivery(ctx, store.Delivery{
+				IncidentID: &incidentID,
+				Kind:       g.kind,
+				Channel:    string(channel.Kind()),
+				CreatedAt:  now,
+				Status:     string(status),
+			}); err != nil {
+				n.logger.Warn("record suppressed delivery", slog.String("error", err.Error()))
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		f := n.formatter
+		f.now = now
+		f.deploys = n.deployContexts(ctx, g)
+		sub := *g
+		sub.incidents = kept
+		message := Message{
+			Text:     f.text(sub),
+			SMS:      f.smsText(sub),
+			Document: f.document(sub),
+		}
+		n.deliver(ctx, channel, g.kind, kept, message)
 	}
 }
 

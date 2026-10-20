@@ -99,18 +99,39 @@ type GateStore interface {
 	// FindActiveSilence reports the most-specific active silence for the
 	// (rule, subject) at now, or nil when nothing matches.
 	FindActiveSilence(ctx context.Context, rule, subject string, now time.Time) (*store.Silence, error)
-	// Acked reports the incident's ack metadata.
+	// Acked returns the incident with its ack metadata; the gate reads
+	// ack_at to decide whether to suppress an incident entirely.
 	IncidentByID(ctx context.Context, id int64) (*store.Incident, error)
-	// AddDelivery records a new delivery row in any status.
-	AddDelivery(ctx context.Context, delivery store.Delivery) (int64, error)
 }
 
 // Evaluate reports the disposition of inputs. The pager calls Evaluate for
 // every incident × change-kind × channel tuple it would have delivered.
-// Returning Decision{Status: GateRecorded, Message: msg} keeps the old
-// behaviour; the spine phase returns exactly that.
+//
+// Order of checks:
+//  1. acked           the incident is acked, never page
+//  2. silenced        an active silence covers (rule, subject)
+//  3. held            quiet hours hold the page (critical bypasses by default)
+//  4. cooldown        pager cooldown covers (rule, subject)
+//  5. stand_down      stand-down window absorbs the page
+//  6. recorded        send the message (or — for held/cooldown/stand_down —
+//     deliver the deferred message at the boundary)
+//
+// Phase 2 wires (1) and (2). Phases 3 and 4 add the rest.
 func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs, message Message) Decision {
-	// Future phases will override this default. Today: always record + send.
+	// 1. acked
+	if inputs.Incident.Acked() && g.Store != nil {
+		if fresh, err := g.Store.IncidentByID(ctx, inputs.Incident.ID); err == nil && fresh != nil && fresh.Acked() {
+			return Decision{Status: GateAcked, Channel: inputs.Channel, Reason: "acked"}
+		}
+	}
+	// 2. silenced (only rule+subject can be silenced; the pager always
+	// passes both, even when subject is "host" or a disk name).
+	if g.Store != nil {
+		if silence, err := g.Store.FindActiveSilence(ctx, inputs.Incident.Rule, inputs.Incident.Subject, inputs.Now); err == nil && silence != nil {
+			return Decision{Status: GateSilenced, Channel: inputs.Channel, Reason: silence.Reason}
+		}
+	}
+	// 6. default
 	return Decision{Status: GateRecorded, Channel: inputs.Channel, Message: &message, Reason: ""}
 }
 
