@@ -196,11 +196,17 @@ func (s *Source) collectHost(ctx context.Context, moment time.Time) error {
 }
 
 // collectDockerDisk records Docker's disk usage; a daemon that does not allow
-// /system/df leaves the source degraded without failing the pass.
+// /system/df leaves the source degraded without failing the pass. When the
+// daemon (or its socket-proxy) intentionally refuses /system/df, the error
+// is logged at Debug instead of Warn so it does not pollute every pass.
 func (s *Source) collectDockerDisk(ctx context.Context, now time.Time) {
 	usage, err := s.docker.DiskUsage(ctx)
 	if err != nil {
-		s.logger.Warn("Docker disk usage is unavailable", slog.String("error", err.Error()))
+		if docker.IsDiskUsageForbidden(err) {
+			s.logger.Debug("Docker disk usage is unavailable", slog.String("error", err.Error()))
+		} else {
+			s.logger.Warn("Docker disk usage is unavailable", slog.String("error", err.Error()))
+		}
 		return
 	}
 	if err := s.store.InsertDockerDisk(ctx, store.DockerDisk{
