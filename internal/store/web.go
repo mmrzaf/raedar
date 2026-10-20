@@ -65,14 +65,16 @@ func (s *Store) LatestEvents(ctx context.Context, limit int) ([]Event, error) {
 	return events, nil
 }
 
-// IncidentByID returns one incident, or nil when it does not exist.
+// IncidentByID returns one incident, including its ack metadata.
 func (s *Store) IncidentByID(ctx context.Context, id int64) (*Incident, error) {
 	var incident Incident
 	err := s.pool.QueryRow(ctx, `
-		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at, one_shot, summary, details
-		from incidents where id = $1`, id).Scan(&incident.ID, &incident.Rule, &incident.Subject, &incident.AppID,
-		&incident.SlotID, &incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt,
-		&incident.OneShot, &incident.Summary, &incident.Details)
+		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at,
+		       one_shot, summary, details, acked_at, acked_by
+		from incidents where id = $1`, id).
+		Scan(&incident.ID, &incident.Rule, &incident.Subject, &incident.AppID, &incident.SlotID,
+			&incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt,
+			&incident.OneShot, &incident.Summary, &incident.Details, &incident.AckedAt, &incident.AckedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
