@@ -117,6 +117,13 @@ func TestLoadDefaults(t *testing.T) {
 			SMS: SMSConfig{
 				HTTP: SMSHTTPConfig{Method: "POST", Encoding: "json"},
 			},
+			Silent: SilentConfig{
+				QuietZone:         time.UTC,
+				QuietPageCritical: true,
+				PagerCooldown:     30 * time.Minute,
+				StandDownAfter:    24 * time.Hour,
+				DeploySilence:     5 * time.Minute,
+			},
 		},
 		Heartbeat: HeartbeatConfig{
 			Interval: time.Minute,

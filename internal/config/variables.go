@@ -73,6 +73,7 @@ func variables() []variable {
 		{name: "RAEDAR_SMS_HTTP_HEADERS", apply: parseVar(func(c *Config) *[]Header { return &c.Notify.SMS.HTTP.Headers }, parseHeaders)},
 		{name: "RAEDAR_SMS_HTTP_BODY", apply: parseVar(func(c *Config) *string { return &c.Notify.SMS.HTTP.Body }, parseString)},
 		{name: "RAEDAR_SMS_HTTP_ENCODING", apply: parseVar(func(c *Config) *string { return &c.Notify.SMS.HTTP.Encoding }, oneOfFold("json", "form", "raw"))},
+		{name: "RAEDAR_SMS_HTTP_API_KEY", apply: parseVar(func(c *Config) *string { return &c.Notify.SMS.HTTP.APIKey }, parseString)},
 		{name: "RAEDAR_WEBHOOK_URL", apply: parseVar(func(c *Config) *string { return &c.Notify.Webhook.URL }, parseHTTPURL)},
 		{name: "RAEDAR_WEBHOOK_SECRET", apply: parseVar(func(c *Config) *string { return &c.Notify.Webhook.Secret }, parseString)},
 
@@ -82,10 +83,10 @@ func variables() []variable {
 		{name: "RAEDAR_QUIET_TO", apply: parseVar(func(c *Config) **TimeOfDay { return &c.Notify.Silent.QuietTo }, parseOptionalTimeOfDay)},
 		{name: "RAEDAR_QUIET_TZ", apply: parseVar(func(c *Config) **time.Location { return &c.Notify.Silent.QuietZone }, parseLocation)},
 		{name: "RAEDAR_QUIET_PAGE_CRITICAL", apply: parseVar(func(c *Config) *bool { return &c.Notify.Silent.QuietPageCritical }, parseBool)},
-		{name: "RAEDAR_PAGER_COOLDOWN", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.PagerCooldown }, parseDuration)},
+		{name: "RAEDAR_PAGER_COOLDOWN", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.PagerCooldown }, parseDurationOrZero)},
 		{name: "RAEDAR_PAGER_COOLDOWN_BY_RULE", apply: parseVar(func(c *Config) *map[string]time.Duration { return &c.Notify.Silent.PagerCooldownByRule }, parseCooldownByRule)},
-		{name: "RAEDAR_STAND_DOWN_AFTER", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.StandDownAfter }, parseDuration)},
-		{name: "RAEDAR_DEPLOY_SILENCE", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.DeploySilence }, parseDuration)},
+		{name: "RAEDAR_STAND_DOWN_AFTER", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.StandDownAfter }, parseDurationOrZero)},
+		{name: "RAEDAR_DEPLOY_SILENCE", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.DeploySilence }, parseDurationOrZero)},
 
 		// Presentation
 		{name: "RAEDAR_SUBJECT_NAMES", apply: parseVar(func(c *Config) *SubjectNames { return &c.SubjectNames }, parseSubjectNames)},

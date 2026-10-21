@@ -191,6 +191,10 @@ type SMSHTTPConfig struct {
 	// Encoding is how placeholder values are escaped in the body: "json",
 	// "form" or "raw".
 	Encoding string
+	// APIKey is substituted for {{api_key}} in the URL and the body. It is
+	// the generic way to authenticate providers that put the key in the
+	// URL path.
+	APIKey string
 }
 
 // WebhookConfig holds the webhook channel settings.
@@ -223,15 +227,17 @@ type HeartbeatConfig struct {
 
 // SilentConfig holds the silencing settings shared by the gate and the UI.
 //
-// QuietFrom and QuietTo form an optional [from, to) window in QuietZone.
-// Overnight windows (QuietFrom > QuietTo) span midnight. A nil side
-// disables that edge.
+// QuietFrom and QuietTo form an optional [from, to) window in QuietZone,
+// which defaults to the configured time zone. Overnight windows
+// (QuietFrom > QuietTo) span midnight. Both are set together or neither.
 //
 // PagerCooldown is the minimum time between two pages for the same
-// (rule, subject). Per-rule overrides are set by PagerCooldownByRule.
+// (rule, subject); 0 disables it. Per-rule overrides are set by
+// PagerCooldownByRule.
 //
 // StandDownAfter is the idle duration after which Raedar emits a single
-// 'all quiet for N h' message; the disabled default is 0 (never).
+// 'all quiet' message; 0 disables it. DeploySilence is how long an app is
+// silenced after a deploy; 0 disables it.
 type SilentConfig struct {
 	QuietFrom           *TimeOfDay
 	QuietTo             *TimeOfDay

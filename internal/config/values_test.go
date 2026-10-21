@@ -434,6 +434,11 @@ func variableCases() map[string]valueCase {
 			extra: smsHTTPEnv(),
 			check: wantString(func(c *Config) string { return c.Notify.SMS.HTTP.Encoding }, "form"),
 		},
+		"RAEDAR_SMS_HTTP_API_KEY": {
+			value: "abc123",
+			extra: smsHTTPEnv(),
+			check: wantString(func(c *Config) string { return c.Notify.SMS.HTTP.APIKey }, "abc123"),
+		},
 		"RAEDAR_WEBHOOK_URL": {
 			value: "https://hooks.example.com/raedar",
 			check: wantString(func(c *Config) string { return c.Notify.Webhook.URL }, "https://hooks.example.com/raedar"),
@@ -493,10 +498,12 @@ func variableCases() map[string]valueCase {
 		// Silencing (quiet hours, pager cooldown, stand-down, deploy silence).
 		"RAEDAR_QUIET_FROM": {
 			value: "22:00",
+			extra: map[string]string{"RAEDAR_QUIET_TO": "07:00"},
 			check: wantQuietTimeOfDay(func(c *Config) *TimeOfDay { return c.Notify.Silent.QuietFrom }, TimeOfDay{Hour: 22}),
 		},
 		"RAEDAR_QUIET_TO": {
 			value: "07:00",
+			extra: map[string]string{"RAEDAR_QUIET_FROM": "22:00"},
 			check: wantQuietTimeOfDay(func(c *Config) *TimeOfDay { return c.Notify.Silent.QuietTo }, TimeOfDay{Hour: 7}),
 		},
 		"RAEDAR_QUIET_TZ": {
@@ -640,6 +647,7 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_SMS_HTTP_HEADERS",
 		"RAEDAR_SMS_HTTP_BODY",
 		"RAEDAR_SMS_HTTP_ENCODING",
+		"RAEDAR_SMS_HTTP_API_KEY",
 		"RAEDAR_WEBHOOK_URL",
 		"RAEDAR_WEBHOOK_SECRET",
 		"RAEDAR_SUBJECT_NAMES",

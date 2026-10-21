@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 // checkConfig loads a configuration with the given overrides and asserts that
 // it either loads or fails with an error containing wantErr.
@@ -180,5 +184,66 @@ func TestValidateHeartbeat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			checkConfig(t, tt.extras, tt.wantErr)
 		})
+	}
+}
+
+func TestValidateQuietWindow(t *testing.T) {
+	base := databaseEnv()
+	from := "22:00"
+	onlyFrom := map[string]string{"RAEDAR_QUIET_FROM": from}
+	if _, err := Load(lookupFrom(mergeEnv(base, onlyFrom))); err == nil ||
+		!strings.Contains(err.Error(), "must be set together") {
+		t.Fatalf("one-sided quiet window: err = %v", err)
+	}
+	both := map[string]string{"RAEDAR_QUIET_FROM": "22:00", "RAEDAR_QUIET_TO": "07:00"}
+	if _, err := Load(lookupFrom(mergeEnv(base, both))); err != nil {
+		t.Fatalf("valid quiet window: %v", err)
+	}
+	same := map[string]string{"RAEDAR_QUIET_FROM": "08:00", "RAEDAR_QUIET_TO": "08:00"}
+	if _, err := Load(lookupFrom(mergeEnv(base, same))); err == nil ||
+		!strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("zero-length quiet window: err = %v", err)
+	}
+}
+
+func mergeEnv(base, extra map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(extra))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func TestSilentDefaultsAndZero(t *testing.T) {
+	env := mergeEnv(databaseEnv(), map[string]string{
+		"RAEDAR_TZ":                     "Asia/Tehran",
+		"RAEDAR_PAGER_COOLDOWN":         "0",
+		"RAEDAR_STAND_DOWN_AFTER":       "0",
+		"RAEDAR_DEPLOY_SILENCE":         "0",
+		"RAEDAR_PAGER_COOLDOWN_BY_RULE": "route.down=0,host.disk=1d",
+	})
+	cfg, err := Load(lookupFrom(env))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	silent := cfg.Notify.Silent
+	if silent.QuietZone.String() != "Asia/Tehran" {
+		t.Errorf("QuietZone = %q, want the RAEDAR_TZ zone", silent.QuietZone)
+	}
+	if silent.PagerCooldown != 0 || silent.StandDownAfter != 0 || silent.DeploySilence != 0 {
+		t.Errorf("zero values not kept: %+v", silent)
+	}
+	if got := silent.PagerCooldownByRule; got["route.down"] != 0 || got["host.disk"] != 24*time.Hour {
+		t.Errorf("PagerCooldownByRule = %v", got)
+	}
+}
+
+func TestCooldownByRuleRejectsGarbage(t *testing.T) {
+	env := mergeEnv(databaseEnv(), map[string]string{"RAEDAR_PAGER_COOLDOWN_BY_RULE": "route.down=soon"})
+	if _, err := Load(lookupFrom(env)); err == nil || strings.Contains(err.Error(), "<nil>") {
+		t.Fatalf("err = %v, want a descriptive duration error", err)
 	}
 }

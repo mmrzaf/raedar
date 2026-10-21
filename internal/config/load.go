@@ -114,6 +114,12 @@ func defaults() *Config {
 					Encoding: "json",
 				},
 			},
+			Silent: SilentConfig{
+				QuietPageCritical: true,
+				PagerCooldown:     30 * time.Minute,
+				StandDownAfter:    24 * time.Hour,
+				DeploySilence:     5 * time.Minute,
+			},
 		},
 		Heartbeat: HeartbeatConfig{
 			Interval: time.Minute,
@@ -140,6 +146,9 @@ func (c *Config) finalize() error {
 	}
 	if len(c.Host.Disks) == 0 {
 		c.Host.Disks = []Disk{{Name: "/", Path: c.Host.Root}}
+	}
+	if c.Notify.Silent.QuietZone == nil {
+		c.Notify.Silent.QuietZone = c.Location
 	}
 	return nil
 }

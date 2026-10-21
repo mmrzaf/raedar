@@ -92,6 +92,15 @@ func parseDuration(s string) (time.Duration, error) {
 	return total, nil
 }
 
+// parseDurationOrZero parses a duration like parseDuration but also accepts a
+// bare 0, for settings where zero turns the feature off.
+func parseDurationOrZero(s string) (time.Duration, error) {
+	if s == "0" {
+		return 0, nil
+	}
+	return parseDuration(s)
+}
+
 // parseDecimalPrefix consumes a decimal number at the start of s and returns
 // it together with the rest of the string.
 func parseDecimalPrefix(s string) (float64, string, error) {
@@ -229,7 +238,7 @@ func parseList(s string) []string {
 // parseCooldownByRule parses the value of
 // RAEDAR_PAGER_COOLDOWN_BY_RULE. The format is `rule=duration,rule=duration`,
 // for example `route.down=15m,host.disk=1h`. The duration uses Go's
-// time.ParseDuration syntax.
+// parseDurationOrZero syntax, where 0 disables the cooldown of that rule.
 func parseCooldownByRule(s string) (map[string]time.Duration, error) {
 	items := parseList(s)
 	out := make(map[string]time.Duration, len(items))
@@ -243,9 +252,9 @@ func parseCooldownByRule(s string) (map[string]time.Duration, error) {
 		if name == "" || value == "" {
 			return nil, fmt.Errorf("expected rule=duration, got %q", item)
 		}
-		d, err := time.ParseDuration(value)
-		if err != nil || d <= 0 {
-			return nil, fmt.Errorf("duration %q: %v", value, err)
+		d, err := parseDurationOrZero(value)
+		if err != nil {
+			return nil, fmt.Errorf("duration %q: %w", value, err)
 		}
 		out[name] = d
 	}

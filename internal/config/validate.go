@@ -60,6 +60,12 @@ func validateNotify(n NotifyConfig) []error {
 	if n.DigestAt != nil && len(n.DigestChannels) == 0 {
 		problems = append(problems, errors.New("RAEDAR_DIGEST_CHANNELS must not be empty when RAEDAR_DIGEST_AT is set"))
 	}
+	if (n.Silent.QuietFrom == nil) != (n.Silent.QuietTo == nil) {
+		problems = append(problems, errors.New("RAEDAR_QUIET_FROM and RAEDAR_QUIET_TO must be set together"))
+	}
+	if n.Silent.QuietFrom != nil && n.Silent.QuietTo != nil && *n.Silent.QuietFrom == *n.Silent.QuietTo {
+		problems = append(problems, errors.New("RAEDAR_QUIET_FROM and RAEDAR_QUIET_TO must differ"))
+	}
 	return problems
 }
 
