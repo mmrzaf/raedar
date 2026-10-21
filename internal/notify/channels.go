@@ -151,7 +151,7 @@ func (c *telegramChannel) SendReply(ctx context.Context, chatID, text string) er
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	var response sendMessageResponse
 	if err := sendJSON(c.client, request, &response); err != nil {
-		return fmt.Errorf("send Telegram reply: %w", safeError(err))
+		return fmt.Errorf("send Telegram reply: %w", SafeError(err))
 	}
 	if !response.Ok {
 		return fmt.Errorf("telegram sendMessage returned ok=false")
@@ -192,7 +192,7 @@ func (c *telegramChannel) SendEach(ctx context.Context, message Message, chats [
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		var response sendMessageResponse
 		if err := sendJSON(c.client, request, &response); err != nil {
-			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("send Telegram message: %w", safeError(err))})
+			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("send Telegram message: %w", SafeError(err))})
 			continue
 		}
 		if !response.Ok {
@@ -297,7 +297,7 @@ func (c *httpSMSChannel) sendOne(ctx context.Context, recipient, text string) er
 		request.Header.Set("Content-Type", contentType)
 	}
 	if err := send(c.client, request); err != nil {
-		return fmt.Errorf("send SMS: %w", safeError(err))
+		return fmt.Errorf("send SMS: %w", SafeError(err))
 	}
 	return nil
 }
@@ -362,7 +362,7 @@ func (c *webhookChannel) Send(ctx context.Context, message Message) error {
 		request.Header.Set("X-Raedar-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
 	if err := send(c.client, request); err != nil {
-		return fmt.Errorf("send webhook: %w", safeError(err))
+		return fmt.Errorf("send webhook: %w", SafeError(err))
 	}
 	return nil
 }
@@ -414,9 +414,10 @@ func sendJSON(client *http.Client, request *http.Request, out any) error {
 	return nil
 }
 
-// safeError removes the request URL from an error, because URLs can contain
-// secrets.
-func safeError(err error) error {
+// SafeError removes the request URL from an error, because URLs can contain
+// secrets such as a Telegram bot token. Log errors from outbound requests
+// through it.
+func SafeError(err error) error {
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		return fmt.Errorf("%s: %w", urlErr.Op, urlErr.Err)

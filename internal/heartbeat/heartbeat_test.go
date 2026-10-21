@@ -149,7 +149,7 @@ func TestSender(t *testing.T) {
 // that contain tokens.
 func TestSafeErrorRemovesTheURL(t *testing.T) {
 	wrapped := &url.Error{Op: "Get", URL: "http://example.com/ping/very-secret-token", Err: errors.New("connection refused")}
-	got := safeError(wrapped)
+	got := SafeError(wrapped)
 	if strings.Contains(got.Error(), "very-secret-token") {
 		t.Errorf("error = %q, want the URL removed", got.Error())
 	}
