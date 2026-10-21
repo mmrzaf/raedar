@@ -1,5 +1,5 @@
-// Package-level gate: the single place that decides whether an incident
-// change becomes a page right now, is deferred, or is suppressed.
+// The gate is the single place that decides whether an incident change
+// becomes a page right now, is deferred, or is suppressed.
 package notify
 
 import (
@@ -66,8 +66,12 @@ type GateStore interface {
 //  1. acked      the operator already saw this incident
 //  2. silenced   a silence covers the incident
 //  3. held       the quiet window is open and the incident is not critical
-//  4. cooldown   the same (rule, subject) paged within the cooldown
+//  4. cooldown   an opening page for the same (rule, subject) went out within
+//     the cooldown; escalations and resolutions are never delayed by it
 //  5. recorded   send now
+//
+// A failing store lookup never blocks a page: the gate logs it and carries
+// on to the next check, because a missed page costs more than a duplicate.
 type Gate struct {
 	Store  GateStore
 	Logger *slog.Logger
@@ -80,9 +84,9 @@ type Gate struct {
 	// PageCritical lets critical incidents bypass the quiet window.
 	PageCritical bool
 
-	// QuietFrom and QuietTo form the optional quiet window in QuietZone. A
-	// nil side disables that edge; an overnight window (from > to) spans
-	// midnight.
+	// QuietFrom and QuietTo form the optional quiet window in QuietZone.
+	// Both are required together (the configuration enforces it); an
+	// overnight window (from > to) spans midnight.
 	QuietFrom *time.Time
 	QuietTo   *time.Time
 	QuietZone *time.Location
@@ -94,17 +98,21 @@ func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs) Decision {
 
 	// 1. an acked incident never pages, at any severity.
 	if g.Store != nil {
-		if current, err := g.Store.IncidentByID(ctx, inputs.Incident.ID); err == nil &&
-			current != nil && current.Acked() {
+		current, err := g.Store.IncidentByID(ctx, inputs.Incident.ID)
+		if err != nil {
+			g.warn("gate: read incident", err)
+		} else if current != nil && current.Acked() {
 			return Decision{Status: GateAcked, Channel: inputs.Channel, Reason: "acked"}
 		}
 	}
 
 	// 2. an active silence covers the incident.
 	if g.Store != nil {
-		if silence, err := g.Store.FindActiveSilence(
-			ctx, inputs.Incident.Rule, inputs.Incident.Subject, inputs.Incident.AppID, now,
-		); err == nil && silence != nil {
+		silence, err := g.Store.FindActiveSilence(
+			ctx, inputs.Incident.Rule, inputs.Incident.Subject, inputs.Incident.AppID, now)
+		if err != nil {
+			g.warn("gate: read silences", err)
+		} else if silence != nil {
 			return Decision{Status: GateSilenced, Channel: inputs.Channel, Reason: silence.Reason}
 		}
 	}
@@ -117,11 +125,14 @@ func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs) Decision {
 		}
 	}
 
-	// 4. a page for the same (rule, subject) inside the cooldown is deferred
-	// to the end of that cooldown.
-	if window := g.cooldownFor(inputs.Incident.Rule); window > 0 && g.Store != nil {
-		if last, err := g.Store.LastSent(ctx, inputs.Incident.Rule, inputs.Incident.Subject); err == nil &&
-			last != nil && last.SentAt != nil {
+	// 4. an opening page for the same (rule, subject) inside the cooldown is
+	// deferred to the end of that cooldown.
+	if window := g.cooldownFor(inputs.Incident.Rule); window > 0 && g.Store != nil &&
+		inputs.ChangeKind == store.DeliveryOpened {
+		last, err := g.Store.LastSent(ctx, inputs.Incident.Rule, inputs.Incident.Subject)
+		if err != nil {
+			g.warn("gate: read last page", err)
+		} else if last != nil && last.SentAt != nil {
 			if readyAt := last.SentAt.Add(window); now.Before(readyAt) {
 				return Decision{Status: GateCooldown, Channel: inputs.Channel, Reason: "pager cooldown", ReadyAt: readyAt}
 			}
@@ -130,6 +141,13 @@ func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs) Decision {
 
 	// 5. send now.
 	return Decision{Status: GateRecorded, Channel: inputs.Channel}
+}
+
+// warn logs a failed store lookup.
+func (g *Gate) warn(message string, err error) {
+	if g.Logger != nil {
+		g.Logger.Warn(message, slog.String("error", err.Error()))
+	}
 }
 
 // cooldownFor returns the cooldown that applies to a rule.
@@ -144,7 +162,7 @@ func (g *Gate) cooldownFor(rule string) time.Duration {
 // second result is false when no quiet window is configured or now is
 // outside it.
 func (g *Gate) quietEndsAt(now time.Time) (time.Time, bool) {
-	if g.QuietFrom == nil && g.QuietTo == nil {
+	if g.QuietFrom == nil || g.QuietTo == nil {
 		return time.Time{}, false
 	}
 	zone := g.QuietZone
@@ -152,44 +170,27 @@ func (g *Gate) quietEndsAt(now time.Time) (time.Time, bool) {
 		zone = time.UTC
 	}
 	local := now.In(zone)
-
-	fromMin, toMin := -1, -1
-	if g.QuietFrom != nil {
-		fromMin = g.QuietFrom.Hour()*60 + g.QuietFrom.Minute()
-	}
-	if g.QuietTo != nil {
-		toMin = g.QuietTo.Hour()*60 + g.QuietTo.Minute()
-	}
+	fromMin := g.QuietFrom.Hour()*60 + g.QuietFrom.Minute()
+	toMin := g.QuietTo.Hour()*60 + g.QuietTo.Minute()
 	nowMin := local.Hour()*60 + local.Minute()
 
-	inWindow := func() bool {
-		switch {
-		case fromMin < 0:
-			return nowMin < toMin
-		case toMin < 0:
-			return nowMin >= fromMin
-		case fromMin == toMin:
-			return false
-		case fromMin < toMin:
-			return nowMin >= fromMin && nowMin < toMin
-		default:
-			return nowMin >= fromMin || nowMin < toMin
-		}
+	var inside bool
+	switch {
+	case fromMin < toMin:
+		inside = nowMin >= fromMin && nowMin < toMin
+	default: // overnight window
+		inside = nowMin >= fromMin || nowMin < toMin
 	}
-	if !inWindow() {
+	if !inside {
 		return time.Time{}, false
 	}
 
-	// The window closes at the upcoming To boundary. It is today when that
-	// is still ahead of now, otherwise tomorrow.
-	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, zone)
-	switch {
-	case toMin < 0:
-		// Only a start is set, so the window never closes on its own.
-		return time.Time{}, false
-	case toMin > nowMin:
-		return midnight.Add(time.Duration(toMin) * time.Minute), true
-	default:
-		return midnight.AddDate(0, 0, 1).Add(time.Duration(toMin) * time.Minute), true
+	// The window closes at the upcoming To boundary: today when it is still
+	// ahead of now, otherwise tomorrow.
+	// Built from calendar fields so a DST change does not shift the boundary.
+	day := local.Day()
+	if toMin <= nowMin {
+		day++
 	}
+	return time.Date(local.Year(), local.Month(), day, toMin/60, toMin%60, 0, 0, zone), true
 }

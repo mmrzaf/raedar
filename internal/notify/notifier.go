@@ -34,9 +34,8 @@ type Store interface {
 	Deliveries(ctx context.Context, incidentID int64) ([]store.Delivery, error)
 	// Events returns the events of one kind in a time range.
 	Events(ctx context.Context, kind store.EventKind, from, to time.Time) ([]store.Event, error)
-	// FindActiveSilence reports the most-specific active silence for the
-	// (rule, subject) at now, or nil when nothing matches. Used by the
-	// gate to suppress pages without changing the engine.
+	// FindActiveSilence reports the most specific active silence for an
+	// incident's rule, subject and app at now, or nil when none matches.
 	FindActiveSilence(ctx context.Context, rule, subject string, appID *int64, now time.Time) (*store.Silence, error)
 	// IncidentByID returns one incident, including its ack metadata.
 	IncidentByID(ctx context.Context, id int64) (*store.Incident, error)
@@ -44,7 +43,7 @@ type Store interface {
 	// pair, used by the gate to implement pager cooldown.
 	LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error)
 	// OpenIncidentCount returns the number of currently open incidents,
-	// used by the gate to decide whether to honour stand-down.
+	// used by the stand-down announcement.
 	OpenIncidentCount(ctx context.Context) (int, error)
 }
 
@@ -70,9 +69,14 @@ type Notifier struct {
 	mu      sync.Mutex
 	retries []*pendingDelivery
 	held    map[Kind]int
+	// heldRetryAt delays the next held-summary attempt of a channel after a
+	// failure, so a down provider is not hit every tick.
+	heldRetryAt map[Kind]time.Time
 	// deferred holds pages the gate postponed (quiet hours, cooldown) until
-	// their ReadyAt. Keyed by channel + rule + subject so repeated
-	// suppressions collapse into one message.
+	// their ReadyAt. Keyed by channel + kind + rule + subject so repeated
+	// suppressions collapse into one message. It lives in memory: a restart
+	// drops the pending catch-up messages, while the held and cooldown
+	// delivery rows stay as the record.
 	deferred map[string]*deferredPage
 	// lastPageAt is the time of the most recent successful page, used by
 	// the stand-down announcement. lastStandDownAt is when the last "all
@@ -92,7 +96,8 @@ type pendingDelivery struct {
 
 // deferredPage is one page the gate postponed. The most recent incident
 // for a key replaces the earlier one, so a flapping subject produces one
-// catch-up message rather than a burst.
+// catch-up message rather than a burst. The page is evaluated by the gate
+// again when it comes due.
 type deferredPage struct {
 	channel   Channel
 	kind      store.DeliveryKind
@@ -102,14 +107,20 @@ type deferredPage struct {
 }
 
 // limiter counts the messages sent through one channel in a sliding window.
+// It is safe for concurrent use: incident pages and the background loop share
+// it.
 type limiter struct {
 	limit  int
 	window time.Duration
-	sent   []time.Time
+
+	mu   sync.Mutex
+	sent []time.Time
 }
 
 // allow reports whether a message may be sent now, and records it.
 func (l *limiter) allow(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.prune(now)
 	if len(l.sent) >= l.limit {
 		return false
@@ -118,7 +129,17 @@ func (l *limiter) allow(now time.Time) bool {
 	return true
 }
 
-// prune drops the entries outside the window.
+// undo gives back the slot the last allow took, for a message that was not
+// sent after all.
+func (l *limiter) undo() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.sent) > 0 {
+		l.sent = l.sent[:len(l.sent)-1]
+	}
+}
+
+// prune drops the entries outside the window. The caller holds mu.
 func (l *limiter) prune(now time.Time) {
 	cutoff := now.Add(-l.window)
 	kept := l.sent[:0]
@@ -141,15 +162,17 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 		return nil, err
 	}
 	notifier := &Notifier{
-		cfg:      cfg,
-		store:    st,
-		model:    model,
-		logger:   logger,
-		clock:    clock,
-		channels: newChannels(cfg, proxied, direct, clock),
-		limiters: make(map[Kind]*limiter),
-		held:     make(map[Kind]int),
-		deferred: make(map[string]*deferredPage),
+		cfg:         cfg,
+		store:       st,
+		model:       model,
+		logger:      logger,
+		clock:       clock,
+		channels:    newChannels(cfg, proxied, direct, clock),
+		limiters:    make(map[Kind]*limiter),
+		held:        make(map[Kind]int),
+		heldRetryAt: make(map[Kind]time.Time),
+		deferred:    make(map[string]*deferredPage),
+		lastPageAt:  clock.Now(),
 	}
 	notifier.formatter = formatter{
 		host:      cfg.HostName,
@@ -293,20 +316,26 @@ func (n *Notifier) recordSuppressed(ctx context.Context, channel Channel, kind s
 }
 
 // deferIncident queues an incident for a catch-up message. Repeated
-// suppressions of the same (channel, rule, subject) collapse into one
+// suppressions of the same (channel, kind, rule, subject) collapse into one
 // entry, keeping the latest incident and the latest ready time.
 func (n *Notifier) deferIncident(channel Channel, kind store.DeliveryKind, incident store.Incident, decision Decision) {
-	key := string(channel.Kind()) + "\x00" + incident.Rule + "\x00" + incident.Subject
+	key := deferralKey(channel.Kind(), kind, incident)
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	entry := n.deferred[key]
 	if entry == nil {
-		entry = &deferredPage{channel: channel, kind: kind}
+		entry = &deferredPage{channel: channel}
 		n.deferred[key] = entry
 	}
+	entry.kind = kind
 	entry.incidents = []store.Incident{incident}
 	entry.readyAt = decision.ReadyAt
 	entry.status = decision.Status
+}
+
+// deferralKey identifies the deferred page of an incident on one channel.
+func deferralKey(channel Kind, kind store.DeliveryKind, incident store.Incident) string {
+	return string(channel) + "\x00" + string(kind) + "\x00" + incident.Rule + "\x00" + incident.Subject
 }
 
 // channelsFor returns the channels a group is delivered to.
@@ -321,8 +350,10 @@ func (n *Notifier) channelsFor(ctx context.Context, g *group) []Channel {
 		seen[kind] = true
 		channels = append(channels, channel)
 	}
-	if g.kind == "resolved" {
-		// A resolution goes to the channels its opening message went to.
+	if g.kind == store.DeliveryResolved {
+		// A resolution goes to the channels that announced the incident. A
+		// page that was held, cooled down, silenced or failed announced
+		// nothing, so it does not earn a resolution.
 		for _, incident := range g.incidents {
 			deliveries, err := n.store.Deliveries(ctx, incident.ID)
 			if err != nil {
@@ -330,7 +361,8 @@ func (n *Notifier) channelsFor(ctx context.Context, g *group) []Channel {
 				continue
 			}
 			for _, delivery := range deliveries {
-				if delivery.Kind == store.DeliveryOpened || delivery.Kind == store.DeliveryEscalated || delivery.Kind == store.DeliveryTest {
+				announced := delivery.Status == "sent" || delivery.Status == "pending"
+				if announced && (delivery.Kind == store.DeliveryOpened || delivery.Kind == store.DeliveryEscalated) {
 					add(Kind(delivery.Channel))
 				}
 			}
@@ -405,7 +437,7 @@ type slot struct {
 // telegram_message_id after the channel returns, so reply-to lookup is
 // deterministic regardless of how many chats the operator lists.
 func (n *Notifier) deliver(ctx context.Context, channel Channel, kind store.DeliveryKind, incidents []store.Incident, message Message) {
-	chatIDs := n.channelChatIDs(channel)
+	chatIDs := channel.ChatIDs()
 	if len(chatIDs) == 0 {
 		chatIDs = []string{""}
 	}
@@ -467,15 +499,20 @@ func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message
 
 	var retry []slot
 	var lastErr error
+	paged := false
 	for _, s := range slots {
 		outcome := outcomeFor(results, s.chatID)
 		delivery := store.Delivery{ID: s.id, Attempts: failed + 1, Status: "sent"}
 		switch {
 		case outcome.err == nil:
 			delivery.SentAt = &now
+			paged = paged || s.incidentID != nil
 			if outcome.messageID != 0 {
 				id := outcome.messageID
 				delivery.TelegramMessageID = &id
+				if chat, err := strconv.ParseInt(s.chatID, 10, 64); err == nil {
+					delivery.TelegramChatID = &chat
+				}
 			}
 		case finalFailure:
 			delivery.Status = "failed"
@@ -492,8 +529,10 @@ func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message
 			n.logger.Warn("update delivery", slog.String("error", updateErr.Error()))
 		}
 	}
+	if paged {
+		n.markPaged(now)
+	}
 	if lastErr == nil {
-		n.markPaged(now, len(slots) > 0)
 		return
 	}
 	if finalFailure {
@@ -557,22 +596,12 @@ func outcomeFor(results []chatSend, chatID string) chatSend {
 	return chatSend{chatID: chatID, err: fmt.Errorf("no result for chat %q", chatID)}
 }
 
-// markPaged records a successful page for the stand-down announcement.
-func (n *Notifier) markPaged(now time.Time, paged bool) {
-	if !paged {
-		return
-	}
+// markPaged records a successful incident page for the stand-down
+// announcement. Digests and tests are not pages.
+func (n *Notifier) markPaged(now time.Time) {
 	n.mu.Lock()
 	n.lastPageAt = now
 	n.mu.Unlock()
-}
-
-// channelChatIDs returns the chat_ids this channel posts to. Channels
-// without a fan-out list (webhook, telegram without chat_ids configured,
-// SMS, generic test channels) return an empty slice and the pager
-// treats them as one delivery row per incident.
-func (n *Notifier) channelChatIDs(channel Channel) []string {
-	return channel.ChatIDs()
 }
 
 // Run delivers retries and held summaries until ctx is done.
@@ -627,6 +656,12 @@ func (n *Notifier) deliverHeld(ctx context.Context) {
 		if held == 0 {
 			continue
 		}
+		n.mu.Lock()
+		retryAt := n.heldRetryAt[kind]
+		n.mu.Unlock()
+		if now.Before(retryAt) {
+			continue
+		}
 		limit := n.limiters[kind]
 		if limit != nil && !limit.allow(now) {
 			continue
@@ -640,6 +675,12 @@ func (n *Notifier) deliverHeld(ctx context.Context) {
 		}
 		if err := n.channels[kind].Send(ctx, message); err != nil {
 			n.logger.Warn("send held summary", slog.String("channel", string(kind)), slog.String("error", safeError(err).Error()))
+			if limit != nil {
+				limit.undo()
+			}
+			n.mu.Lock()
+			n.heldRetryAt[kind] = now.Add(time.Minute)
+			n.mu.Unlock()
 			continue
 		}
 		n.mu.Lock()
@@ -649,8 +690,10 @@ func (n *Notifier) deliverHeld(ctx context.Context) {
 }
 
 // deliverDeferred sends the catch-up message for pages the gate held or
-// cooled down once their ready time has passed. Incidents with the same
-// channel, rule and subject collapse into one message.
+// cooled down once their ready time has passed. Each page goes through the
+// gate again first, because the world moved on while it waited: an incident
+// may have been acked, silenced or resolved, or the quiet window may still be
+// open. Pages for the same channel, status and kind collapse into one message.
 func (n *Notifier) deliverDeferred(ctx context.Context) {
 	now := n.clock.Now()
 	n.mu.Lock()
@@ -666,40 +709,98 @@ func (n *Notifier) deliverDeferred(ctx context.Context) {
 	if len(due) == 0 {
 		return
 	}
-	// Group by channel so one channel gets one catch-up message.
-	byKind := make(map[Kind][]*deferredPage)
-	var order []Kind
-	for _, entry := range due {
-		kind := entry.channel.Kind()
-		if _, seen := byKind[kind]; !seen {
-			order = append(order, kind)
-		}
-		byKind[kind] = append(byKind[kind], entry)
+	type groupKey struct {
+		channel Kind
+		status  GateStatus
+		kind    store.DeliveryKind
 	}
-	for _, kind := range order {
-		entries := byKind[kind]
-		incidents := make([]store.Incident, 0, len(entries))
-		for _, entry := range entries {
-			incidents = append(incidents, entry.incidents...)
+	byKey := make(map[groupKey][]store.Incident)
+	channels := make(map[groupKey]Channel)
+	var order []groupKey
+	for _, entry := range due {
+		incident, ok := n.releasable(ctx, entry, now)
+		if !ok {
+			continue
 		}
-		header := fmt.Sprintf("%d held while quiet:", len(incidents))
-		for _, entry := range entries {
-			if entry.status == GateCooldown {
-				header = fmt.Sprintf("%d still unresolved:", len(incidents))
-			}
+		key := groupKey{channel: entry.channel.Kind(), status: entry.status, kind: entry.kind}
+		if _, seen := byKey[key]; !seen {
+			order = append(order, key)
+			channels[key] = entry.channel
 		}
-		g := group{kind: entries[0].kind, incidents: incidents, reopened: map[int64]bool{}}
+		byKey[key] = append(byKey[key], incident)
+	}
+	sort.SliceStable(order, func(i, j int) bool { return order[i].channel < order[j].channel })
+	for _, key := range order {
+		incidents := byKey[key]
+		noun := "incidents"
+		if key.kind == store.DeliveryResolved {
+			noun = "resolutions"
+		}
+		reason := "held while quiet"
+		if key.status == GateCooldown {
+			reason = "pager cooldown"
+		}
+		header := fmt.Sprintf("%d more %s (%s):", len(incidents), noun, reason)
+		g := group{kind: key.kind, incidents: incidents, reopened: map[int64]bool{}}
 		f := n.formatter
 		f.now = now
 		f.deploys = n.deployContexts(ctx, &g)
-		text := header + "\n\n" + f.text(g)
 		message := Message{
-			Text:     text,
+			Text:     header + "\n\n" + f.text(g),
 			SMS:      truncateSMS(header + " raedar"),
 			Document: f.document(g),
 		}
-		n.deliver(ctx, entries[0].channel, entries[0].kind, incidents, message)
+		n.deliver(ctx, channels[key], key.kind, incidents, message)
 	}
+}
+
+// releasable re-evaluates a deferred page against the current state of its
+// incident. It returns the incident to announce, or false when the page must
+// not go out now: the incident is gone, no longer matches the page, or the
+// gate suppressed or deferred it again.
+func (n *Notifier) releasable(ctx context.Context, entry *deferredPage, now time.Time) (store.Incident, bool) {
+	queued := entry.incidents[0]
+	current, err := n.store.IncidentByID(ctx, queued.ID)
+	if err != nil {
+		n.logger.Warn("read deferred incident", slog.Int64("incident", queued.ID), slog.String("error", err.Error()))
+		n.requeue(entry, now.Add(time.Minute))
+		return store.Incident{}, false
+	}
+	if current == nil {
+		return store.Incident{}, false
+	}
+	resolved := current.ResolvedAt != nil
+	if resolved != (entry.kind == store.DeliveryResolved) {
+		return store.Incident{}, false
+	}
+	decision := n.gate.Evaluate(ctx, DecisionInputs{
+		Incident:   *current,
+		ChangeKind: entry.kind,
+		Channel:    entry.channel.Kind(),
+		Now:        now,
+	})
+	switch decision.Status {
+	case GateRecorded:
+		current.Details = n.withAppName(*current)
+		return *current, true
+	case GateHeld, GateCooldown:
+		n.deferIncident(entry.channel, entry.kind, *current, decision)
+	default:
+		n.recordSuppressed(ctx, entry.channel, entry.kind, *current, decision.Status, now)
+	}
+	return store.Incident{}, false
+}
+
+// requeue puts a deferred page back to be tried at readyAt.
+func (n *Notifier) requeue(entry *deferredPage, readyAt time.Time) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	key := deferralKey(entry.channel.Kind(), entry.kind, entry.incidents[0])
+	if _, exists := n.deferred[key]; exists {
+		return
+	}
+	entry.readyAt = readyAt
+	n.deferred[key] = entry
 }
 
 // maybeStandDown sends one "all quiet" message per quiet period. It runs
@@ -727,8 +828,7 @@ func (n *Notifier) maybeStandDown(ctx context.Context) {
 	if err != nil || count > 0 {
 		return
 	}
-	hours := int(window.Round(time.Hour) / time.Hour)
-	text := fmt.Sprintf("%s · all quiet for %d h", n.cfg.HostName, hours)
+	text := fmt.Sprintf("%s · all quiet for %s", n.cfg.HostName, quietSpan(window))
 	message := Message{
 		Text:     text,
 		SMS:      truncateSMS("RAEDAR " + text),
@@ -742,6 +842,15 @@ func (n *Notifier) maybeStandDown(ctx context.Context) {
 	n.mu.Lock()
 	n.lastStandDownAt = now
 	n.mu.Unlock()
+}
+
+// quietSpan formats a stand-down window as whole hours when it is one, and as
+// minutes otherwise.
+func quietSpan(window time.Duration) string {
+	if window%time.Hour == 0 {
+		return fmt.Sprintf("%d h", window/time.Hour)
+	}
+	return fmt.Sprintf("%d min", int(window.Round(time.Minute)/time.Minute))
 }
 
 // SendDigest delivers the daily digest through the digest channels.

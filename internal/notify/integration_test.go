@@ -30,13 +30,13 @@ func TestPagerRowsPerIncidentAndChat(t *testing.T) {
 	incB := insertIncident(t, ctx, st, "route.down", "waiotech-api@docker", store.SeverityWarning)
 
 	tg := &scriptedTelegram{
-		chatIDs: []string{"personal", "group"},
+		chatIDs: []string{"101", "202"},
 		outcomes: map[string]scriptedOutcome{
-			"personal": {messageID: 1001},
-			"group":    {messageID: 1002},
+			"101": {messageID: 1001},
+			"202": {messageID: 1002},
 		},
 	}
-	notifier := integrationNotifier(t, st, []string{"personal", "group"}, tg)
+	notifier := integrationNotifier(t, st, []string{"101", "202"}, tg)
 
 	notifier.IncidentsChanged(ctx, []rules.Change{
 		{Incident: incA, Kind: rules.ChangeOpened},
@@ -63,12 +63,17 @@ func TestPagerRowsPerIncidentAndChat(t *testing.T) {
 		}
 	}
 
-	delivery, err := st.LookupDeliveryByTelegramMessageID(ctx, 1002)
+	// A reply resolves through the chat and message id together; the same
+	// message id in another chat is a different message.
+	found, err := st.TelegramMessageDeliveries(ctx, 202, 1002)
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if delivery == nil || delivery.IncidentID == nil || *delivery.TelegramMessageID != 1002 {
-		t.Fatalf("lookup = %+v, want a delivery for message 1002", delivery)
+	if len(found) != 2 {
+		t.Fatalf("deliveries of chat 202 message 1002 = %d, want one per incident", len(found))
+	}
+	if other, err := st.TelegramMessageDeliveries(ctx, 101, 1002); err != nil || len(other) != 0 {
+		t.Fatalf("chat 101 message 1002 = %v, %v; want none", other, err)
 	}
 }
 

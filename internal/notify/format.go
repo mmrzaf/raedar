@@ -154,7 +154,7 @@ func (f formatter) text(g group) string {
 
 // block returns one incident's Telegram block.
 func (f formatter) block(incident store.Incident, kind store.DeliveryKind, reopened bool) string {
-	header := incidentHeader(f.host, incident, kind)
+	header := f.incidentHeader(incident, kind)
 	if kind == store.DeliveryResolved {
 		return header + " resolved after " + durationText(incidentDuration(incident))
 	}
@@ -177,7 +177,7 @@ func (f formatter) block(incident store.Incident, kind store.DeliveryKind, reope
 }
 
 // incidentHeader returns the first line of an incident's message.
-func incidentHeader(host string, incident store.Incident, kind store.DeliveryKind) string {
+func (f formatter) incidentHeader(incident store.Incident, kind store.DeliveryKind) string {
 	emoji := emojiWarning
 	if incident.Severity == store.SeverityCritical {
 		emoji = emojiCritical
@@ -185,11 +185,7 @@ func incidentHeader(host string, incident store.Incident, kind store.DeliveryKin
 	if kind == store.DeliveryResolved {
 		emoji = emojiResolved
 	}
-	name := incidentApp(incident)
-	if name == "" {
-		name = incident.Subject
-	}
-	return fmt.Sprintf("%s %s · %s — %s", emoji, host, name, incident.Summary)
+	return fmt.Sprintf("%s %s · %s — %s", emoji, f.host, f.subjectName(incident), incident.Summary)
 }
 
 // clock returns a time of day in the configured zone.

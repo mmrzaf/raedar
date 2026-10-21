@@ -1,8 +1,11 @@
 package notify
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -96,7 +99,7 @@ func TestGateSilenceSpecificBeatsGlobal(t *testing.T) {
 	now := time.Now()
 	db := newGateStore()
 	db.silences = append(db.silences,
-		store.Silence{Kind: store.SilenceQuietHours, Reason: "global",
+		store.Silence{Kind: store.SilenceMaintenanceWindow, Reason: "global",
 			StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour)},
 		store.Silence{Kind: store.SilenceOneShotMute, Rule: gateStr("route.down"), Subject: gateStr("fallback@file"),
 			Reason: "exact", StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour)},
@@ -277,4 +280,84 @@ func matchSilenceLocal(active []store.Silence, rule, subject string, appID *int6
 
 func ptrInt64(v int64) *int64 { return &v }
 
-var _ = slog.LevelInfo
+// TestGateCooldownSparesEscalationsAndResolutions verifies that the cooldown
+// only delays opening pages: an escalation or a resolution right after the
+// opening page must go out.
+func TestGateCooldownSparesEscalationsAndResolutions(t *testing.T) {
+	now := time.Now()
+	db := newGateStore()
+	sentAt := now.Add(-time.Minute)
+	db.incidents[1] = store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning, OpenedAt: sentAt}
+	id := int64(1)
+	db.deliveries = append(db.deliveries, store.Delivery{IncidentID: &id, Kind: store.DeliveryOpened, Status: "sent", SentAt: &sentAt})
+	gate := &Gate{Store: db, Logger: discardLogger(), Cooldown: 30 * time.Minute}
+	for kind, want := range map[store.DeliveryKind]GateStatus{
+		store.DeliveryOpened:    GateCooldown,
+		store.DeliveryEscalated: GateRecorded,
+		store.DeliveryResolved:  GateRecorded,
+	} {
+		got := gate.Evaluate(context.Background(), DecisionInputs{
+			Incident: db.incidents[1], ChangeKind: kind, Channel: KindTelegram, Now: now,
+		})
+		if got.Status != want {
+			t.Errorf("%s: status = %q, want %q", kind, got.Status, want)
+		}
+	}
+}
+
+// TestQuietEndsAtAcrossDaylightSaving verifies the window closes at the To
+// wall-clock time on the night the clocks change.
+func TestQuietEndsAtAcrossDaylightSaving(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skipf("no time zone database: %v", err)
+	}
+	from := time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC)
+	to := time.Date(0, 1, 1, 7, 0, 0, 0, time.UTC)
+	gate := &Gate{QuietFrom: &from, QuietTo: &to, QuietZone: berlin}
+	// The clocks go forward at 02:00 on 2026-03-29.
+	now := time.Date(2026, 3, 28, 23, 30, 0, 0, berlin)
+	got, inside := gate.quietEndsAt(now)
+	want := time.Date(2026, 3, 29, 7, 0, 0, 0, berlin)
+	if !inside || !got.Equal(want) {
+		t.Fatalf("quietEndsAt = %v, %v; want %v", got, inside, want)
+	}
+}
+
+// failingGateStore fails every lookup.
+type failingGateStore struct{}
+
+func (failingGateStore) FindActiveSilence(context.Context, string, string, *int64, time.Time) (*store.Silence, error) {
+	return nil, errGateStore
+}
+func (failingGateStore) IncidentByID(context.Context, int64) (*store.Incident, error) {
+	return nil, errGateStore
+}
+func (failingGateStore) LastSent(context.Context, string, string) (*store.Delivery, error) {
+	return nil, errGateStore
+}
+
+var errGateStore = errors.New("database unavailable")
+
+// TestGateFailsOpenAndLogs verifies that a failing store never blocks a page
+// and that each failed lookup is logged.
+func TestGateFailsOpenAndLogs(t *testing.T) {
+	var logs bytes.Buffer
+	gate := &Gate{
+		Store:    &failingGateStore{},
+		Logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+		Cooldown: time.Hour,
+	}
+	got := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident:   store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning},
+		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: time.Now(),
+	})
+	if got.Status != GateRecorded {
+		t.Fatalf("status = %q, want recorded", got.Status)
+	}
+	for _, want := range []string{"read incident", "read silences", "read last page"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log does not mention %q:\n%s", want, logs.String())
+		}
+	}
+}
