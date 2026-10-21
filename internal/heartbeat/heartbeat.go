@@ -86,7 +86,7 @@ func (s *Sender) beat(ctx context.Context) {
 	}
 	response, err := s.client.Do(request)
 	if err != nil {
-		s.logger.Warn("heartbeat failed", slog.String("error", safeError(err).Error()))
+		s.logger.Warn("heartbeat failed", slog.String("error", SafeError(err).Error()))
 		return
 	}
 	defer response.Body.Close()
@@ -189,9 +189,9 @@ func (r *Receiver) authorized(request *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(r.token)) == 1
 }
 
-// safeError removes the request URL from an error, because heartbeat URLs can
+// SafeError removes the request URL from an error, because heartbeat URLs can
 // contain secrets.
-func safeError(err error) error {
+func SafeError(err error) error {
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		return fmt.Errorf("%s: %w", urlErr.Op, urlErr.Err)

@@ -1,6 +1,7 @@
 package inbox
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/clock"
+	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -309,5 +311,68 @@ func TestMuteIsBounded(t *testing.T) {
 	}
 	if len(st.silences) != 0 {
 		t.Fatalf("silences = %d, want none", len(st.silences))
+	}
+}
+
+func testConfig(proxy string, proxyFor ...string) *config.Config {
+	cfg := &config.Config{}
+	cfg.Notify.Telegram.Token = "123:secret-token"
+	cfg.Notify.Telegram.APIURL = "https://api.telegram.org"
+	cfg.Notify.Telegram.ChatIDs = []string{"111"}
+	cfg.Notify.OutboundProxy = proxy
+	cfg.Notify.ProxyFor = proxyFor
+	return cfg
+}
+
+// TestNewSourceFollowsTheOutboundProxy verifies that polling goes through the
+// proxy exactly when Telegram messages do, and that the client outlives a long
+// poll.
+func TestNewSourceFollowsTheOutboundProxy(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cases := map[string]struct {
+		cfg   *config.Config
+		proxy bool
+	}{
+		"no proxy":           {testConfig(""), false},
+		"proxy for all":      {testConfig("http://127.0.0.1:3128"), true},
+		"proxy for telegram": {testConfig("http://127.0.0.1:3128", "telegram"), true},
+		"proxy for webhook":  {testConfig("http://127.0.0.1:3128", "webhook"), false},
+	}
+	for name, tc := range cases {
+		source, err := NewSource(tc.cfg, logger, clock.System(), nil, nil)
+		if err != nil {
+			t.Fatalf("%s: NewSource: %v", name, err)
+		}
+		transport := source.HTTP.Transport.(*http.Transport)
+		if got := transport.Proxy != nil; got != tc.proxy {
+			t.Errorf("%s: proxied = %v, want %v", name, got, tc.proxy)
+		}
+		if source.HTTP.Timeout <= source.LongPoll {
+			t.Errorf("%s: client timeout %v does not cover the %v long poll", name, source.HTTP.Timeout, source.LongPoll)
+		}
+	}
+}
+
+// TestRunLogDoesNotLeakTheBotToken verifies that a failing poll is logged
+// without the request URL, which contains the bot token.
+func TestRunLogDoesNotLeakTheBotToken(t *testing.T) {
+	var logs bytes.Buffer
+	s := &Source{
+		APIURL:   "http://127.0.0.1:1",
+		Token:    "123:secret-token",
+		ChatIDs:  []int64{111},
+		LongPoll: time.Millisecond,
+		HTTP:     &http.Client{Timeout: time.Second},
+		Logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+		Clock:    clock.System(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = s.Run(ctx)
+	if !strings.Contains(logs.String(), "telegram getUpdates") {
+		t.Fatalf("expected a logged poll failure, got %q", logs.String())
+	}
+	if strings.Contains(logs.String(), "secret-token") {
+		t.Fatalf("log leaks the bot token: %s", logs.String())
 	}
 }

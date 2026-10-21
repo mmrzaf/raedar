@@ -22,6 +22,7 @@ import (
 
 	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
+	"github.com/mmrzaf/raedar/internal/notify"
 )
 
 // updateEnvelope is one response from getUpdates. Telegram returns
@@ -98,9 +99,20 @@ type Source struct {
 	Dispatcher *Dispatcher
 }
 
+// pollTimeout bounds one getUpdates request: the long poll plus time for the
+// connection and the response.
+const pollTimeout = 90 * time.Second
+
 // NewSource returns a Source. claim takes ownership of an update_id and
-// dispatcher handles the parsed commands.
-func NewSource(cfg *config.Config, logger *slog.Logger, cl clock.Clock, claim ClaimFunc, dispatcher *Dispatcher) *Source {
+// dispatcher handles the parsed commands. Polling goes through the outbound
+// proxy exactly when Telegram messages do, since a host that cannot reach
+// Telegram directly cannot poll it directly either.
+func NewSource(cfg *config.Config, logger *slog.Logger, cl clock.Clock, claim ClaimFunc, dispatcher *Dispatcher) (*Source, error) {
+	client, err := notify.OutboundClient(cfg, cfg.UsesProxy(config.ProxyTargetTelegram))
+	if err != nil {
+		return nil, fmt.Errorf("telegram inbox client: %w", err)
+	}
+	client.Timeout = pollTimeout
 	chatIDs := make([]int64, 0, len(cfg.Notify.Telegram.ChatIDs))
 	for _, value := range cfg.Notify.Telegram.ChatIDs {
 		id, err := strconv.ParseInt(value, 10, 64)
@@ -115,12 +127,12 @@ func NewSource(cfg *config.Config, logger *slog.Logger, cl clock.Clock, claim Cl
 		Token:      cfg.Notify.Telegram.Token,
 		ChatIDs:    chatIDs,
 		LongPoll:   30 * time.Second,
-		HTTP:       &http.Client{Timeout: 60 * time.Second},
+		HTTP:       client,
 		Logger:     logger,
 		Clock:      cl,
 		Claim:      claim,
 		Dispatcher: dispatcher,
-	}
+	}, nil
 }
 
 // Run polls Telegram until ctx is done. Each successfully processed
@@ -141,7 +153,7 @@ func (s *Source) Run(ctx context.Context) error {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
-			s.Logger.Warn("telegram getUpdates", slog.String("error", err.Error()))
+			s.Logger.Warn("telegram getUpdates", slog.String("error", notify.SafeError(err).Error()))
 			sleep(ctx, 5*time.Second)
 			continue
 		}

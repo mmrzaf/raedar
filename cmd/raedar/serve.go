@@ -187,10 +187,13 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 			Host:     cfg.HostName,
 			Location: cfg.Location,
 		}
-		source := inbox.NewSource(cfg, logger, clock.System(),
+		source, err := inbox.NewSource(cfg, logger, clock.System(),
 			func(ctx context.Context, updateID int64) (bool, error) {
 				return st.ClaimUpdate(ctx, updateID)
 			}, dispatcher)
+		if err != nil {
+			return err
+		}
 		start(source.Run)
 		// Prune the claimed update ids once an hour. Telegram redelivers
 		// unconfirmed updates after a restart, so the ids of the last two days

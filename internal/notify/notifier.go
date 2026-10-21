@@ -521,7 +521,7 @@ func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message
 			retry = append(retry, s)
 		}
 		if outcome.err != nil {
-			text := safeError(outcome.err).Error()
+			text := SafeError(outcome.err).Error()
 			delivery.Error = &text
 			lastErr = outcome.err
 		}
@@ -537,7 +537,7 @@ func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message
 	}
 	if finalFailure {
 		n.logger.Warn("notification failed", slog.String("channel", string(channel.Kind())),
-			slog.Int("attempts", failed+1), slog.String("error", safeError(lastErr).Error()))
+			slog.Int("attempts", failed+1), slog.String("error", SafeError(lastErr).Error()))
 		return
 	}
 	if len(retry) == 0 {
@@ -554,7 +554,7 @@ func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message
 	})
 	n.mu.Unlock()
 	n.logger.Warn("notification will be retried", slog.String("channel", string(channel.Kind())),
-		slog.Int("chats", len(retry)), slog.Duration("in", delay), slog.String("error", safeError(lastErr).Error()))
+		slog.Int("chats", len(retry)), slog.Duration("in", delay), slog.String("error", SafeError(lastErr).Error()))
 }
 
 // sendToChats posts a message through a channel and returns one result per
@@ -674,7 +674,7 @@ func (n *Notifier) deliverHeld(ctx context.Context) {
 			Document: document,
 		}
 		if err := n.channels[kind].Send(ctx, message); err != nil {
-			n.logger.Warn("send held summary", slog.String("channel", string(kind)), slog.String("error", safeError(err).Error()))
+			n.logger.Warn("send held summary", slog.String("channel", string(kind)), slog.String("error", SafeError(err).Error()))
 			if limit != nil {
 				limit.undo()
 			}
@@ -836,7 +836,7 @@ func (n *Notifier) maybeStandDown(ctx context.Context) {
 	}
 	for _, channel := range n.digestChannels() {
 		if err := channel.Send(ctx, message); err != nil {
-			n.logger.Warn("stand-down message", slog.String("channel", string(channel.Kind())), slog.String("error", safeError(err).Error()))
+			n.logger.Warn("stand-down message", slog.String("channel", string(channel.Kind())), slog.String("error", SafeError(err).Error()))
 		}
 	}
 	n.mu.Lock()
@@ -1044,7 +1044,7 @@ func (n *Notifier) sendFromMemory(ctx context.Context, incident store.Incident, 
 		}
 		if err := channel.Send(ctx, message); err != nil {
 			n.logger.Warn("send database notification", slog.String("channel", string(channel.Kind())),
-				slog.String("error", safeError(err).Error()))
+				slog.String("error", SafeError(err).Error()))
 		}
 	}
 }
