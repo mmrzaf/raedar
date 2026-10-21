@@ -548,6 +548,20 @@ func (s *fakeStore) LastSent(ctx context.Context, rule, subject string) (*store.
 	return nil, nil
 }
 
+func (s *fakeStore) FailPendingDeliveries(ctx context.Context, reason string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int64
+	for id, d := range s.deliveries {
+		if d.Status == "pending" {
+			d.Status, d.Error = "failed", &reason
+			s.deliveries[id] = d
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (s *fakeStore) OpenIncidentCount(ctx context.Context) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1177,5 +1191,24 @@ func TestHTTPSMSPlaceholdersAreSubstitutedOnce(t *testing.T) {
 	body := srv.received()[0].body
 	if !strings.Contains(body, `"text":"GET /{{api_key}}"`) || !strings.Contains(body, `"key":"secret-key"`) {
 		t.Fatalf("body = %q, want the message kept literal and the key in its own field", body)
+	}
+}
+
+// TestFailInterruptedClosesPendingDeliveries verifies that rows a previous run
+// left pending are failed at startup, and finished rows are untouched.
+func TestFailInterruptedClosesPendingDeliveries(t *testing.T) {
+	notifier, st, _ := newTestNotifier(t, &fakeChannel{kind: KindTelegram})
+	ctx := context.Background()
+	id := int64(1)
+	pending, _ := st.AddDelivery(ctx, store.Delivery{IncidentID: &id, Kind: store.DeliveryOpened, Channel: "telegram", Status: "pending"})
+	sent, _ := st.AddDelivery(ctx, store.Delivery{IncidentID: &id, Kind: store.DeliveryOpened, Channel: "telegram", Status: "sent"})
+	if err := notifier.FailInterrupted(ctx); err != nil {
+		t.Fatalf("FailInterrupted: %v", err)
+	}
+	if got := st.deliveries[pending]; got.Status != "failed" || got.Error == nil {
+		t.Fatalf("pending delivery = %+v, want failed with a reason", got)
+	}
+	if got := st.deliveries[sent]; got.Status != "sent" {
+		t.Fatalf("sent delivery = %+v, want it untouched", got)
 	}
 }

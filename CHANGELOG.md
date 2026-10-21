@@ -4,6 +4,13 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Deliveries left `pending` by a restart are marked failed at startup. Their
+  retries lived in memory, so nothing ever finished them.
+
 ## [0.3.2] - 2026-10-21
 
 ### Fixed

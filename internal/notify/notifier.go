@@ -42,6 +42,9 @@ type Store interface {
 	// LastSent returns the most recent sent delivery for a (rule, subject)
 	// pair, used by the gate to implement pager cooldown.
 	LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error)
+	// FailPendingDeliveries marks deliveries left pending by an earlier run as
+	// failed.
+	FailPendingDeliveries(ctx context.Context, reason string) (int64, error)
 	// OpenIncidentCount returns the number of currently open incidents,
 	// used by the stand-down announcement.
 	OpenIncidentCount(ctx context.Context) (int, error)
@@ -602,6 +605,20 @@ func (n *Notifier) markPaged(now time.Time) {
 	n.mu.Lock()
 	n.lastPageAt = now
 	n.mu.Unlock()
+}
+
+// FailInterrupted marks the deliveries an earlier run left pending as failed.
+// Their retries lived in memory and died with that process, so nothing would
+// ever finish them. Call it once at startup, before anything is delivered.
+func (n *Notifier) FailInterrupted(ctx context.Context) error {
+	count, err := n.store.FailPendingDeliveries(ctx, "interrupted by a restart")
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		n.logger.Warn("marked interrupted deliveries as failed", slog.Int64("deliveries", count))
+	}
+	return nil
 }
 
 // Run delivers retries and held summaries until ctx is done.
