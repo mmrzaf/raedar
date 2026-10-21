@@ -83,6 +83,21 @@ func (s *Store) UpdateDelivery(ctx context.Context, delivery Delivery) error {
 	return nil
 }
 
+// FailPendingDeliveries marks every delivery still pending as failed, with
+// reason as its error, and returns how many it changed. A pending delivery
+// waits for a retry that lives in memory, so after a restart nothing will
+// ever finish it.
+func (s *Store) FailPendingDeliveries(ctx context.Context, reason string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		update deliveries
+		set status = 'failed', error = coalesce(error || '; ', '') || $1
+		where status = 'pending'`, reason)
+	if err != nil {
+		return 0, fmt.Errorf("fail pending deliveries: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Deliveries returns the deliveries of one incident, newest first.
 func (s *Store) Deliveries(ctx context.Context, incidentID int64) ([]Delivery, error) {
 	rows, err := s.pool.Query(ctx, `select `+deliveryColumns+`

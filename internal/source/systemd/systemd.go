@@ -50,6 +50,9 @@ type Source struct {
 	mu     sync.Mutex
 	known  map[string]bool
 	failed map[string]bool
+	// unloaded holds the known units systemd no longer lists, so each is
+	// recorded as unloaded once.
+	unloaded map[string]bool
 }
 
 // New returns a systemd reader source.
@@ -64,6 +67,7 @@ func New(reader Reader, st Store, logger *slog.Logger, clock clock.Clock, ignore
 		interval: interval,
 		known:    make(map[string]bool),
 		failed:   make(map[string]bool),
+		unloaded: make(map[string]bool),
 		status:   sourcestatus.New(SourceName, st, clock, logger),
 	}
 }
@@ -117,7 +121,9 @@ func (s *Source) collect(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	failedNow := make(map[string]bool)
+	listed := make(map[string]bool, len(units))
 	for _, unit := range units {
+		listed[unit.Name] = true
 		if Matches(s.ignore, unit.Name) {
 			continue
 		}
@@ -146,6 +152,10 @@ func (s *Source) collect(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := s.recordUnloaded(ctx, listed, now); err != nil {
+		s.status.Report(ctx, store.StatusUnavailable, err)
+		return err
+	}
 	for name := range failedNow {
 		if wasFailed[name] {
 			continue
@@ -162,6 +172,39 @@ func (s *Source) collect(ctx context.Context) error {
 	s.failed = failedNow
 	s.mu.Unlock()
 	s.status.Report(ctx, store.StatusOK, nil)
+	return nil
+}
+
+// recordUnloaded records the known units systemd no longer lists as inactive.
+// systemd unloads an idle unit, for example after reset-failed, and stops
+// listing it; without this its row would keep the failed state forever and
+// its incident would never resolve.
+func (s *Source) recordUnloaded(ctx context.Context, listed map[string]bool, now time.Time) error {
+	s.mu.Lock()
+	var gone []string
+	for name := range s.known {
+		if listed[name] {
+			delete(s.unloaded, name)
+			continue
+		}
+		if !s.unloaded[name] {
+			gone = append(gone, name)
+		}
+	}
+	s.mu.Unlock()
+	for _, name := range gone {
+		if err := s.store.UpsertUnit(ctx, store.Unit{
+			Name:        name,
+			ActiveState: "inactive",
+			SubState:    "unloaded",
+			LastSeen:    now,
+		}); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.unloaded[name] = true
+		s.mu.Unlock()
+	}
 	return nil
 }
 

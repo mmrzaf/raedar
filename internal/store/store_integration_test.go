@@ -509,3 +509,30 @@ func TestAddDeliveryAcceptsEveryGateStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestFailPendingDeliveries verifies that only pending rows are failed and
+// that an earlier error is kept.
+func TestFailPendingDeliveries(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	earlier := "timeout"
+	pending, _ := st.AddDelivery(ctx, Delivery{Kind: DeliveryDigest, Channel: "telegram", CreatedAt: time.Now(), Status: "pending", Error: &earlier})
+	sent, _ := st.AddDelivery(ctx, Delivery{Kind: DeliveryDigest, Channel: "telegram", CreatedAt: time.Now(), Status: "sent"})
+	count, err := st.FailPendingDeliveries(ctx, "interrupted by a restart")
+	if err != nil || count != 1 {
+		t.Fatalf("FailPendingDeliveries = %d, %v; want 1", count, err)
+	}
+	var status, message string
+	if err := st.pool.QueryRow(ctx, `select status, coalesce(error, '') from deliveries where id = $1`, pending).Scan(&status, &message); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || message != "timeout; interrupted by a restart" {
+		t.Fatalf("pending row = %q %q", status, message)
+	}
+	if err := st.pool.QueryRow(ctx, `select status from deliveries where id = $1`, sent).Scan(&status); err != nil || status != "sent" {
+		t.Fatalf("sent row = %q, %v; want untouched", status, err)
+	}
+}

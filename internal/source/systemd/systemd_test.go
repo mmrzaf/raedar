@@ -237,6 +237,53 @@ func TestCollectKeepsKnownUnitsUpdated(t *testing.T) {
 	}
 }
 
+// TestCollectRecordsUnloadedUnits verifies that a failed unit systemd stops
+// listing, as it does after reset-failed, is recorded as inactive so its
+// incident can resolve.
+func TestCollectRecordsUnloadedUnits(t *testing.T) {
+	base := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	reader := &fakeReader{units: []Unit{{Name: "job.service", ActiveState: "failed", SubState: "failed"}}}
+	st := &fakeStore{}
+	source := New(reader, st, discardLogger(), &testClock{now: base}, nil, nil)
+	if err := source.collect(context.Background()); err != nil {
+		t.Fatalf("collect() error = %v", err)
+	}
+	reader.set()
+	if err := source.collect(context.Background()); err != nil {
+		t.Fatalf("collect() error = %v", err)
+	}
+	st.mu.Lock()
+	unit := st.units["job.service"]
+	st.mu.Unlock()
+	if unit.ActiveState != "inactive" || unit.SubState != "unloaded" {
+		t.Fatalf("unit = %+v, want it recorded as inactive after it left the list", unit)
+	}
+	// It is not written again while it stays unloaded, and a failure after a
+	// reload is recorded again.
+	st.mu.Lock()
+	delete(st.units, "job.service")
+	st.mu.Unlock()
+	if err := source.collect(context.Background()); err != nil {
+		t.Fatalf("collect() error = %v", err)
+	}
+	st.mu.Lock()
+	_, rewritten := st.units["job.service"]
+	st.mu.Unlock()
+	if rewritten {
+		t.Fatalf("unloaded unit was written again")
+	}
+	reader.set(Unit{Name: "job.service", ActiveState: "failed", SubState: "failed"})
+	if err := source.collect(context.Background()); err != nil {
+		t.Fatalf("collect() error = %v", err)
+	}
+	st.mu.Lock()
+	unit = st.units["job.service"]
+	st.mu.Unlock()
+	if unit.ActiveState != "failed" {
+		t.Fatalf("unit = %+v, want the new failure recorded", unit)
+	}
+}
+
 func TestCollectReportsUnavailable(t *testing.T) {
 	st := &fakeStore{}
 	source := New(&fakeReader{err: errors.New("no bus")}, st, discardLogger(), &testClock{now: time.Now()}, nil, nil)

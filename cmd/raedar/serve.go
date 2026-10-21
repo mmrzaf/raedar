@@ -150,6 +150,9 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if err := notification.FailInterrupted(ctx); err != nil {
+		return err
+	}
 	engine := rules.New(st, discoverer, aggregator, cfg, logger, clock.System(), notification)
 	webOptions := web.Options{Version: version, DevStatic: os.Getenv("RAEDAR_DEV_STATIC")}
 	if len(cfg.Heartbeat.Peers) > 0 {
