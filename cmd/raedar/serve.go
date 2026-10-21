@@ -20,6 +20,7 @@ import (
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/docker"
 	"github.com/mmrzaf/raedar/internal/heartbeat"
+	"github.com/mmrzaf/raedar/internal/inbox"
 	"github.com/mmrzaf/raedar/internal/memlimit"
 	"github.com/mmrzaf/raedar/internal/notify"
 	"github.com/mmrzaf/raedar/internal/rules"
@@ -177,6 +178,47 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		defer cancel()
 		return httpServer.Shutdown(shutdownCtx)
 	})
+	if cfg.Notify.Telegram.Token != "" && len(cfg.Notify.Telegram.ChatIDs) > 0 {
+		dispatcher := &inbox.Dispatcher{
+			Store:    st,
+			Notifier: notification,
+			Logger:   logger,
+			Host:     cfg.HostName,
+		}
+		source := inbox.NewSource(cfg, logger, clock.System(),
+			func(ctx context.Context, updateID int64) (bool, error) {
+				seen, err := st.HasProcessedUpdate(ctx, updateID)
+				if err != nil {
+					return false, err
+				}
+				if seen {
+					return true, nil
+				}
+				if _, err := st.RecordProcessedUpdate(ctx, updateID); err != nil {
+					return false, err
+				}
+				return false, nil
+			})
+		source.Dispatcher = dispatcher
+		start(source.Run)
+		// Prune inbox rows once an hour so the table stays tiny. Skip the
+		// retention bookkeeping here: the inbox deliberately re-processes
+		// recent updates after a restart, so we keep only what we already saw.
+		start(func(ctx context.Context) error {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					if _, err := st.PruneProcessedUpdates(ctx, int64(time.Hour.Seconds()*24*2)); err != nil {
+						logger.Warn("prune inbox", slog.String("error", err.Error()))
+					}
+				}
+			}
+		})
+	}
 	start(discoverer.Run)
 	start(aggregator.Run)
 	start(notification.Run)

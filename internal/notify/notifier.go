@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -582,6 +583,18 @@ func (n *Notifier) SendDigest(ctx context.Context, text string) {
 	for _, channel := range n.digestChannels() {
 		n.deliver(ctx, channel, store.DeliveryDigest, nil, message)
 	}
+}
+
+// SendReply answers an operator's Telegram command. The inbox goroutine
+// calls this with the chat_id of the command. The Telegram channel is
+// the only kind that supports replies; other channels return an error so
+// the dispatcher can fall back to "no reply sent".
+func (n *Notifier) SendReply(ctx context.Context, chatID int64, text string) error {
+	channel, ok := n.channels[KindTelegram].(*telegramChannel)
+	if !ok {
+		return fmt.Errorf("no Telegram channel is configured")
+	}
+	return channel.SendReply(ctx, strconv.FormatInt(chatID, 10), text)
 }
 
 // deployContexts returns the deploy context of the incidents' apps.

@@ -119,6 +119,33 @@ func (c *telegramChannel) Kind() Kind { return KindTelegram }
 // ChatIDs returns the configured chat_ids for this Telegram channel.
 func (c *telegramChannel) ChatIDs() []string { return c.chatIDs }
 
+// SendReply posts a single message to the given chat_id from this Telegram
+// channel. The reply goroutine in internal/inbox calls this to acknowledge
+// an operator command; it is independent from the notifier's incident
+// pager.
+func (c *telegramChannel) SendReply(ctx context.Context, chatID, text string) error {
+	form := url.Values{
+		"chat_id":                  {chatID},
+		"text":                     {text},
+		"parse_mode":               {"HTML"},
+		"disable_web_page_preview": {"true"},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.apiURL+"/bot"+c.token+"/sendMessage", strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("build Telegram reply: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	var response sendMessageResponse
+	if err := sendJSON(c.client, request, &response); err != nil {
+		return fmt.Errorf("send Telegram reply: %w", safeError(err))
+	}
+	if !response.Ok {
+		return fmt.Errorf("Telegram sendMessage returned ok=false")
+	}
+	return nil
+}
+
 // sendMessageResponse is the part of the Telegram sendMessage response we
 // read: the assigned message_id, used to look up replies later.
 type sendMessageResponse struct {

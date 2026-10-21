@@ -55,7 +55,8 @@ type Result struct {
 }
 
 // Execute is the dispatcher. It parses the command, applies state, and
-// returns the reply to send back.
+// returns the reply to send back. The Reply in Result.Text is HTML;
+// the inbox Source passes it straight to the Telegram channel.
 func (d *Dispatcher) Execute(ctx context.Context, msg Message) (Result, error) {
 	cmd, err := Parse(msg.Text)
 	if err != nil {
@@ -79,6 +80,19 @@ func (d *Dispatcher) Execute(ctx context.Context, msg Message) (Result, error) {
 		return d.unmute(ctx, msg, cmd)
 	}
 	return Result{}, fmt.Errorf("unsupported command %q", cmd.Name)
+}
+
+// Send the reply to Telegram via the configured notifier. Called by the
+// Source loop after Execute returns. Returns an error when no reply
+// is configured or when the channel rejects the send.
+func (d *Dispatcher) SendReply(ctx context.Context, result Result) error {
+	if result.Reply.Text == "" {
+		return nil
+	}
+	if d.Notifier == nil {
+		return fmt.Errorf("no notifier configured for replies")
+	}
+	return d.Notifier.SendReply(ctx, result.Reply.ChatID, result.Reply.Text)
 }
 
 func (d *Dispatcher) reply(msg Message, text string) Result {
