@@ -4,6 +4,20 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-21
+
+### Fixed
+
+- The audit row of an acked incident was rejected by the deliveries status
+  check, so the Deliveries page never showed acked pages (the ack itself
+  worked). Migration `0007` allows the `acked` status and narrows the status
+  and silence kind checks to the values Raedar writes.
+
+### Upgrading
+
+- Migration `0007` is applied on start and is forward-only. Deploy 0.3.1
+  instead of 0.3.0.
+
 ## [0.3.0] - 2026-10-21
 
 ### Added
@@ -95,8 +109,7 @@ All notable changes to Raedar are listed here. The format follows
 
 - Migrations `0005` and `0006` are applied on start and are forward-only.
   `0005` adds `deliveries.telegram_chat_id` and `telegram_message_id`; `0006`
-  adds `silences.app_id`. A database that ran an earlier build of `0005` from
-  `develop` must be recreated.
+  adds `silences.app_id`.
 - Removed variables: `RAEDAR_SMS_PROVIDER`, `RAEDAR_KAVENEGAR_API_KEY`,
   `RAEDAR_KAVENEGAR_SENDER`. Configure SMS through the generic HTTP shape.
 - `RAEDAR_SMS_FROM` is new and optional.
