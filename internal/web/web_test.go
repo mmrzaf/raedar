@@ -315,7 +315,8 @@ func TestNotificationView(t *testing.T) {
 	server := newTestServer(t)
 	server.cfg.Notify.Telegram.Token = "123:token"
 	server.cfg.Notify.Telegram.ChatIDs = []string{"42"}
-	server.cfg.Notify.SMS.Provider = "kavenegar"
+	server.cfg.Notify.SMS.HTTP.URL = "https://sms.example.com/send"
+	server.cfg.Notify.SMS.From = "+10001234567"
 	server.cfg.Notify.SMS.To = []string{"+989120000000"}
 	server.cfg.Notify.OutboundProxy = "http://proxy.example.com:3128"
 	server.cfg.Notify.ProxyFor = []string{"telegram"}

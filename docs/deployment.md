@@ -100,9 +100,17 @@ services:
       RAEDAR_TZ: Asia/Tehran
       RAEDAR_TELEGRAM_TOKEN_FILE: /run/secrets/telegram_token
       RAEDAR_TELEGRAM_CHAT_IDS: "123456789"
-      RAEDAR_SMS_PROVIDER: kavenegar
-      RAEDAR_KAVENEGAR_API_KEY_FILE: /run/secrets/kavenegar_api_key
+      # SMS example: the API key is kept out of the URL by routing through
+      # RAEDAR_SMS_HTTP_HEADERS (Authorization). Operators whose provider
+      # takes the key in the URL path can use the {{api_key}} placeholder
+      # in RAEDAR_SMS_HTTP_URL and inject the value from their secret
+      # manager at deployment time.
       RAEDAR_SMS_TO: "+989120000000"
+      RAEDAR_SMS_FROM: "10004346"
+      RAEDAR_SMS_HTTP_URL: "https://sms.example.com/v1/send"
+      RAEDAR_SMS_HTTP_HEADERS: "Authorization: Bearer ${SMS_API_KEY}"
+      RAEDAR_SMS_HTTP_BODY: '{"to":"{{to}}","from":"{{from}}","text":"{{message}}"}'
+      RAEDAR_SMS_HTTP_ENCODING: "json"
     volumes:
       - /:/host/root:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro

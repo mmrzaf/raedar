@@ -154,28 +154,32 @@ type TelegramConfig struct {
 
 // SMSConfig holds the SMS channel settings.
 type SMSConfig struct {
-	// Provider is "kavenegar" or "http", empty when SMS is not configured.
-	Provider string
 	// To are the recipient numbers.
 	To []string
-	// KavenegarAPIKey is the Kavenegar API key.
-	KavenegarAPIKey string
-	// KavenegarSender is the Kavenegar sender line, empty for Kavenegar's
-	// default line.
-	KavenegarSender string
+	// From is the sender line the SMS provider accepts (some providers
+	// take a registered number, some take a string). Empty when the
+	// provider does not need one.
+	From string
 	// HTTP holds the generic HTTP provider settings.
 	HTTP SMSHTTPConfig
 }
 
 // SMSHTTPConfig holds the generic HTTP SMS provider settings.
+//
+// URL and Body templates support the placeholders {{to}}, {{message}},
+// {{from}} and {{api_key}}. Providers that put the API key in the URL
+// path can use {{api_key}} in the URL template and skip an Authorization
+// header. Encoding applies to every placeholder in Body.
 type SMSHTTPConfig struct {
-	// URL is the request URL; it may contain {{to}} and {{message}}.
+	// URL is the request URL; it may contain {{to}}, {{message}}, {{from}}
+	// and {{api_key}}.
 	URL string
 	// Method is "GET" or "POST".
 	Method string
 	// Headers are extra request headers.
 	Headers []Header
-	// Body is the request body template.
+	// Body is the request body template; placeholders {{to}}, {{message}},
+	// {{from}} and {{api_key}} are substituted before send.
 	Body string
 	// Encoding is how placeholder values are escaped in the body: "json",
 	// "form" or "raw".

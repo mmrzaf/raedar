@@ -45,17 +45,11 @@ func validateNotify(n NotifyConfig) []error {
 	if n.Telegram.Token == "" && len(n.Telegram.ChatIDs) > 0 {
 		problems = append(problems, errors.New("RAEDAR_TELEGRAM_TOKEN is required when RAEDAR_TELEGRAM_CHAT_IDS is set"))
 	}
-	if n.SMS.Provider == "" && len(n.SMS.To) > 0 {
-		problems = append(problems, errors.New("RAEDAR_SMS_PROVIDER is required when RAEDAR_SMS_TO is set"))
+	if len(n.SMS.To) > 0 && n.SMS.HTTP.URL == "" {
+		problems = append(problems, errors.New("RAEDAR_SMS_HTTP_URL is required when RAEDAR_SMS_TO is set"))
 	}
-	if n.SMS.Provider != "" && len(n.SMS.To) == 0 {
-		problems = append(problems, errors.New("RAEDAR_SMS_TO is required when RAEDAR_SMS_PROVIDER is set"))
-	}
-	if n.SMS.Provider == "kavenegar" && n.SMS.KavenegarAPIKey == "" {
-		problems = append(problems, errors.New("RAEDAR_KAVENEGAR_API_KEY is required when RAEDAR_SMS_PROVIDER is kavenegar"))
-	}
-	if n.SMS.Provider == "http" && n.SMS.HTTP.URL == "" {
-		problems = append(problems, errors.New("RAEDAR_SMS_HTTP_URL is required when RAEDAR_SMS_PROVIDER is http"))
+	if n.SMS.HTTP.URL != "" && len(n.SMS.To) == 0 {
+		problems = append(problems, errors.New("RAEDAR_SMS_TO is required when RAEDAR_SMS_HTTP_URL is set"))
 	}
 	if len(n.ProxyFor) > 0 && n.OutboundProxy == "" {
 		problems = append(problems, errors.New("RAEDAR_OUTBOUND_PROXY_FOR requires RAEDAR_OUTBOUND_PROXY"))

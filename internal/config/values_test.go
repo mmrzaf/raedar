@@ -372,38 +372,17 @@ func variableCases() map[string]valueCase {
 			value: "https://telegram.example.com/",
 			check: wantString(func(c *Config) string { return c.Notify.Telegram.APIURL }, "https://telegram.example.com"),
 		},
-		"RAEDAR_SMS_PROVIDER": {
-			value: "Kavenegar",
-			extra: map[string]string{
-				"RAEDAR_SMS_TO":            "+989120000000",
-				"RAEDAR_KAVENEGAR_API_KEY": "key-1",
-			},
-			check: wantString(func(c *Config) string { return c.Notify.SMS.Provider }, "kavenegar"),
-		},
 		"RAEDAR_SMS_TO": {
 			value: "+989120000000, 00989120000001",
 			extra: map[string]string{
-				"RAEDAR_SMS_PROVIDER":      "kavenegar",
-				"RAEDAR_KAVENEGAR_API_KEY": "key-1",
+				"RAEDAR_SMS_HTTP_URL": "https://sms.example.com/send",
 			},
 			check: wantStrings(func(c *Config) []string { return c.Notify.SMS.To }, "+989120000000", "00989120000001"),
 		},
-		"RAEDAR_KAVENEGAR_API_KEY": {
-			value: "key-1",
-			extra: map[string]string{
-				"RAEDAR_SMS_PROVIDER": "kavenegar",
-				"RAEDAR_SMS_TO":       "+989120000000",
-			},
-			check: wantString(func(c *Config) string { return c.Notify.SMS.KavenegarAPIKey }, "key-1"),
-		},
-		"RAEDAR_KAVENEGAR_SENDER": {
+		"RAEDAR_SMS_FROM": {
 			value: "10004346",
-			extra: map[string]string{
-				"RAEDAR_SMS_PROVIDER":      "kavenegar",
-				"RAEDAR_SMS_TO":            "+989120000000",
-				"RAEDAR_KAVENEGAR_API_KEY": "key-1",
-			},
-			check: wantString(func(c *Config) string { return c.Notify.SMS.KavenegarSender }, "10004346"),
+			extra: smsHTTPEnv(),
+			check: wantString(func(c *Config) string { return c.Notify.SMS.From }, "10004346"),
 		},
 		"RAEDAR_SMS_HTTP_URL": {
 			value: "https://sms.example.com/send?to={{to}}&text={{message}}",
@@ -522,7 +501,6 @@ func variableCases() map[string]valueCase {
 // smsHTTPEnv returns the environment of a complete generic HTTP SMS provider.
 func smsHTTPEnv() map[string]string {
 	return map[string]string{
-		"RAEDAR_SMS_PROVIDER": "http",
 		"RAEDAR_SMS_TO":       "+989120000000",
 		"RAEDAR_SMS_HTTP_URL": "https://sms.example.com/send",
 	}
@@ -605,10 +583,8 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_TELEGRAM_TOKEN",
 		"RAEDAR_TELEGRAM_CHAT_IDS",
 		"RAEDAR_TELEGRAM_API_URL",
-		"RAEDAR_SMS_PROVIDER",
 		"RAEDAR_SMS_TO",
-		"RAEDAR_KAVENEGAR_API_KEY",
-		"RAEDAR_KAVENEGAR_SENDER",
+		"RAEDAR_SMS_FROM",
 		"RAEDAR_SMS_HTTP_URL",
 		"RAEDAR_SMS_HTTP_METHOD",
 		"RAEDAR_SMS_HTTP_HEADERS",

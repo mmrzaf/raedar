@@ -84,10 +84,8 @@ See [notifications.md](notifications.md) for channel details.
 | `RAEDAR_TELEGRAM_TOKEN` | — | Bot token. |
 | `RAEDAR_TELEGRAM_CHAT_IDS` | — | Chat IDs. |
 | `RAEDAR_TELEGRAM_API_URL` | `https://api.telegram.org` | Bot API base URL. |
-| `RAEDAR_SMS_PROVIDER` | — | `kavenegar` or `http`. |
 | `RAEDAR_SMS_TO` | — | Recipient numbers. |
-| `RAEDAR_KAVENEGAR_API_KEY` | — | Kavenegar API key. |
-| `RAEDAR_KAVENEGAR_SENDER` | — | Kavenegar sender line. |
+| `RAEDAR_SMS_FROM` | — | Sender line. |
 | `RAEDAR_SMS_HTTP_URL` | — | Generic SMS request URL. |
 | `RAEDAR_SMS_HTTP_METHOD` | `POST` | Generic SMS request method. |
 | `RAEDAR_SMS_HTTP_HEADERS` | — | Generic SMS headers, one `Name: value` per line. |

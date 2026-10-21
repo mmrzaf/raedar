@@ -57,7 +57,7 @@ Messages leave the host through third-party services (Telegram, the SMS provider
 
 - Every variable can be read from a file (`<NAME>_FILE`), which keeps secrets out of `docker inspect` output and Compose files.
 - Secrets are never written to logs. The `/about` page shows configuration with secret values masked.
-- Request URLs for the Kavenegar API are never logged, because the API key is part of the URL.
+- Request URLs for the SMS provider are never logged, because the API key may be part of the URL when `{{api_key}}` is substituted into `RAEDAR_SMS_HTTP_URL`.
 - Webhook requests can be signed with `RAEDAR_WEBHOOK_SECRET` so the receiver can verify they come from Raedar.
 
 ## Reporting a vulnerability

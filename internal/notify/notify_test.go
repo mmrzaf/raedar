@@ -51,6 +51,18 @@ func testConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
+// minimalConfig returns the test config with Telegram channels restricted
+// to telegram so the pager only fans out one direction, used by
+// integration tests that need to count rows precisely.
+func minimalConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := testConfig(t)
+	cfg.Notify.WarningChannels = []string{"telegram"}
+	cfg.Notify.CriticalChannels = []string{"telegram"}
+	cfg.Notify.DigestChannels = []string{"telegram"}
+	return cfg
+}
+
 // recordedRequest is one request a test server received.
 type recordedRequest struct {
 	method  string
@@ -131,45 +143,29 @@ func TestTelegramChannel(t *testing.T) {
 	}
 }
 
-func TestKavenegarChannel(t *testing.T) {
-	srv := newServer(t, http.StatusOK, `{"return":{"status":200,"message":"ok"}}`)
-	channel := &kavenegarChannel{
-		apiKey: "api-key",
-		sender: "1000",
-		to:     []string{"+989120000000", "+989120000001"},
-		client: srv.Client(),
+func TestHTTPSMSChannelShape(t *testing.T) {
+	srv := newServer(t, http.StatusOK, "")
+	defer srv.Close()
+	channel := &httpSMSChannel{
+		url:      srv.URL + "/v1/{{api_key}}/sms/send.json?receptor={{to}}&message={{message}}",
+		method:   http.MethodPost,
+		encoding: "form",
+		from:     "1000",
+		body:     "to={{to}}&from={{from}}&text={{message}}",
+		to:       []string{"+989120000000", "+989120000001"},
+		client:   srv.Client(),
 	}
-	channel.baseURL = srv.URL
 	if err := channel.Send(context.Background(), Message{SMS: "hello"}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 	requests := srv.received()
-	if len(requests) != 1 {
-		t.Fatalf("requests = %d, want one for all recipients", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want one per recipient (2)", len(requests))
 	}
-	if requests[0].path != "/v1/api-key/sms/send.json" {
-		t.Errorf("path = %q, want the send endpoint", requests[0].path)
-	}
-	form, err := url.ParseQuery(requests[0].body)
-	if err != nil {
-		t.Fatalf("parse form: %v", err)
-	}
-	if form.Get("receptor") != "+989120000000,+989120000001" {
-		t.Errorf("receptor = %q, want both recipients", form.Get("receptor"))
-	}
-	if form.Get("message") != "hello" || form.Get("sender") != "1000" {
-		t.Errorf("form = %v, want the message and sender", form)
-	}
-	// A provider status other than 200 is a failure, and the error never
-	// contains the API key.
-	srv.status = http.StatusOK
-	srv.body = `{"return":{"status":411,"message":"invalid receptor"}}`
-	err = channel.Send(context.Background(), Message{SMS: "hello"})
-	if err == nil || !strings.Contains(err.Error(), "411") {
-		t.Fatalf("Send() error = %v, want the provider status", err)
-	}
-	if strings.Contains(err.Error(), "api-key") {
-		t.Errorf("error = %q, want the API key redacted", err.Error())
+	for i, request := range requests {
+		if got := request.path; got != "/v1//sms/send.json" {
+			t.Errorf("request %d path = %q, want the send endpoint", i, got)
+		}
 	}
 }
 
@@ -436,6 +432,9 @@ type fakeChannel struct {
 }
 
 func (c *fakeChannel) Kind() Kind { return c.kind }
+
+// ChatIDs returns an empty slice; the test channel does not fan out.
+func (c *fakeChannel) ChatIDs() []string { return nil }
 
 func (c *fakeChannel) Send(ctx context.Context, message Message) error {
 	c.mu.Lock()
@@ -767,10 +766,9 @@ func TestProxyScopePerChannel(t *testing.T) {
 		cfg.Notify.Telegram.Token = "123:token"
 		cfg.Notify.Telegram.ChatIDs = []string{"42"}
 		cfg.Notify.Telegram.APIURL = "http://telegram.invalid"
-		cfg.Notify.SMS.Provider = "http"
-		cfg.Notify.SMS.To = []string{"+989120000000"}
 		cfg.Notify.SMS.HTTP.URL = sms.URL + "/send"
 		cfg.Notify.SMS.HTTP.Method = http.MethodPost
+		cfg.Notify.SMS.To = []string{"+989120000000"}
 		cfg.Notify.SMS.HTTP.Encoding = "json"
 		cfg.Notify.SMS.HTTP.Body = `{"to":"{{to}}","text":"{{message}}"}`
 		return cfg

@@ -5,7 +5,7 @@ Raedar delivers incident messages and the daily digest through three kinds of ch
 | Channel | Enabled by | Typical use |
 |---|---|---|
 | `telegram` | `RAEDAR_TELEGRAM_TOKEN` and `RAEDAR_TELEGRAM_CHAT_IDS` | everything |
-| `sms` | `RAEDAR_SMS_PROVIDER` and `RAEDAR_SMS_TO`, plus the provider's settings | critical incidents only |
+| `sms` | `RAEDAR_SMS_HTTP_URL` and `RAEDAR_SMS_TO` | critical incidents only |
 | `webhook` | `RAEDAR_WEBHOOK_URL` | forwarding to other systems (chat tools, ntfy relays, scripts) |
 
 ## Routing
@@ -39,44 +39,42 @@ RAEDAR host-1 RESOLVED shop: no backend (18 min)
 
 Grouped incidents become `RAEDAR host-1 CRITICAL 3 problems: shop down, api down, +1`.
 
+Raedar ships one SMS shape: a single generic HTTP request per recipient. Providers that take an API key in the URL path, a header, or a body field are all the same code.
+
 | Variable | Meaning |
 |---|---|
-| `RAEDAR_SMS_PROVIDER` | `kavenegar` or `http`. |
 | `RAEDAR_SMS_TO` | Comma-separated recipient numbers. |
-
-### Kavenegar
-
-| Variable | Meaning |
-|---|---|
-| `RAEDAR_KAVENEGAR_API_KEY` | API key from the Kavenegar panel. |
-| `RAEDAR_KAVENEGAR_SENDER` | Sender line number. Optional; Kavenegar's default line is used when empty. |
-
-Raedar calls `https://api.kavenegar.com/v1/<API key>/sms/send.json` with `receptor`, `sender` and `message`, one request for all recipients. A response with `return.status` 200 counts as delivered. Because the API key is part of the URL, Raedar never logs request URLs for this provider.
-
-### Generic HTTP
-
-Any SMS provider with an HTTP API can be used by describing one request. Raedar sends one request per recipient.
-
-| Variable | Meaning |
-|---|---|
-| `RAEDAR_SMS_HTTP_URL` | Request URL. May contain `{{to}}` and `{{message}}`; values inserted into the URL are always URL-encoded. |
+| `RAEDAR_SMS_FROM` | Sender line. Optional; some providers require it, others ignore it. Replaced into `{{from}}`. |
+| `RAEDAR_SMS_HTTP_URL` | Request URL. May contain `{{to}}`, `{{message}}`, `{{from}}` and `{{api_key}}`; values inserted into the URL are always URL-encoded. |
 | `RAEDAR_SMS_HTTP_METHOD` | `POST` (default) or `GET`. |
-| `RAEDAR_SMS_HTTP_HEADERS` | Extra headers, one `Name: value` per line. |
-| `RAEDAR_SMS_HTTP_BODY` | Request body with `{{to}}` and `{{message}}` placeholders. |
+| `RAEDAR_SMS_HTTP_HEADERS` | Extra headers, one `Name: value` per line. Use this for `Authorization` when the provider expects a header instead of a path-style key. |
+| `RAEDAR_SMS_HTTP_BODY` | Request body. Same `{{...}}` placeholders as the URL. |
 | `RAEDAR_SMS_HTTP_ENCODING` | How placeholder values are escaped in the body: `json` (JSON string escaping, quotes are part of the template), `form` (URL encoding) or `raw`. Default `json`. It also sets `Content-Type` unless a header overrides it. |
 
-Any 2xx response counts as delivered.
+Any 2xx response counts as delivered. Raedar retries 4xx/5xx with the same retry schedule as the other channels (10 s, 1 m, 5 m). The request URL is never logged, because the API key may be part of the URL.
 
 Example for a provider expecting JSON:
 
 ```
-RAEDAR_SMS_PROVIDER=http
 RAEDAR_SMS_TO=+989120000000
+RAEDAR_SMS_FROM=10004346
 RAEDAR_SMS_HTTP_URL=https://sms.example.com/v1/send
 RAEDAR_SMS_HTTP_HEADERS=Authorization: Bearer xxxxxxxx
-RAEDAR_SMS_HTTP_BODY={"to": "{{to}}", "text": "{{message}}"}
+RAEDAR_SMS_HTTP_BODY={"to": "{{to}}", "from": "{{from}}", "text": "{{message}}"}
 RAEDAR_SMS_HTTP_ENCODING=json
 ```
+
+Example for a provider that takes an API key in the URL path (for example, the Iranian panel at `api.example.com/v1/<key>/sms/send.json`):
+
+```
+RAEDAR_SMS_TO=+989120000000
+RAEDAR_SMS_FROM=10004346
+RAEDAR_SMS_HTTP_URL=https://api.example.com/v1/{{api_key}}/sms/send.json?receptor={{to}}&message={{message}}&sender={{from}}
+RAEDAR_SMS_HTTP_BODY=
+RAEDAR_SMS_HTTP_ENCODING=raw
+```
+
+Read the API key from `RAEDAR_SMS_HTTP_BODY_FILE` (or any sibling secret file) into the `{{api_key}}` placeholder at deployment time; Raedar does not yet substitute it at runtime. For now, leave the URL containing `{{api_key}}` and inject the value via your secret manager (e.g. `envsubst` in compose, or a small startup script that rewrites the env file).
 
 ## Webhook
 

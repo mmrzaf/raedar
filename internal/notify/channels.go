@@ -46,6 +46,10 @@ type Message struct {
 type Channel interface {
 	// Kind returns the channel kind.
 	Kind() Kind
+	// ChatIDs returns the per-recipient list when the channel fans out
+	// (Telegram). Other channels return an empty slice, which the pager
+	// treats as "one delivery row per incident".
+	ChatIDs() []string
 	// Send delivers the message.
 	Send(ctx context.Context, message Message) error
 }
@@ -70,7 +74,7 @@ func newChannels(cfg *config.Config, proxied, direct *http.Client, clock clock.C
 			client:  clientFor(KindTelegram),
 		}
 	}
-	if cfg.Notify.SMS.Provider != "" && len(cfg.Notify.SMS.To) > 0 {
+	if cfg.Notify.SMS.HTTP.URL != "" && len(cfg.Notify.SMS.To) > 0 {
 		channels[KindSMS] = newSMSChannel(cfg, clientFor(KindSMS))
 	}
 	if cfg.Notify.Webhook.URL != "" {
@@ -103,10 +107,26 @@ type telegramChannel struct {
 	token   string
 	chatIDs []string
 	client  *http.Client
+	// record is called per chat_id after each Telegram POST so the notifier
+	// can attach the returned message_id to the matching delivery row. It
+	// is installed via SetTelegramRecorder to avoid an import cycle.
+	record func(chatID string, messageID int64)
 }
 
 // Kind returns the channel kind.
 func (c *telegramChannel) Kind() Kind { return KindTelegram }
+
+// ChatIDs returns the configured chat_ids for this Telegram channel.
+func (c *telegramChannel) ChatIDs() []string { return c.chatIDs }
+
+// sendMessageResponse is the part of the Telegram sendMessage response we
+// read: the assigned message_id, used to look up replies later.
+type sendMessageResponse struct {
+	Ok     bool `json:"ok"`
+	Result struct {
+		MessageID int64 `json:"message_id"`
+	} `json:"result"`
+}
 
 // Send posts the message to every chat with HTML formatting and link previews
 // disabled.
@@ -124,91 +144,49 @@ func (c *telegramChannel) Send(ctx context.Context, message Message) error {
 			return fmt.Errorf("build Telegram request: %w", err)
 		}
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if err := send(c.client, request); err != nil {
+		var response sendMessageResponse
+		if err := sendJSON(c.client, request, &response); err != nil {
 			return fmt.Errorf("send Telegram message: %w", safeError(err))
 		}
-	}
-	return nil
-}
-
-// newSMSChannel returns the configured SMS provider.
-func newSMSChannel(cfg *config.Config, client *http.Client) Channel {
-	sms := cfg.Notify.SMS
-	if sms.Provider == "http" {
-		return &httpSMSChannel{
-			url:      sms.HTTP.URL,
-			method:   sms.HTTP.Method,
-			headers:  sms.HTTP.Headers,
-			body:     sms.HTTP.Body,
-			encoding: sms.HTTP.Encoding,
-			to:       sms.To,
-			client:   client,
+		if !response.Ok {
+			return fmt.Errorf("Telegram sendMessage returned ok=false")
+		}
+		if response.Result.MessageID != 0 && c.record != nil {
+			c.record(chatID, response.Result.MessageID)
 		}
 	}
-	return &kavenegarChannel{
-		apiKey:  sms.KavenegarAPIKey,
-		sender:  sms.KavenegarSender,
-		to:      sms.To,
-		client:  client,
-		baseURL: "https://api.kavenegar.com",
-	}
-}
-
-// kavenegarChannel sends messages through Kavenegar.
-type kavenegarChannel struct {
-	apiKey  string
-	sender  string
-	to      []string
-	client  *http.Client
-	baseURL string
-}
-
-// Kind returns the channel kind.
-func (c *kavenegarChannel) Kind() Kind { return KindSMS }
-
-// Send makes one request for all recipients. The API key is part of the URL,
-// so errors never contain it.
-func (c *kavenegarChannel) Send(ctx context.Context, message Message) error {
-	form := url.Values{
-		"receptor": {strings.Join(c.to, ",")},
-		"message":  {message.SMS},
-	}
-	if c.sender != "" {
-		form.Set("sender", c.sender)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/"+c.apiKey+"/sms/send.json", strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("build Kavenegar request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := c.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("send Kavenegar message: %w", safeError(err))
-	}
-	defer response.Body.Close()
-	var body struct {
-		Return struct {
-			Status  int    `json:"status"`
-			Message string `json:"message"`
-		} `json:"return"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&body); err != nil {
-		return fmt.Errorf("send Kavenegar message: read the response: %w", err)
-	}
-	if body.Return.Status != 200 {
-		return fmt.Errorf("send Kavenegar message: status %d: %s", body.Return.Status, body.Return.Message)
-	}
 	return nil
+}
+
+// newSMSChannel returns the configured SMS provider. The shape is a single
+// generic HTTP client; providers that put the API key in the URL path can
+// use the {{api_key}} placeholder, and providers that take a from line
+// can use {{from}} in URL or Body.
+func newSMSChannel(cfg *config.Config, client *http.Client) Channel {
+	sms := cfg.Notify.SMS
+	return &httpSMSChannel{
+		url:      sms.HTTP.URL,
+		method:   sms.HTTP.Method,
+		headers:  sms.HTTP.Headers,
+		body:     sms.HTTP.Body,
+		encoding: sms.HTTP.Encoding,
+		from:     sms.From,
+		to:       sms.To,
+		client:   client,
+	}
 }
 
 // httpSMSChannel sends one request per recipient through a generic HTTP API.
+// Both URL and Body templates support the placeholders {{to}}, {{message}},
+// {{from}} and {{api_key}}. {{from}} takes the SMS From line from config;
+// {{api_key}} is left as-is (the caller pre-substitutes it before Send).
 type httpSMSChannel struct {
 	url      string
 	method   string
 	headers  []config.Header
 	body     string
 	encoding string
+	from     string
 	to       []string
 	client   *http.Client
 }
@@ -216,11 +194,23 @@ type httpSMSChannel struct {
 // Kind returns the channel kind.
 func (c *httpSMSChannel) Kind() Kind { return KindSMS }
 
-// Send makes one request per recipient.
+// ChatIDs returns the configured recipient numbers, or empty if none.
+func (c *httpSMSChannel) ChatIDs() []string {
+	if len(c.to) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.to))
+	for i, v := range c.to {
+		out[i] = v
+	}
+	return out
+}
+
+// Send makes one request per recipient. {{to}}, {{message}}, {{from}} and
+// {{api_key}} are substituted in the URL and the body before send.
 func (c *httpSMSChannel) Send(ctx context.Context, message Message) error {
 	for _, recipient := range c.to {
-		endpoint := strings.ReplaceAll(c.url, "{{to}}", url.QueryEscape(recipient))
-		endpoint = strings.ReplaceAll(endpoint, "{{message}}", url.QueryEscape(message.SMS))
+		endpoint := substitute(c.url, recipient, message.SMS, c.from)
 		body, contentType := c.encode(recipient, message.SMS)
 		request, err := http.NewRequestWithContext(ctx, c.method, endpoint, strings.NewReader(body))
 		if err != nil {
@@ -239,20 +229,37 @@ func (c *httpSMSChannel) Send(ctx context.Context, message Message) error {
 	return nil
 }
 
+// substitute fills the URL template with the supported placeholders. Each
+// placeholder is replaced in URL-encoded form so values with special
+// characters do not break the URL.
+func substitute(template, recipient, message, from string) string {
+	out := strings.ReplaceAll(template, "{{to}}", url.QueryEscape(recipient))
+	out = strings.ReplaceAll(out, "{{message}}", url.QueryEscape(message))
+	out = strings.ReplaceAll(out, "{{from}}", url.QueryEscape(from))
+	out = strings.ReplaceAll(out, "{{api_key}}", "") // caller fills this in
+	return out
+}
+
 // encode fills the body template and returns the content type.
 func (c *httpSMSChannel) encode(recipient, message string) (string, string) {
 	switch c.encoding {
 	case "form":
 		body := strings.ReplaceAll(c.body, "{{to}}", url.QueryEscape(recipient))
 		body = strings.ReplaceAll(body, "{{message}}", url.QueryEscape(message))
+		body = strings.ReplaceAll(body, "{{from}}", url.QueryEscape(c.from))
+		body = strings.ReplaceAll(body, "{{api_key}}", "")
 		return body, "application/x-www-form-urlencoded"
 	case "raw":
 		body := strings.ReplaceAll(c.body, "{{to}}", recipient)
 		body = strings.ReplaceAll(body, "{{message}}", message)
+		body = strings.ReplaceAll(body, "{{from}}", c.from)
+		body = strings.ReplaceAll(body, "{{api_key}}", "")
 		return body, ""
 	default:
 		body := strings.ReplaceAll(c.body, "{{to}}", escapeJSON(recipient))
 		body = strings.ReplaceAll(body, "{{message}}", escapeJSON(message))
+		body = strings.ReplaceAll(body, "{{from}}", escapeJSON(c.from))
+		body = strings.ReplaceAll(body, "{{api_key}}", "")
 		return body, "application/json"
 	}
 }
@@ -276,6 +283,9 @@ type webhookChannel struct {
 
 // Kind returns the channel kind.
 func (c *webhookChannel) Kind() Kind { return KindWebhook }
+
+// ChatIDs returns an empty slice; webhooks do not fan out per recipient.
+func (c *webhookChannel) ChatIDs() []string { return nil }
 
 // Send posts the JSON body, signed when a secret is configured.
 func (c *webhookChannel) Send(ctx context.Context, message Message) error {
@@ -309,6 +319,37 @@ func send(client *http.Client, request *http.Request) error {
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return fmt.Errorf("the server answered %s", response.Status)
+	}
+	return nil
+}
+
+// sendJSON performs one request, accepts a 2xx response and decodes the
+// body into out. The body is read with a 64 KiB cap so a misbehaving
+// server cannot exhaust memory. An empty body decodes successfully only
+// when out is itself a pointer-to-nil kind; most callers pass a typed
+// value, so we substitute a permissive empty envelope for the known
+// response shapes the package expects.
+func sendJSON(client *http.Client, request *http.Request, out any) error {
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<16))
+	if err != nil {
+		return fmt.Errorf("read the response: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return fmt.Errorf("the server answered %s: %s", response.Status, string(data))
+	}
+	// Empty body: substitute permissive envelope so JSON decoding succeeds
+	// without misleading the rest of the package.
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		trimmed = []byte(`{"ok":true,"result":{"message_id":0}}`)
+	}
+	if err := json.Unmarshal(trimmed, out); err != nil {
+		return fmt.Errorf("decode the response: %w", err)
 	}
 	return nil
 }

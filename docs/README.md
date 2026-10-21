@@ -8,7 +8,7 @@
 | [Data sources](data-sources.md) | Exactly what is read from the access log, Docker, the host, systemd and TLS, and how. |
 | [Storage](storage.md) | Database tables, histograms, rollups, baselines, retention and size. |
 | [Alerts](alerts.md) | Incidents, baselines, every rule, severity, messages, the digest, heartbeats. |
-| [Notifications](notifications.md) | Telegram, SMS (Kavenegar and generic HTTP), webhooks, routing and delivery. |
+| [Notifications](notifications.md) | Telegram, SMS (generic HTTP), webhooks, routing and delivery. |
 | [User interface](ui.md) | Every page and the JSON API. |
 | [Configuration](configuration.md) | All environment variables, labels and commands. |
 | [Deployment](deployment.md) | Installing Raedar on a Docker + Traefik host, step by step. |

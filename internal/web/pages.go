@@ -356,7 +356,7 @@ func (s *Server) notificationView() notifyView {
 		configured bool
 	}{
 		{"telegram", config.ProxyTargetTelegram, s.cfg.Notify.Telegram.Token != "" && len(s.cfg.Notify.Telegram.ChatIDs) > 0},
-		{"sms", config.ProxyTargetSMS, s.cfg.Notify.SMS.Provider != "" && len(s.cfg.Notify.SMS.To) > 0},
+		{"sms", config.ProxyTargetSMS, s.cfg.Notify.SMS.HTTP.URL != "" && len(s.cfg.Notify.SMS.To) > 0},
 		{"webhook", config.ProxyTargetWebhook, s.cfg.Notify.Webhook.URL != ""},
 	}
 	for _, channel := range channels {
@@ -454,7 +454,7 @@ func (s *Server) settings() []setting {
 		{"RAEDAR_HOST_ROOT", cfg.Host.Root},
 		{"RAEDAR_SYSTEMD", string(cfg.Host.Systemd)},
 		{"RAEDAR_TELEGRAM_TOKEN", mask(cfg.Notify.Telegram.Token)},
-		{"RAEDAR_KAVENEGAR_API_KEY", mask(cfg.Notify.SMS.KavenegarAPIKey)},
+		{"RAEDAR_SMS_FROM", cfg.Notify.SMS.From},
 		{"RAEDAR_WEBHOOK_SECRET", mask(cfg.Notify.Webhook.Secret)},
 		{"RAEDAR_HEARTBEAT_RECEIVE_TOKEN", mask(cfg.Heartbeat.ReceiveToken)},
 		{"RAEDAR_RETENTION_MINUTE", cfg.Retention.Minute.String()},

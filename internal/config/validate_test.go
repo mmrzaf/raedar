@@ -74,41 +74,17 @@ func TestValidateNotify(t *testing.T) {
 			},
 		},
 		{
-			name:    "SMS recipients without provider",
+			name:    "SMS recipients without URL",
 			extras:  map[string]string{"RAEDAR_SMS_TO": "+989120000000"},
-			wantErr: "RAEDAR_SMS_PROVIDER is required when RAEDAR_SMS_TO is set",
+			wantErr: "RAEDAR_SMS_HTTP_URL is required when RAEDAR_SMS_TO is set",
 		},
 		{
-			name:    "SMS provider without recipients",
-			extras:  map[string]string{"RAEDAR_SMS_PROVIDER": "kavenegar"},
-			wantErr: "RAEDAR_SMS_TO is required when RAEDAR_SMS_PROVIDER is set",
+			name:    "SMS URL without recipients",
+			extras:  map[string]string{"RAEDAR_SMS_HTTP_URL": "https://sms.example.com/send"},
+			wantErr: "RAEDAR_SMS_TO is required when RAEDAR_SMS_HTTP_URL is set",
 		},
 		{
-			name: "kavenegar without API key",
-			extras: map[string]string{
-				"RAEDAR_SMS_PROVIDER": "kavenegar",
-				"RAEDAR_SMS_TO":       "+989120000000",
-			},
-			wantErr: "RAEDAR_KAVENEGAR_API_KEY is required when RAEDAR_SMS_PROVIDER is kavenegar",
-		},
-		{
-			name: "kavenegar complete",
-			extras: map[string]string{
-				"RAEDAR_SMS_PROVIDER":      "kavenegar",
-				"RAEDAR_SMS_TO":            "+989120000000",
-				"RAEDAR_KAVENEGAR_API_KEY": "key-1",
-			},
-		},
-		{
-			name: "http provider without URL",
-			extras: map[string]string{
-				"RAEDAR_SMS_PROVIDER": "http",
-				"RAEDAR_SMS_TO":       "+989120000000",
-			},
-			wantErr: "RAEDAR_SMS_HTTP_URL is required when RAEDAR_SMS_PROVIDER is http",
-		},
-		{
-			name:   "http provider complete",
+			name:   "SMS complete",
 			extras: smsHTTPEnv(),
 		},
 		{

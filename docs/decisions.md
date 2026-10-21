@@ -50,6 +50,6 @@ Raedar uses nine read-only endpoints. The official Docker client library is larg
 
 The UI is a handful of pages with charts. Go templates, plain JavaScript modules and uPlot are enough, keep the repository approachable for contributors, and avoid a Node.js toolchain in the build.
 
-## Kavenegar first, generic HTTP for everything else
+## Generic SMS only
 
-Kavenegar is common among Iranian operators and has a simple API, so it is supported directly. Every other SMS provider is reachable through the generic HTTP channel, which avoids maintaining a long list of provider integrations.
+Every SMS provider is reachable through one generic HTTP shape; Raedar does not maintain per-provider integrations. Providers that take an API key in the URL path can use the `{{api_key}}` placeholder in `RAEDAR_SMS_HTTP_URL`; operators replace the placeholder from a secret manager at deployment time.
