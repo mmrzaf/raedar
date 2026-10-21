@@ -31,28 +31,35 @@ type Delivery struct {
 	Status string
 	// Error is the last error message; nil when there is none.
 	Error *string
+	// TelegramMessageID is the message_id Telegram returned from the
+	// sendMessage call that delivered this row, when the channel is
+	// telegram. The inbox replies use it to resolve reply-to messages.
+	TelegramMessageID *int64
 }
 
 // AddDelivery records a new delivery and returns its ID.
 func (s *Store) AddDelivery(ctx context.Context, delivery Delivery) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `
-		insert into deliveries (incident_id, kind, channel, created_at, sent_at, attempts, status, error)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
+		insert into deliveries (incident_id, kind, channel, created_at, sent_at, attempts, status, error, telegram_message_id)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		returning id`,
 		delivery.IncidentID, delivery.Kind, delivery.Channel, delivery.CreatedAt, delivery.SentAt,
-		delivery.Attempts, delivery.Status, delivery.Error).Scan(&id)
+		delivery.Attempts, delivery.Status, delivery.Error, delivery.TelegramMessageID).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert delivery: %w", err)
 	}
 	return id, nil
 }
 
-// UpdateDelivery records the outcome of a delivery attempt.
+// UpdateDelivery records the outcome of a delivery attempt and, when the
+// delivery succeeded via Telegram, the message_id Telegram returned. The
+// caller learns the message_id from the Telegram API response and may pass
+// it in the same call.
 func (s *Store) UpdateDelivery(ctx context.Context, delivery Delivery) error {
 	_, err := s.pool.Exec(ctx, `
-		update deliveries set sent_at = $2, attempts = $3, status = $4, error = $5 where id = $1`,
-		delivery.ID, delivery.SentAt, delivery.Attempts, delivery.Status, delivery.Error)
+		update deliveries set sent_at = $2, attempts = $3, status = $4, error = $5, telegram_message_id = $6 where id = $1`,
+		delivery.ID, delivery.SentAt, delivery.Attempts, delivery.Status, delivery.Error, delivery.TelegramMessageID)
 	if err != nil {
 		return fmt.Errorf("update delivery %d: %w", delivery.ID, err)
 	}
@@ -62,7 +69,7 @@ func (s *Store) UpdateDelivery(ctx context.Context, delivery Delivery) error {
 // Deliveries returns the deliveries of one incident, newest first.
 func (s *Store) Deliveries(ctx context.Context, incidentID int64) ([]Delivery, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, incident_id, kind, channel, created_at, sent_at, attempts, status, error
+		select id, incident_id, kind, channel, created_at, sent_at, attempts, status, error, telegram_message_id
 		from deliveries where incident_id = $1 order by created_at desc, id desc`, incidentID)
 	if err != nil {
 		return nil, fmt.Errorf("read deliveries: %w", err)
@@ -72,7 +79,8 @@ func (s *Store) Deliveries(ctx context.Context, incidentID int64) ([]Delivery, e
 	for rows.Next() {
 		var delivery Delivery
 		if err := rows.Scan(&delivery.ID, &delivery.IncidentID, &delivery.Kind, &delivery.Channel,
-			&delivery.CreatedAt, &delivery.SentAt, &delivery.Attempts, &delivery.Status, &delivery.Error); err != nil {
+			&delivery.CreatedAt, &delivery.SentAt, &delivery.Attempts, &delivery.Status, &delivery.Error,
+			&delivery.TelegramMessageID); err != nil {
 			return nil, fmt.Errorf("scan delivery: %w", err)
 		}
 		deliveries = append(deliveries, delivery)
@@ -95,6 +103,27 @@ type AppDayStats struct {
 	S5xx int64
 	// Latency is the summed latency histogram.
 	Latency Histogram
+}
+
+// LookupDeliveryByTelegramMessageID returns the delivery whose
+// telegram_message_id matches. Returns (nil, nil) when no row matches.
+// Replies to a paged Telegram message use this to find the original
+// (rule, subject) so that `mute 2h` knows what to silence.
+func (s *Store) LookupDeliveryByTelegramMessageID(ctx context.Context, messageID int64) (*Delivery, error) {
+	var delivery Delivery
+	err := s.pool.QueryRow(ctx, `
+		select id, incident_id, kind, channel, created_at, sent_at, attempts, status, error, telegram_message_id
+		from deliveries where telegram_message_id = $1`, messageID).
+		Scan(&delivery.ID, &delivery.IncidentID, &delivery.Kind, &delivery.Channel,
+			&delivery.CreatedAt, &delivery.SentAt, &delivery.Attempts, &delivery.Status,
+			&delivery.Error, &delivery.TelegramMessageID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read delivery by telegram message id: %w", err)
+	}
+	return &delivery, nil
 }
 
 // AppDayStats sums the hourly data of every app over a time range.

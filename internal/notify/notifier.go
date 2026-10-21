@@ -63,15 +63,42 @@ type Notifier struct {
 	mu      sync.Mutex
 	retries []*pendingDelivery
 	held    map[Kind]int
+
+	// pendingTelegram holds the chat_id → message_id assignments the
+	// Telegram channel returns for each POST in the current sendMessage
+	// call. The notifier drains it in attempt() to attach the right
+	// message_id to each (incident × chat) delivery row.
+	pendingTelegram map[string]int64
+}
+
+// recordTelegramMessageID is the hook the Telegram channel calls per
+// POST. It buffers message_ids keyed by chat_id for the current attempt.
+func (n *Notifier) recordTelegramMessageID(chatID string, messageID int64) {
+	n.mu.Lock()
+	if n.pendingTelegram == nil {
+		n.pendingTelegram = make(map[string]int64)
+	}
+	n.pendingTelegram[chatID] = messageID
+	n.mu.Unlock()
+}
+
+// drainTelegramIDs returns the buffered chat_id → message_id map and
+// resets the buffer. Held under the notifier mutex.
+func (n *Notifier) drainTelegramIDs() map[string]int64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	snapshot := n.pendingTelegram
+	n.pendingTelegram = nil
+	return snapshot
 }
 
 // pendingDelivery is one message waiting for a retry.
 type pendingDelivery struct {
-	channel     Channel
-	message     Message
-	incidentIDs []int64
-	attempt     int
-	at          time.Time
+	channel Channel
+	message Message
+	slots   []slot
+	attempt int
+	at      time.Time
 }
 
 // limiter counts the messages sent through one channel in a sliding window.
@@ -144,6 +171,11 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 			limit = cfg.Notify.SMSRateLimit
 		}
 		notifier.limiters[kind] = &limiter{limit: limit, window: time.Hour}
+	}
+	if telegram, ok := notifier.channels[KindTelegram].(*telegramChannel); ok {
+		telegram.record = func(chatID string, messageID int64) {
+			notifier.recordTelegramMessageID(chatID, messageID)
+		}
 	}
 	return notifier, nil
 }
@@ -334,8 +366,62 @@ func (n *Notifier) digestChannels() []Channel {
 	return channels
 }
 
-// deliver sends one message through a channel unless the rate limit holds it.
+// slot is one (incident × chat_id) pair the pager wants to track as a
+// separate delivery. When the channel posts to N chats for M incidents,
+// the pager creates N*M slots for Telegram, one slot per other channel
+// kind (chat_id is empty there), or one slot per chat for the digest
+// when there are no incidents.
+type slot struct {
+	id         int64
+	incidentID *int64
+	channel    string
+	chatID     string
+}
+
+// deliver records one delivery row per (incident × chat_id) pair (one row
+// for channels that do not fan out, one per chat for Telegram), then hands
+// the resulting slots to attempt. Each row gets its own
+// telegram_message_id after the channel returns, so reply-to lookup is
+// deterministic regardless of how many chats the operator lists.
 func (n *Notifier) deliver(ctx context.Context, channel Channel, kind store.DeliveryKind, incidents []store.Incident, message Message) {
+	chatIDs := n.channelChatIDs(channel)
+	if len(chatIDs) == 0 {
+		chatIDs = []string{""}
+	}
+	now := n.clock.Now()
+	slots := make([]slot, 0, len(incidents)*len(chatIDs))
+	writeRow := func(incidentID *int64, chatID string) bool {
+		id, err := n.store.AddDelivery(ctx, store.Delivery{
+			IncidentID: incidentID,
+			Kind:       kind,
+			Channel:    string(channel.Kind()),
+			CreatedAt:  now,
+			Status:     "pending",
+		})
+		if err != nil {
+			n.logger.Warn("record delivery", slog.String("error", err.Error()))
+			return false
+		}
+		slots = append(slots, slot{id: id, incidentID: incidentID, channel: string(channel.Kind()), chatID: chatID})
+		return true
+	}
+	if len(incidents) == 0 {
+		// Digest and test paths: one row per chat_id (or one row when
+		// Telegram is not configured).
+		for _, chatID := range chatIDs {
+			writeRow(nil, chatID)
+		}
+	} else {
+		for i := range incidents {
+			id := incidents[i].ID
+			for _, chatID := range chatIDs {
+				writeRow(&id, chatID)
+			}
+		}
+	}
+	if len(slots) == 0 {
+		return
+	}
 	limit := n.limiters[channel.Kind()]
 	if limit != nil && !limit.allow(n.clock.Now()) {
 		n.mu.Lock()
@@ -345,40 +431,20 @@ func (n *Notifier) deliver(ctx context.Context, channel Channel, kind store.Deli
 			slog.Int("incidents", len(incidents)))
 		return
 	}
-	// One delivery row per incident; a message without incidents, like the
-	// digest, gets a single row that belongs to no incident.
-	subjects := make([]*int64, 0, max(len(incidents), 1))
-	for _, incident := range incidents {
-		id := incident.ID
-		subjects = append(subjects, &id)
-	}
-	if len(subjects) == 0 {
-		subjects = append(subjects, nil)
-	}
-	var ids []int64
-	for _, incidentID := range subjects {
-		deliveryID, err := n.store.AddDelivery(ctx, store.Delivery{
-			IncidentID: incidentID,
-			Kind:       kind,
-			Channel:    string(channel.Kind()),
-			CreatedAt:  n.clock.Now(),
-			Status:     "pending",
-		})
-		if err != nil {
-			n.logger.Warn("record delivery", slog.String("error", err.Error()))
-			continue
-		}
-		ids = append(ids, deliveryID)
-	}
-	n.attempt(ctx, channel, message, ids, 0)
+	n.attempt(ctx, channel, message, slots, 0)
 }
 
-// attempt sends one message and schedules a retry when it fails.
-func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message, ids []int64, failed int) {
+// attempt sends one message, attaches the per-chat message_id recorded
+// by the Telegram channel to every matching delivery row, and schedules a
+// retry when the channel returns an error. The retry queue keeps the
+// channel + message + slots so an attempt can replay the exact same
+// set of (incident × chat_id) pairs.
+func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message, slots []slot, failed int) {
 	err := channel.Send(ctx, message)
+	telegramIDs := n.drainTelegramIDs()
 	now := n.clock.Now()
-	for _, id := range ids {
-		delivery := store.Delivery{ID: id, Attempts: failed + 1, Status: "sent"}
+	for _, s := range slots {
+		delivery := store.Delivery{ID: s.id, Attempts: failed + 1, Status: "sent"}
 		switch {
 		case err == nil:
 			delivery.SentAt = &now
@@ -390,6 +456,15 @@ func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message
 		if err != nil {
 			text := safeError(err).Error()
 			delivery.Error = &text
+		}
+		// When the channel can record a per-chat message_id, attach it to
+		// every delivery row that corresponds to that chat. The dispatcher
+		// later resolves reply-to messages through this.
+		if s.chatID != "" {
+			if id, ok := telegramIDs[s.chatID]; ok && id != 0 {
+				tgid := id
+				delivery.TelegramMessageID = &tgid
+			}
 		}
 		if updateErr := n.store.UpdateDelivery(ctx, delivery); updateErr != nil {
 			n.logger.Warn("update delivery", slog.String("error", updateErr.Error()))
@@ -406,15 +481,23 @@ func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message
 	delay := retryDelays()[failed]
 	n.mu.Lock()
 	n.retries = append(n.retries, &pendingDelivery{
-		channel:     channel,
-		message:     message,
-		incidentIDs: ids,
-		attempt:     failed + 1,
-		at:          now.Add(delay),
+		channel: channel,
+		message: message,
+		slots:   slots,
+		attempt: failed + 1,
+		at:      now.Add(delay),
 	})
 	n.mu.Unlock()
 	n.logger.Warn("notification will be retried", slog.String("channel", string(channel.Kind())),
 		slog.Duration("in", delay), slog.String("error", safeError(err).Error()))
+}
+
+// channelChatIDs returns the chat_ids this channel posts to. Channels
+// without a fan-out list (webhook, telegram without chat_ids configured,
+// SMS, generic test channels) return an empty slice and the pager
+// treats them as one delivery row per incident.
+func (n *Notifier) channelChatIDs(channel Channel) []string {
+	return channel.ChatIDs()
 }
 
 // Run delivers retries and held summaries until ctx is done.
@@ -448,7 +531,7 @@ func (n *Notifier) deliverDue(ctx context.Context) {
 	n.retries = remaining
 	n.mu.Unlock()
 	for _, item := range due {
-		n.attempt(ctx, item.channel, item.message, item.incidentIDs, item.attempt)
+		n.attempt(ctx, item.channel, item.message, item.slots, item.attempt)
 	}
 }
 
