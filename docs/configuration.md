@@ -66,6 +66,8 @@ See [alerts.md](alerts.md) for what each rule does.
 | `RAEDAR_CERT_WARN` | `14d` | `cert.expiry` |
 | `RAEDAR_CERT_CRIT` | `3d` | `cert.expiry` |
 | `RAEDAR_RESOLVE_AFTER` | `5m` | all persistent rules that do not define their own resolution |
+| `RAEDAR_CRASH_LOOP_WINDOW` | `10m` | window for `container.restarting` |
+| `RAEDAR_CRASH_LOOP_CRASHES` | `3` | crashes inside that window that fire `container.restarting` |
 
 ## Notifications
 
@@ -91,8 +93,30 @@ See [notifications.md](notifications.md) for channel details.
 | `RAEDAR_SMS_HTTP_HEADERS` | — | Generic SMS headers, one `Name: value` per line. |
 | `RAEDAR_SMS_HTTP_BODY` | — | Generic SMS body template. |
 | `RAEDAR_SMS_HTTP_ENCODING` | `json` | `json`, `form` or `raw`. |
+| `RAEDAR_SMS_HTTP_API_KEY` | — | Substituted for `{{api_key}}` in the SMS URL and body. |
 | `RAEDAR_WEBHOOK_URL` | — | Webhook URL. |
 | `RAEDAR_WEBHOOK_SECRET` | — | Webhook signing secret. |
+
+## Silencing
+
+See [notifications.md](notifications.md#silences) for how the gate uses these.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RAEDAR_QUIET_FROM` | — | Start of the quiet window, `HH:MM` in `RAEDAR_QUIET_TZ`. |
+| `RAEDAR_QUIET_TO` | — | End of the quiet window. A window may cross midnight. |
+| `RAEDAR_QUIET_TZ` | `RAEDAR_TZ` | Zone of the quiet window. |
+| `RAEDAR_QUIET_PAGE_CRITICAL` | `true` | Let critical incidents page during quiet hours. |
+| `RAEDAR_PAGER_COOLDOWN` | `30m` | Minimum time between two pages for the same (rule, subject). `0` disables it. |
+| `RAEDAR_PAGER_COOLDOWN_BY_RULE` | — | Per-rule overrides, `rule=duration,...` (for example `route.down=15m,host.disk=1h`). |
+| `RAEDAR_STAND_DOWN_AFTER` | `24h` | After this much quiet with nothing open, send one "all quiet" message. `0` disables it. |
+| `RAEDAR_DEPLOY_SILENCE` | `5m` | Silence an app for this long after each deploy. `0` disables it. |
+
+## Presentation
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RAEDAR_SUBJECT_NAMES` | — | Rename subjects, `subject=name,...`. A trailing `*` is a prefix pattern. |
 
 ## Heartbeats
 

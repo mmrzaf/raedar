@@ -20,7 +20,7 @@ Lifecycle:
 - **Change of severity.** A warning that becomes critical (for example disk usage crossing the second threshold) sends a new message for the same incident.
 - **One-shot.** Some rules describe something that happened rather than a state: they open and resolve at once and send a single message.
 
-Incidents for apps labeled `raedar.alerts=false` are recorded and shown, but not sent.
+Incidents for apps labeled `raedar.alerts=false` are recorded and shown, but not sent. A Traefik router labeled `raedar.ignore=true` is left out of the route rules entirely; it still appears on its app page. Acked incidents, and incidents covered by a [silence](notifications.md#silences), are recorded but not sent.
 
 ## Baselines
 
@@ -50,7 +50,7 @@ While `route.down` is open for a route, `route.errors` and `route.slow` stay qui
 | Rule | Fires when | For | Severity |
 |---|---|---|---|
 | `container.crashed` | A container exits on its own with a non-zero exit code. One-shot. The message includes the exit code and whether the kernel killed it for running out of memory. | — | warning |
-| `container.restarting` | A slot's container crashed and was restarted at least 3 times in 10 minutes. Resolves after 10 minutes without a crash. | — | critical |
+| `container.restarting` | A slot's container crashed and was restarted at least `RAEDAR_CRASH_LOOP_CRASHES` (3) times in `RAEDAR_CRASH_LOOP_WINDOW` (10 min). Resolves after 10 minutes without a crash. | — | critical |
 | `container.stopped` | A slot's container crashed and is still not running 1 minute later (no restart policy, or the policy gave up). Resolves when the slot runs again. | 1 min | warning |
 | `container.unhealthy` | Docker reports the container as `unhealthy`. | 2 min | warning |
 | `container.memory` | The container's memory working set is at least `RAEDAR_MEMORY_LIMIT_WARN` (90 %) of its memory limit. Only containers with a limit. | 10 min | warning |
