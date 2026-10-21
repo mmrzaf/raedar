@@ -1,0 +1,47 @@
+{{template "header" .}}
+<section class="card">
+  <h1>Silences</h1>
+  <p class="muted">A silence stops pages for one subject (or one app) until it expires. Ack and mute from Telegram, or create a maintenance window here.</p>
+  {{if .Error}}<p class="flash flash-error">{{.Error}}</p>{{end}}
+  <form method="post" action="/silences" class="form-grid">
+    <label>Reason
+      <input type="text" name="reason" required maxlength="200" placeholder="release 2.4.0, disk upgrade, scanner noise">
+    </label>
+    <label>Rule
+      <input type="text" name="rule" maxlength="80" placeholder="route.down (empty = any rule)">
+    </label>
+    <label>Subject
+      <input type="text" name="subject" maxlength="200" placeholder="fallback@file (empty = any subject)">
+    </label>
+    <label>Duration
+      <input type="text" name="duration" required maxlength="20" placeholder="30m, 2h, 1d">
+    </label>
+    <button type="submit">Add silence</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Current and recent</h2>
+  {{if .Silences}}
+  <table class="table">
+    <thead><tr><th>#</th><th>Kind</th><th>Scope</th><th>Reason</th><th>Ends</th><th></th></tr></thead>
+    <tbody>
+    {{range .Silences}}
+      <tr{{if .Active}} class="row-active"{{end}}>
+        <td>{{.ID}}</td>
+        <td>{{.Kind}}</td>
+        <td>{{.Scope}}</td>
+        <td>{{.Reason}}</td>
+        <td>{{datetime .EndsAt}}{{if .Active}} <span class="muted">(in {{duration .Remaining}})</span>{{else}} <span class="muted">(expired)</span>{{end}}</td>
+        <td>
+          <form method="post" action="/silences/{{.ID}}/delete"><button type="submit" class="link-button">remove</button></form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="muted">No silences.</p>
+  {{end}}
+</section>
+{{template "footer" .}}

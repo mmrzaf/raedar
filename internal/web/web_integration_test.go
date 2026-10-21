@@ -372,6 +372,8 @@ func TestPagesAndHealth(t *testing.T) {
 		"/host":        "Certificates",
 		"/patterns":    "Day profile",
 		"/events":      "Events",
+		"/silences":    "Silences",
+		"/deliveries":  "Deliveries",
 		"/incidents/1": "Deliveries",
 		"/about":       "Notifications",
 	}
@@ -465,5 +467,57 @@ func TestPatternsUseLocalHoursInHalfHourZones(t *testing.T) {
 	}
 	if len(hours) != 1 || hours[0] != 16 {
 		t.Errorf("hours with data = %v, want only local hour 16", hours)
+	}
+}
+
+// TestSilenceFormCreatesAndDeletes covers the operator flow: a
+// same-origin POST creates a silence, the page lists it, and a second POST
+// removes it. A cross-origin POST is refused.
+func TestSilenceFormCreatesAndDeletes(t *testing.T) {
+	server, _, _, _ := newIntegrationServer(t)
+	handler := server.Handler()
+
+	form := url.Values{
+		"reason":   {"release 2.4.0"},
+		"rule":     {"route.down"},
+		"subject":  {"fallback@file"},
+		"duration": {"30m"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/silences", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Origin", "http://"+request.Host)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("create status = %d, want 303 (body %q)", recorder.Code, recorder.Body.String())
+	}
+
+	page := get(t, handler, "/silences")
+	if !strings.Contains(page.Body.String(), "release 2.4.0") {
+		t.Fatalf("silences page does not list the new silence")
+	}
+	silences, err := server.store.ListSilences(context.Background(), 10)
+	if err != nil || len(silences) != 1 {
+		t.Fatalf("ListSilences = %v, %v; want one", silences, err)
+	}
+
+	remove := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/silences/%d/delete", silences[0].ID), nil)
+	remove.Header.Set("Origin", "http://"+remove.Host)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, remove)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("delete status = %d, want 303", recorder.Code)
+	}
+	if left, _ := server.store.ListSilences(context.Background(), 10); len(left) != 0 {
+		t.Fatalf("silences after delete = %d, want 0", len(left))
+	}
+
+	cross := httptest.NewRequest(http.MethodPost, "/silences", strings.NewReader(form.Encode()))
+	cross.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	cross.Header.Set("Origin", "https://evil.example.com")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, cross)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d, want 403", recorder.Code)
 	}
 }

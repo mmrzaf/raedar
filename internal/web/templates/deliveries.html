@@ -1,0 +1,26 @@
+{{template "header" .}}
+<section class="card">
+  <h1>Deliveries</h1>
+  <p class="muted">Every page Raedar produced, including the ones it held, cooled down or suppressed.</p>
+  {{if .Rows}}
+  <table class="table">
+    <thead><tr><th>When</th><th>Incident</th><th>Kind</th><th>Channel</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+      <tr>
+        <td>{{datetime .CreatedAt}}</td>
+        <td>{{if .Subject}}<a href="/incidents/{{.IncidentID}}">{{.Subject}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
+        <td>{{.Kind}}</td>
+        <td>{{.Channel}}</td>
+        <td><span class="badge badge-{{.Status}}">{{.Status}}</span></td>
+        <td>{{.Attempts}}</td>
+        <td class="error-cell">{{if .Error}}{{.Error}}{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="muted">No deliveries yet.</p>
+  {{end}}
+</section>
+{{template "footer" .}}

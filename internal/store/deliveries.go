@@ -178,3 +178,44 @@ func (s *Store) DockerDiskLatest(ctx context.Context) (*DockerDisk, error) {
 	usage.BuildCacheBytes, usage.VolumesBytes, usage.ContainersBytes = buildCache, volumes, containers
 	return &usage, nil
 }
+
+// DeliveryRow is one delivery joined with the incident it belongs to, for
+// the deliveries page.
+type DeliveryRow struct {
+	Delivery
+	Rule    string
+	Subject string
+}
+
+// RecentDeliveries returns the newest deliveries across all incidents.
+func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]DeliveryRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		select d.id, d.incident_id, d.kind, d.channel, d.created_at, d.sent_at, d.attempts,
+		       d.status, d.error, d.telegram_message_id,
+		       coalesce(i.rule, ''), coalesce(i.subject, '')
+		from deliveries d
+		left join incidents i on i.id = d.incident_id
+		order by d.created_at desc, d.id desc
+		limit $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read recent deliveries: %w", err)
+	}
+	defer rows.Close()
+	out := make([]DeliveryRow, 0, limit)
+	for rows.Next() {
+		var row DeliveryRow
+		if err := rows.Scan(&row.ID, &row.IncidentID, &row.Kind, &row.Channel, &row.CreatedAt,
+			&row.SentAt, &row.Attempts, &row.Status, &row.Error, &row.TelegramMessageID,
+			&row.Rule, &row.Subject); err != nil {
+			return nil, fmt.Errorf("scan delivery row: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read recent deliveries: %w", err)
+	}
+	return out, nil
+}

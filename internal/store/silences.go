@@ -203,3 +203,18 @@ func scanSilences(rows pgx.Rows) ([]Silence, error) {
 	}
 	return silences, nil
 }
+
+// ListSilences returns silences ordered by their start, newest first.
+// Active ones come first so the operator sees what is in force.
+func (s *Store) ListSilences(ctx context.Context, limit int) ([]Silence, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, silenceSelect+`
+		order by (ends_at > now()) desc, starts_at desc
+		limit $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read silences: %w", err)
+	}
+	return scanSilences(rows)
+}
