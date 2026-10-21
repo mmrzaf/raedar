@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -47,8 +48,8 @@ type Channel interface {
 	// Kind returns the channel kind.
 	Kind() Kind
 	// ChatIDs returns the per-recipient list when the channel fans out
-	// (Telegram). Other channels return an empty slice, which the pager
-	// treats as "one delivery row per incident".
+	// (Telegram chats, SMS numbers). Other channels return an empty slice,
+	// which the pager treats as "one delivery row per incident".
 	ChatIDs() []string
 	// Send delivers the message.
 	Send(ctx context.Context, message Message) error
@@ -111,9 +112,8 @@ type chatSend struct {
 }
 
 // fanOut is implemented by channels that post to several recipients and
-// can report each result. Telegram is the only one. chats names the
-// recipients for this attempt, so a retry can target only the chats that
-// failed.
+// can report each result: Telegram and SMS. chats names the recipients for
+// this attempt, so a retry can target only the recipients that failed.
 type fanOut interface {
 	SendEach(ctx context.Context, message Message, chats []string) []chatSend
 }
@@ -217,10 +217,9 @@ func (c *telegramChannel) Send(ctx context.Context, message Message) error {
 	return errors.Join(errs...)
 }
 
-// newSMSChannel returns the configured SMS provider. The shape is a single
-// generic HTTP client; providers that put the API key in the URL path can
-// use the {{api_key}} placeholder, and providers that take a from line
-// can use {{from}} in URL or Body.
+// newSMSChannel returns the configured SMS provider: a single generic HTTP
+// client. Providers that put the API key in the URL path use the {{api_key}}
+// placeholder, and providers that take a from line use {{from}}.
 func newSMSChannel(cfg *config.Config, client *http.Client) Channel {
 	sms := cfg.Notify.SMS
 	return &httpSMSChannel{
@@ -229,6 +228,7 @@ func newSMSChannel(cfg *config.Config, client *http.Client) Channel {
 		headers:  sms.HTTP.Headers,
 		body:     sms.HTTP.Body,
 		encoding: sms.HTTP.Encoding,
+		apiKey:   sms.HTTP.APIKey,
 		from:     sms.From,
 		to:       sms.To,
 		client:   client,
@@ -237,14 +237,15 @@ func newSMSChannel(cfg *config.Config, client *http.Client) Channel {
 
 // httpSMSChannel sends one request per recipient through a generic HTTP API.
 // Both URL and Body templates support the placeholders {{to}}, {{message}},
-// {{from}} and {{api_key}}. {{from}} takes the SMS From line from config;
-// {{api_key}} is left as-is (the caller pre-substitutes it before Send).
+// {{from}} and {{api_key}}; they are substituted in one pass, so a value
+// that contains a placeholder is never expanded again.
 type httpSMSChannel struct {
 	url      string
 	method   string
 	headers  []config.Header
 	body     string
 	encoding string
+	apiKey   string
 	from     string
 	to       []string
 	client   *http.Client
@@ -253,71 +254,73 @@ type httpSMSChannel struct {
 // Kind returns the channel kind.
 func (c *httpSMSChannel) Kind() Kind { return KindSMS }
 
-// ChatIDs returns the configured recipient numbers, or empty if none.
-func (c *httpSMSChannel) ChatIDs() []string {
-	if len(c.to) == 0 {
-		return nil
+// ChatIDs returns the configured recipient numbers.
+func (c *httpSMSChannel) ChatIDs() []string { return slices.Clone(c.to) }
+
+// SendEach makes one request per requested recipient. Every recipient is
+// attempted even when an earlier one fails, so a retry only repeats the
+// numbers that actually failed.
+func (c *httpSMSChannel) SendEach(ctx context.Context, message Message, recipients []string) []chatSend {
+	if len(recipients) == 0 {
+		recipients = c.to
 	}
-	out := make([]string, len(c.to))
-	copy(out, c.to)
-	return out
+	results := make([]chatSend, 0, len(recipients))
+	for _, recipient := range recipients {
+		results = append(results, chatSend{chatID: recipient, err: c.sendOne(ctx, recipient, message.SMS)})
+	}
+	return results
 }
 
-// Send makes one request per recipient. {{to}}, {{message}}, {{from}} and
-// {{api_key}} are substituted in the URL and the body before send.
+// Send delivers the message to every recipient and returns the joined errors.
 func (c *httpSMSChannel) Send(ctx context.Context, message Message) error {
-	for _, recipient := range c.to {
-		endpoint := substitute(c.url, recipient, message.SMS, c.from)
-		body, contentType := c.encode(recipient, message.SMS)
-		request, err := http.NewRequestWithContext(ctx, c.method, endpoint, strings.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("build SMS request: %w", err)
+	var errs []error
+	for _, result := range c.SendEach(ctx, message, nil) {
+		if result.err != nil {
+			errs = append(errs, result.err)
 		}
-		for _, header := range c.headers {
-			request.Header.Set(header.Name, header.Value)
-		}
-		if contentType != "" && request.Header.Get("Content-Type") == "" {
-			request.Header.Set("Content-Type", contentType)
-		}
-		if err := send(c.client, request); err != nil {
-			return fmt.Errorf("send SMS: %w", safeError(err))
-		}
+	}
+	return errors.Join(errs...)
+}
+
+// sendOne makes the request for one recipient.
+func (c *httpSMSChannel) sendOne(ctx context.Context, recipient, text string) error {
+	endpoint := c.expand(c.url, url.QueryEscape, recipient, text)
+	body, contentType := c.encode(recipient, text)
+	request, err := http.NewRequestWithContext(ctx, c.method, endpoint, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build SMS request: %w", err)
+	}
+	for _, header := range c.headers {
+		request.Header.Set(header.Name, header.Value)
+	}
+	if contentType != "" && request.Header.Get("Content-Type") == "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	if err := send(c.client, request); err != nil {
+		return fmt.Errorf("send SMS: %w", safeError(err))
 	}
 	return nil
 }
 
-// substitute fills the URL template with the supported placeholders. Each
-// placeholder is replaced in URL-encoded form so values with special
-// characters do not break the URL.
-func substitute(template, recipient, message, from string) string {
-	out := strings.ReplaceAll(template, "{{to}}", url.QueryEscape(recipient))
-	out = strings.ReplaceAll(out, "{{message}}", url.QueryEscape(message))
-	out = strings.ReplaceAll(out, "{{from}}", url.QueryEscape(from))
-	out = strings.ReplaceAll(out, "{{api_key}}", "") // caller fills this in
-	return out
+// expand fills a template, passing every value through escape.
+func (c *httpSMSChannel) expand(template string, escape func(string) string, recipient, text string) string {
+	return strings.NewReplacer(
+		"{{to}}", escape(recipient),
+		"{{message}}", escape(text),
+		"{{from}}", escape(c.from),
+		"{{api_key}}", escape(c.apiKey),
+	).Replace(template)
 }
 
 // encode fills the body template and returns the content type.
-func (c *httpSMSChannel) encode(recipient, message string) (string, string) {
+func (c *httpSMSChannel) encode(recipient, text string) (string, string) {
 	switch c.encoding {
 	case "form":
-		body := strings.ReplaceAll(c.body, "{{to}}", url.QueryEscape(recipient))
-		body = strings.ReplaceAll(body, "{{message}}", url.QueryEscape(message))
-		body = strings.ReplaceAll(body, "{{from}}", url.QueryEscape(c.from))
-		body = strings.ReplaceAll(body, "{{api_key}}", "")
-		return body, "application/x-www-form-urlencoded"
+		return c.expand(c.body, url.QueryEscape, recipient, text), "application/x-www-form-urlencoded"
 	case "raw":
-		body := strings.ReplaceAll(c.body, "{{to}}", recipient)
-		body = strings.ReplaceAll(body, "{{message}}", message)
-		body = strings.ReplaceAll(body, "{{from}}", c.from)
-		body = strings.ReplaceAll(body, "{{api_key}}", "")
-		return body, ""
+		return c.expand(c.body, func(value string) string { return value }, recipient, text), ""
 	default:
-		body := strings.ReplaceAll(c.body, "{{to}}", escapeJSON(recipient))
-		body = strings.ReplaceAll(body, "{{message}}", escapeJSON(message))
-		body = strings.ReplaceAll(body, "{{from}}", escapeJSON(c.from))
-		body = strings.ReplaceAll(body, "{{api_key}}", "")
-		return body, "application/json"
+		return c.expand(c.body, escapeJSON, recipient, text), "application/json"
 	}
 }
 
