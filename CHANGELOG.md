@@ -4,6 +4,17 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - 2026-10-21
+
+### Fixed
+
+- Telegram polling now goes through the outbound proxy exactly when Telegram
+  messages do. On a host that reaches Telegram only through
+  `RAEDAR_OUTBOUND_PROXY`, `getUpdates` timed out on every poll and
+  `ack`/`mute` never worked.
+- A failed poll no longer logs the request URL, which contains the bot token.
+  Rotate the token if an earlier version logged it.
+
 ## [0.3.1] - 2026-10-21
 
 ### Fixed
