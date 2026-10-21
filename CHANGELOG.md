@@ -8,6 +8,9 @@ All notable changes to Raedar are listed here. The format follows
 
 ### Fixed
 
+- A failed unit that systemd unloads, as it does after `systemctl
+  reset-failed`, no longer keeps its incident open forever: the unit is
+  recorded as inactive once it leaves systemd's list.
 - Deliveries left `pending` by a restart are marked failed at startup. Their
   retries lived in memory, so nothing ever finished them.
 
