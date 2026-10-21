@@ -87,6 +87,9 @@ func variables() []variable {
 		{name: "RAEDAR_STAND_DOWN_AFTER", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.StandDownAfter }, parseDuration)},
 		{name: "RAEDAR_DEPLOY_SILENCE", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.DeploySilence }, parseDuration)},
 
+		// Presentation
+		{name: "RAEDAR_SUBJECT_NAMES", apply: parseVar(func(c *Config) *SubjectNames { return &c.SubjectNames }, parseSubjectNames)},
+
 		// Heartbeats
 		{name: "RAEDAR_HEARTBEAT_URL", apply: parseVar(func(c *Config) *string { return &c.Heartbeat.URL }, parseHTTPURL)},
 		{name: "RAEDAR_HEARTBEAT_HEADER", apply: parseVar(func(c *Config) **Header { return &c.Heartbeat.Header }, parseOneHeader)},

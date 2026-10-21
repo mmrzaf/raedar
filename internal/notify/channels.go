@@ -154,7 +154,7 @@ func (c *telegramChannel) SendReply(ctx context.Context, chatID, text string) er
 		return fmt.Errorf("send Telegram reply: %w", safeError(err))
 	}
 	if !response.Ok {
-		return fmt.Errorf("Telegram sendMessage returned ok=false")
+		return fmt.Errorf("telegram sendMessage returned ok=false")
 	}
 	return nil
 }
@@ -196,7 +196,7 @@ func (c *telegramChannel) SendEach(ctx context.Context, message Message, chats [
 			continue
 		}
 		if !response.Ok {
-			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("Telegram sendMessage returned ok=false")})
+			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("telegram sendMessage returned ok=false")})
 			continue
 		}
 		results = append(results, chatSend{chatID: chatID, messageID: response.Result.MessageID})
@@ -259,9 +259,7 @@ func (c *httpSMSChannel) ChatIDs() []string {
 		return nil
 	}
 	out := make([]string, len(c.to))
-	for i, v := range c.to {
-		out[i] = v
-	}
+	copy(out, c.to)
 	return out
 }
 

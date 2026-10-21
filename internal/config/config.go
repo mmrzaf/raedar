@@ -5,6 +5,7 @@ package config
 import (
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -35,6 +36,8 @@ type Config struct {
 	Notify NotifyConfig
 	// Heartbeat holds the heartbeat sender and receiver settings.
 	Heartbeat HeartbeatConfig
+	// SubjectNames renames subjects in messages and the UI.
+	SubjectNames SubjectNames
 	// Retention holds how long history is kept.
 	Retention RetentionConfig
 }
@@ -238,6 +241,39 @@ type SilentConfig struct {
 	PagerCooldownByRule map[string]time.Duration
 	StandDownAfter      time.Duration
 	DeploySilence       time.Duration
+}
+
+// SubjectNames maps an incident subject to a display name. The value in
+// the environment is a comma-separated list of subject=name entries; a
+// subject ending in * is a prefix pattern. Exact matches win over
+// patterns. An unmapped subject is shown unchanged.
+type SubjectNames struct {
+	exact    map[string]string
+	patterns []subjectPattern
+}
+
+// subjectPattern is one prefix pattern and its replacement.
+type subjectPattern struct {
+	prefix string
+	name   string
+}
+
+// Display returns the display name for a subject.
+func (s SubjectNames) Display(subject string) string {
+	if name, ok := s.exact[subject]; ok {
+		return name
+	}
+	for _, pattern := range s.patterns {
+		if strings.HasPrefix(subject, pattern.prefix) {
+			return pattern.name
+		}
+	}
+	return subject
+}
+
+// Empty reports whether no names are configured.
+func (s SubjectNames) Empty() bool {
+	return len(s.exact) == 0 && len(s.patterns) == 0
 }
 
 // RetentionConfig holds how long history is kept.

@@ -148,7 +148,7 @@ func (s *Server) loadOverview(ctx context.Context) (*overviewData, error) {
 	}
 	for _, incident := range open {
 		data.Incidents = append(data.Incidents, incidentView{
-			ID: incident.ID, Rule: incident.Rule, Subject: incident.Subject,
+			ID: incident.ID, Rule: incident.Rule, Subject: s.cfg.SubjectNames.Display(incident.Subject),
 			App: incidentApp(incident), Severity: incident.Severity, Summary: incident.Summary,
 			OpenedAt: incident.OpenedAt, Duration: now.Sub(incident.OpenedAt),
 		})
@@ -177,7 +177,7 @@ func (s *Server) loadOverview(ctx context.Context) (*overviewData, error) {
 		return nil, err
 	}
 	for _, event := range events {
-		view := eventView{TS: event.TS, Kind: event.Kind, Severity: event.Severity, Title: event.Title, Subject: event.Subject}
+		view := eventView{TS: event.TS, Kind: event.Kind, Severity: event.Severity, Title: event.Title, Subject: s.cfg.SubjectNames.Display(event.Subject)}
 		if event.AppID != nil {
 			view.App = s.appName(model, *event.AppID)
 		}

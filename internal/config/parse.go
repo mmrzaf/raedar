@@ -191,6 +191,29 @@ func parseBool(s string) (bool, error) {
 	return false, errors.New(`must be one of "true", "false", "1", "0", "yes", "no", "on", "off"`)
 }
 
+// parseSubjectNames parses RAEDAR_SUBJECT_NAMES: comma-separated
+// subject=name entries. A subject ending in * is a prefix pattern.
+func parseSubjectNames(s string) (SubjectNames, error) {
+	names := SubjectNames{exact: make(map[string]string)}
+	for _, item := range parseList(s) {
+		subject, name, ok := strings.Cut(item, "=")
+		subject = strings.TrimSpace(subject)
+		name = strings.TrimSpace(name)
+		if !ok || subject == "" || name == "" {
+			return SubjectNames{}, fmt.Errorf("must be subject=name entries, got %q", item)
+		}
+		if strings.HasSuffix(subject, "*") {
+			names.patterns = append(names.patterns, subjectPattern{
+				prefix: strings.TrimSuffix(subject, "*"),
+				name:   name,
+			})
+			continue
+		}
+		names.exact[subject] = name
+	}
+	return names, nil
+}
+
 // parseList splits a comma-separated list, trimming spaces around items and
 // dropping empty items.
 func parseList(s string) []string {

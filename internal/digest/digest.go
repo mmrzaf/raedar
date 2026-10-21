@@ -49,7 +49,7 @@ func (c *Composer) Text(ctx context.Context) (string, error) {
 	if len(open) > 0 {
 		lines = append(lines, "Open incidents:")
 		for _, incident := range sortedIncidents(open) {
-			lines = append(lines, fmt.Sprintf("  • %s · %s since %s", subjectName(incident), incident.Summary,
+			lines = append(lines, fmt.Sprintf("  • %s · %s since %s", c.subjectName(incident), incident.Summary,
 				incident.OpenedAt.In(location).Format("15:04")))
 		}
 	}
@@ -304,13 +304,17 @@ func sortedIncidents(open map[store.IncidentKey]store.Incident) []store.Incident
 	return incidents
 }
 
-// subjectName returns the app name of an incident, or its subject.
-func subjectName(incident store.Incident) string {
+// subjectName returns the app name of an incident, the configured
+// display name for its subject, or the subject itself.
+func (c *Composer) subjectName(incident store.Incident) string {
 	details := map[string]any{}
 	if len(incident.Details) > 0 {
 		_ = json.Unmarshal(incident.Details, &details)
 	}
 	if name, ok := details["app"].(string); ok && name != "" {
+		return name
+	}
+	if name := c.cfg.SubjectNames.Display(incident.Subject); name != "" {
 		return name
 	}
 	return incident.Subject

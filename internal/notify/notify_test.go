@@ -51,18 +51,6 @@ func testConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
-// minimalConfig returns the test config with Telegram channels restricted
-// to telegram so the pager only fans out one direction, used by
-// integration tests that need to count rows precisely.
-func minimalConfig(t *testing.T) *config.Config {
-	t.Helper()
-	cfg := testConfig(t)
-	cfg.Notify.WarningChannels = []string{"telegram"}
-	cfg.Notify.CriticalChannels = []string{"telegram"}
-	cfg.Notify.DigestChannels = []string{"telegram"}
-	return cfg
-}
-
 // recordedRequest is one request a test server received.
 type recordedRequest struct {
 	method  string
@@ -602,6 +590,7 @@ func newTestNotifier(t *testing.T, channels ...Channel) (*Notifier, *fakeStore, 
 		limiters:  map[Kind]*limiter{},
 		gate:      &Gate{Store: st, Logger: discardLogger()},
 		held:      map[Kind]int{},
+		deferred:  map[string]*deferredPage{},
 		formatter: formatter{host: cfg.HostName, publicURL: cfg.PublicURL, location: time.UTC, now: clock.now},
 	}
 	for _, channel := range channels {
@@ -888,5 +877,58 @@ func TestEscalationIsRecordedAsItsOwnDeliveryKind(t *testing.T) {
 	deliveries := st.byChannel(KindTelegram)
 	if len(deliveries) != 1 || deliveries[0].Kind != store.DeliveryEscalated {
 		t.Errorf("deliveries = %+v, want one escalated delivery", deliveries)
+	}
+}
+
+// TestDeliverDeferredSendsCatchUp verifies that pages held by the gate are
+// delivered as one catch-up message once their ready time passes.
+func TestDeliverDeferredSendsCatchUp(t *testing.T) {
+	notifier, st, cl := newTestNotifier(t, &fakeChannel{kind: KindTelegram})
+	notifier.cfg.Notify.Silent.StandDownAfter = 0
+	incident := incident(1, store.SeverityWarning)
+	incident.Rule = "host.disk"
+	incident.Subject = "/"
+	st.incidents = append(st.incidents, incident)
+	channel := notifier.channels[KindTelegram].(*fakeChannel)
+
+	notifier.deferIncident(channel, store.DeliveryOpened, incident, Decision{
+		Status: GateHeld, ReadyAt: cl.Now().Add(-time.Second),
+	})
+	notifier.deliverDeferred(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages = %d, want one catch-up message", got)
+	}
+	if text := channel.messages()[0].Text; !strings.Contains(text, "held while quiet") {
+		t.Fatalf("message = %q, want the quiet-hours header", text)
+	}
+	// A second call has nothing left to send.
+	notifier.deliverDeferred(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages after second call = %d, want still 1", got)
+	}
+}
+
+// TestMaybeStandDownSendsOnce verifies the all-quiet notice is sent once
+// per quiet period and never while an incident is open.
+func TestMaybeStandDownSendsOnce(t *testing.T) {
+	notifier, _, cl := newTestNotifier(t, &fakeChannel{kind: KindTelegram})
+	notifier.cfg.Notify.Silent.StandDownAfter = time.Hour
+	notifier.cfg.Notify.DigestChannels = []string{"telegram"}
+	channel := notifier.channels[KindTelegram].(*fakeChannel)
+
+	notifier.mu.Lock()
+	notifier.lastPageAt = cl.Now().Add(-2 * time.Hour)
+	notifier.mu.Unlock()
+
+	notifier.maybeStandDown(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages = %d, want one all-quiet notice", got)
+	}
+	if text := channel.messages()[0].Text; !strings.Contains(text, "all quiet") {
+		t.Fatalf("message = %q, want the all-quiet text", text)
+	}
+	notifier.maybeStandDown(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages after second call = %d, want still 1", got)
 	}
 }

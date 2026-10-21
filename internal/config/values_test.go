@@ -444,6 +444,23 @@ func variableCases() map[string]valueCase {
 			check: wantString(func(c *Config) string { return c.Notify.Webhook.Secret }, "s3cret"),
 		},
 
+		// Presentation
+		"RAEDAR_SUBJECT_NAMES": {
+			value: "fallback@file=Unrouted traffic, certbot.*=Certificates",
+			check: func(t *testing.T, c *Config) {
+				t.Helper()
+				if got := c.SubjectNames.Display("fallback@file"); got != "Unrouted traffic" {
+					t.Errorf("Display(fallback@file) = %q", got)
+				}
+				if got := c.SubjectNames.Display("certbot.service"); got != "Certificates" {
+					t.Errorf("Display(certbot.service) = %q", got)
+				}
+				if got := c.SubjectNames.Display("host.disk"); got != "host.disk" {
+					t.Errorf("Display(host.disk) = %q, want unchanged", got)
+				}
+			},
+		},
+
 		// Heartbeats
 		"RAEDAR_HEARTBEAT_URL": {
 			value: "https://hb.example.com/host-1",
@@ -625,6 +642,7 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_SMS_HTTP_ENCODING",
 		"RAEDAR_WEBHOOK_URL",
 		"RAEDAR_WEBHOOK_SECRET",
+		"RAEDAR_SUBJECT_NAMES",
 		"RAEDAR_HEARTBEAT_URL",
 		"RAEDAR_HEARTBEAT_HEADER",
 		"RAEDAR_HEARTBEAT_INTERVAL",

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/clock"
+	"github.com/mmrzaf/raedar/internal/config"
 	"github.com/mmrzaf/raedar/internal/rules"
 	"github.com/mmrzaf/raedar/internal/store"
 	"github.com/mmrzaf/raedar/internal/testdb"
@@ -149,6 +150,17 @@ func insertIncident(t *testing.T, ctx context.Context, st *store.Store, rule, su
 	}
 	incident.ID = id
 	return incident
+}
+
+// minimalConfig returns the test config restricted to the telegram
+// channel so a test can count delivery rows precisely.
+func minimalConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := testConfig(t)
+	cfg.Notify.WarningChannels = []string{"telegram"}
+	cfg.Notify.CriticalChannels = []string{"telegram"}
+	cfg.Notify.DigestChannels = []string{"telegram"}
+	return cfg
 }
 
 func integrationNotifier(t *testing.T, st *store.Store, chatIDs []string, tg Channel) *Notifier {

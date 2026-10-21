@@ -102,14 +102,14 @@ type Source struct {
 // NewSource returns a Source. dedupe records which update_ids have been
 // processed; it must be safe to call from multiple goroutines.
 func NewSource(cfg *config.Config, logger *slog.Logger, cl clock.Clock, dedupe DedupeFunc) *Source {
-	chatIDs := make([]int64, len(cfg.Notify.Telegram.ChatIDs))
-	for i, s := range cfg.Notify.Telegram.ChatIDs {
-		id, err := strconv.ParseInt(s, 10, 64)
+	chatIDs := make([]int64, 0, len(cfg.Notify.Telegram.ChatIDs))
+	for _, value := range cfg.Notify.Telegram.ChatIDs {
+		id, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
-			logger.Warn("skipping chat id (not numeric)", slog.String("value", s))
+			logger.Warn("skipping chat id (not numeric)", slog.String("value", value))
 			continue
 		}
-		chatIDs[i] = id
+		chatIDs = append(chatIDs, id)
 	}
 	return &Source{
 		APIURL:     cfg.Notify.Telegram.APIURL,

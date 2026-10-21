@@ -106,8 +106,26 @@ type formatter struct {
 	location *time.Location
 	// deploys holds the deploy context of an app.
 	deploys map[int64]deployContext
+	// names renames an incident subject for display.
+	names func(string) string
 	// now is the time the message is built at.
 	now time.Time
+}
+
+// subjectName returns the display name of an incident: the app name when
+// the incident has one, otherwise the configured subject name or the
+// subject itself.
+func (f formatter) subjectName(incident store.Incident) string {
+	if name := incidentApp(incident); name != "" {
+		return name
+	}
+	subject := incident.Subject
+	if f.names != nil {
+		if name := f.names(subject); name != "" {
+			return name
+		}
+	}
+	return subject
 }
 
 // deployContext describes the deploy that preceded an incident.
@@ -354,10 +372,7 @@ func (f formatter) smsText(g group) string {
 	case 1:
 		incident := incidents[0]
 		severity := strings.ToUpper(string(incident.Severity))
-		name := incidentApp(incident)
-		if name == "" {
-			name = incident.Subject
-		}
+		name := f.subjectName(incident)
 		summary := smsSummary(incident)
 		if g.kind == store.DeliveryResolved {
 			minutes := int(incidentDuration(incident).Round(time.Minute) / time.Minute)
@@ -379,11 +394,7 @@ func (f formatter) smsText(g group) string {
 			limit = 2
 		}
 		for _, incident := range incidents[:limit] {
-			name := incidentApp(incident)
-			if name == "" {
-				name = incident.Subject
-			}
-			names = append(names, name+" "+shortRule(incident.Rule))
+			names = append(names, f.subjectName(incident)+" "+shortRule(incident.Rule))
 		}
 		if remaining := len(incidents) - limit; remaining > 0 {
 			names = append(names, fmt.Sprintf("+%d", remaining))

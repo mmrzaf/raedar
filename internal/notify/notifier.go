@@ -156,6 +156,9 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 		publicURL: cfg.PublicURL,
 		location:  cfg.Location,
 	}
+	if !cfg.SubjectNames.Empty() {
+		notifier.formatter.names = cfg.SubjectNames.Display
+	}
 	notifier.gate = &Gate{
 		Store:          st,
 		Logger:         logger,
