@@ -493,3 +493,19 @@ func TestLatestEvents(t *testing.T) {
 		t.Errorf("events = %+v, want the newest three, newest first", events)
 	}
 }
+
+// TestAddDeliveryAcceptsEveryGateStatus verifies that the status constraint
+// allows each disposition the paging gate records.
+func TestAddDeliveryAcceptsEveryGateStatus(t *testing.T) {
+	st := newStore(t)
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	for _, status := range []string{"pending", "sent", "failed", "silenced", "acked", "held", "cooldown"} {
+		if _, err := st.AddDelivery(context.Background(), Delivery{
+			Kind: DeliveryOpened, Channel: "telegram", CreatedAt: time.Now(), Status: status,
+		}); err != nil {
+			t.Errorf("status %q rejected: %v", status, err)
+		}
+	}
+}

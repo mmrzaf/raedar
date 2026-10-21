@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func TestSourcePullIgnoresUnknownChatsAndParsesTimestamps(t *testing.T) {
 		HTTP:       server.Client(),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:      clock.System(),
-		Deduper:    func(ctx context.Context, id int64) (bool, error) { return false, nil },
+		Claim:      func(ctx context.Context, id int64) (bool, error) { return true, nil },
 		Dispatcher: &Dispatcher{Host: "host-1", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))},
 	}
 
@@ -83,7 +84,7 @@ func TestSourceRunStopsOnContextCancel(t *testing.T) {
 		HTTP:       server.Client(),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:      clock.System(),
-		Deduper:    func(ctx context.Context, id int64) (bool, error) { return false, nil },
+		Claim:      func(ctx context.Context, id int64) (bool, error) { return true, nil },
 		Dispatcher: &Dispatcher{Host: "host-1", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -127,7 +128,7 @@ func TestSourceDispatchesAndReplies(t *testing.T) {
 		HTTP:       server.Client(),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Clock:      clock.System(),
-		Deduper:    func(ctx context.Context, id int64) (bool, error) { return false, nil },
+		Claim:      func(ctx context.Context, id int64) (bool, error) { return true, nil },
 		Dispatcher: dispatcher,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -157,7 +158,6 @@ func (s *stubNotifier) SendReply(ctx context.Context, chatID int64, text string)
 // accepts the type.
 type nilStore struct{}
 
-func (nilStore) RecordProcessedUpdate(context.Context, int64) (bool, error) { return false, nil }
 func (nilStore) FindActiveSilence(context.Context, string, string, *int64, time.Time) (*store.Silence, error) {
 	return nil, nil
 }
@@ -170,9 +170,144 @@ func (nilStore) AckIncident(context.Context, int64, time.Time, string) (bool, er
 func (nilStore) OpenIncidents(context.Context) (map[store.IncidentKey]store.Incident, error) {
 	return nil, nil
 }
-func (nilStore) LookupDeliveryByTelegramMessageID(context.Context, int64) (*store.Delivery, error) {
+func (nilStore) TelegramMessageDeliveries(context.Context, int64, int64) ([]store.Delivery, error) {
 	return nil, nil
 }
 func (nilStore) ActiveSilences(context.Context, time.Time) ([]store.Silence, error) {
 	return nil, nil
+}
+
+// recordingStore is a dispatcher store with scripted answers.
+type recordingStore struct {
+	nilStore
+	incidents  map[int64]store.Incident
+	deliveries []store.Delivery
+	silences   []store.Silence
+	acked      bool
+}
+
+func (s *recordingStore) IncidentByID(_ context.Context, id int64) (*store.Incident, error) {
+	if incident, ok := s.incidents[id]; ok {
+		return &incident, nil
+	}
+	return nil, nil
+}
+
+func (s *recordingStore) AckIncident(context.Context, int64, time.Time, string) (bool, error) {
+	acked := !s.acked
+	s.acked = true
+	return acked, nil
+}
+
+func (s *recordingStore) TelegramMessageDeliveries(context.Context, int64, int64) ([]store.Delivery, error) {
+	return s.deliveries, nil
+}
+
+func (s *recordingStore) CreateSilence(_ context.Context, silence store.Silence) (int64, error) {
+	s.silences = append(s.silences, silence)
+	return int64(len(s.silences)), nil
+}
+
+func newTestDispatcher(st Store) *Dispatcher {
+	return &Dispatcher{
+		Store:  st,
+		Host:   "host-1",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:    func() time.Time { return time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC) },
+	}
+}
+
+func execute(t *testing.T, d *Dispatcher, text string, replyTo int64) string {
+	t.Helper()
+	result, err := d.Execute(context.Background(), Message{ChatID: 5, UserID: 9, Text: text, ReplyToMessageID: replyTo})
+	if err != nil {
+		t.Fatalf("Execute(%q): %v", text, err)
+	}
+	return result.Reply.Text
+}
+
+// TestRepliesAreValidTelegramHTML verifies that usage and error replies carry
+// no raw angle brackets: Telegram rejects an unknown tag such as <rule> and the
+// operator would get no answer at all.
+func TestRepliesAreValidTelegramHTML(t *testing.T) {
+	d := newTestDispatcher(&recordingStore{})
+	for _, text := range []string{"mute", "mute a b", "ack", "ack x", "unmute", "mute 2h", "mute until 14:00"} {
+		reply := execute(t, d, text, 0)
+		if reply == "" {
+			t.Errorf("%q: no reply", text)
+		}
+		if strings.Contains(reply, "<") && !strings.Contains(reply, "&lt;") {
+			t.Errorf("%q: reply %q contains a raw tag", text, reply)
+		}
+		if strings.ContainsAny(strings.ReplaceAll(strings.ReplaceAll(reply, "&lt;", ""), "&gt;", ""), "<>") {
+			t.Errorf("%q: reply %q contains unescaped markup", text, reply)
+		}
+	}
+}
+
+func TestAckReportsAlreadyAckedAndResolved(t *testing.T) {
+	resolvedAt := time.Date(2026, 10, 20, 11, 0, 0, 0, time.UTC)
+	st := &recordingStore{incidents: map[int64]store.Incident{
+		1: {ID: 1, Rule: "route.down", Subject: "a<b"},
+		2: {ID: 2, Rule: "host.disk", Subject: "/", ResolvedAt: &resolvedAt},
+	}}
+	d := newTestDispatcher(st)
+	if reply := execute(t, d, "ack 1", 0); !strings.Contains(reply, "acked incident 1") || !strings.Contains(reply, "a&lt;b") {
+		t.Fatalf("first ack reply = %q, want an escaped confirmation", reply)
+	}
+	if reply := execute(t, d, "ack 1", 0); !strings.Contains(reply, "already acked") {
+		t.Fatalf("second ack reply = %q", reply)
+	}
+	if reply := execute(t, d, "ack 2", 0); !strings.Contains(reply, "already resolved") {
+		t.Fatalf("resolved ack reply = %q", reply)
+	}
+	if reply := execute(t, d, "ack 3", 0); !strings.Contains(reply, "does not exist") {
+		t.Fatalf("missing ack reply = %q", reply)
+	}
+}
+
+func TestMuteByReplyResolvesTheAnnouncedIncident(t *testing.T) {
+	one, two := int64(1), int64(2)
+	st := &recordingStore{
+		incidents:  map[int64]store.Incident{1: {ID: 1, Rule: "route.down", Subject: "fallback@file"}},
+		deliveries: []store.Delivery{{IncidentID: &one}},
+	}
+	d := newTestDispatcher(st)
+	if reply := execute(t, d, "mute 2h", 77); !strings.Contains(reply, "muted route.down on fallback@file") {
+		t.Fatalf("reply = %q", reply)
+	}
+	if len(st.silences) != 1 || *st.silences[0].Rule != "route.down" || *st.silences[0].Subject != "fallback@file" {
+		t.Fatalf("silences = %+v, want one for route.down on fallback@file", st.silences)
+	}
+
+	// A grouped message announces several incidents: refuse to guess.
+	st.deliveries = []store.Delivery{{IncidentID: &one}, {IncidentID: &two}}
+	if reply := execute(t, d, "mute 2h", 77); !strings.Contains(reply, "covers 2 incidents") {
+		t.Fatalf("grouped reply = %q, want the ambiguity explained", reply)
+	}
+	if len(st.silences) != 1 {
+		t.Fatalf("silences = %d, want the ambiguous mute to create none", len(st.silences))
+	}
+
+	st.deliveries = nil
+	if reply := execute(t, d, "mute 2h", 77); !strings.Contains(reply, "not a Raedar page") {
+		t.Fatalf("unknown message reply = %q", reply)
+	}
+	if reply := execute(t, d, "mute 2h", 0); !strings.Contains(reply, "reply to a paged message") {
+		t.Fatalf("bare mute reply = %q", reply)
+	}
+}
+
+func TestMuteIsBounded(t *testing.T) {
+	st := &recordingStore{}
+	d := newTestDispatcher(st)
+	if reply := execute(t, d, "mute route.down fallback@file 31d", 0); !strings.Contains(reply, "at most 30 days") {
+		t.Fatalf("reply = %q", reply)
+	}
+	if reply := execute(t, d, "mute route.down fallback@file until 2020-01-01T00:00:00Z", 0); !strings.Contains(reply, "in the past") {
+		t.Fatalf("reply = %q", reply)
+	}
+	if len(st.silences) != 0 {
+		t.Fatalf("silences = %d, want none", len(st.silences))
+	}
 }

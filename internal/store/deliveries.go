@@ -27,25 +27,41 @@ type Delivery struct {
 	SentAt *time.Time
 	// Attempts is the number of attempts made.
 	Attempts int
-	// Status is pending, sent or failed.
+	// Status is pending, sent, failed, or the reason the paging gate did not
+	// page: silenced, acked, held or cooldown.
 	Status string
 	// Error is the last error message; nil when there is none.
 	Error *string
-	// TelegramMessageID is the message_id Telegram returned from the
-	// sendMessage call that delivered this row, when the channel is
-	// telegram. The inbox replies use it to resolve reply-to messages.
+	// TelegramChatID and TelegramMessageID identify the Telegram message that
+	// delivered this row. The inbox uses the pair to resolve reply-to
+	// messages; message ids are only unique within one chat.
+	TelegramChatID    *int64
 	TelegramMessageID *int64
+}
+
+// deliveryColumns is the SELECT list scanDelivery reads.
+const deliveryColumns = `d.id, d.incident_id, d.kind, d.channel, d.created_at, d.sent_at, d.attempts,
+	d.status, d.error, d.telegram_chat_id, d.telegram_message_id`
+
+// scanDelivery reads one row selected with deliveryColumns into d, followed
+// by any extra columns.
+func scanDelivery(row pgx.Row, d *Delivery, extra ...any) error {
+	fields := append([]any{&d.ID, &d.IncidentID, &d.Kind, &d.Channel, &d.CreatedAt, &d.SentAt,
+		&d.Attempts, &d.Status, &d.Error, &d.TelegramChatID, &d.TelegramMessageID}, extra...)
+	return row.Scan(fields...)
 }
 
 // AddDelivery records a new delivery and returns its ID.
 func (s *Store) AddDelivery(ctx context.Context, delivery Delivery) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `
-		insert into deliveries (incident_id, kind, channel, created_at, sent_at, attempts, status, error, telegram_message_id)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		insert into deliveries (incident_id, kind, channel, created_at, sent_at, attempts, status, error,
+		                        telegram_chat_id, telegram_message_id)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		returning id`,
 		delivery.IncidentID, delivery.Kind, delivery.Channel, delivery.CreatedAt, delivery.SentAt,
-		delivery.Attempts, delivery.Status, delivery.Error, delivery.TelegramMessageID).Scan(&id)
+		delivery.Attempts, delivery.Status, delivery.Error, delivery.TelegramChatID,
+		delivery.TelegramMessageID).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert delivery: %w", err)
 	}
@@ -53,13 +69,14 @@ func (s *Store) AddDelivery(ctx context.Context, delivery Delivery) (int64, erro
 }
 
 // UpdateDelivery records the outcome of a delivery attempt and, when the
-// delivery succeeded via Telegram, the message_id Telegram returned. The
-// caller learns the message_id from the Telegram API response and may pass
-// it in the same call.
+// delivery succeeded via Telegram, the chat and message_id Telegram returned.
 func (s *Store) UpdateDelivery(ctx context.Context, delivery Delivery) error {
 	_, err := s.pool.Exec(ctx, `
-		update deliveries set sent_at = $2, attempts = $3, status = $4, error = $5, telegram_message_id = $6 where id = $1`,
-		delivery.ID, delivery.SentAt, delivery.Attempts, delivery.Status, delivery.Error, delivery.TelegramMessageID)
+		update deliveries
+		set sent_at = $2, attempts = $3, status = $4, error = $5, telegram_chat_id = $6, telegram_message_id = $7
+		where id = $1`,
+		delivery.ID, delivery.SentAt, delivery.Attempts, delivery.Status, delivery.Error,
+		delivery.TelegramChatID, delivery.TelegramMessageID)
 	if err != nil {
 		return fmt.Errorf("update delivery %d: %w", delivery.ID, err)
 	}
@@ -68,9 +85,8 @@ func (s *Store) UpdateDelivery(ctx context.Context, delivery Delivery) error {
 
 // Deliveries returns the deliveries of one incident, newest first.
 func (s *Store) Deliveries(ctx context.Context, incidentID int64) ([]Delivery, error) {
-	rows, err := s.pool.Query(ctx, `
-		select id, incident_id, kind, channel, created_at, sent_at, attempts, status, error, telegram_message_id
-		from deliveries where incident_id = $1 order by created_at desc, id desc`, incidentID)
+	rows, err := s.pool.Query(ctx, `select `+deliveryColumns+`
+		from deliveries d where d.incident_id = $1 order by d.created_at desc, d.id desc`, incidentID)
 	if err != nil {
 		return nil, fmt.Errorf("read deliveries: %w", err)
 	}
@@ -78,9 +94,7 @@ func (s *Store) Deliveries(ctx context.Context, incidentID int64) ([]Delivery, e
 	var deliveries []Delivery
 	for rows.Next() {
 		var delivery Delivery
-		if err := rows.Scan(&delivery.ID, &delivery.IncidentID, &delivery.Kind, &delivery.Channel,
-			&delivery.CreatedAt, &delivery.SentAt, &delivery.Attempts, &delivery.Status, &delivery.Error,
-			&delivery.TelegramMessageID); err != nil {
+		if err := scanDelivery(rows, &delivery); err != nil {
 			return nil, fmt.Errorf("scan delivery: %w", err)
 		}
 		deliveries = append(deliveries, delivery)
@@ -105,25 +119,31 @@ type AppDayStats struct {
 	Latency Histogram
 }
 
-// LookupDeliveryByTelegramMessageID returns the delivery whose
-// telegram_message_id matches. Returns (nil, nil) when no row matches.
-// Replies to a paged Telegram message use this to find the original
-// (rule, subject) so that `mute 2h` knows what to silence.
-func (s *Store) LookupDeliveryByTelegramMessageID(ctx context.Context, messageID int64) (*Delivery, error) {
-	var delivery Delivery
-	err := s.pool.QueryRow(ctx, `
-		select id, incident_id, kind, channel, created_at, sent_at, attempts, status, error, telegram_message_id
-		from deliveries where telegram_message_id = $1`, messageID).
-		Scan(&delivery.ID, &delivery.IncidentID, &delivery.Kind, &delivery.Channel,
-			&delivery.CreatedAt, &delivery.SentAt, &delivery.Attempts, &delivery.Status,
-			&delivery.Error, &delivery.TelegramMessageID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+// TelegramMessageDeliveries returns the deliveries carried by one Telegram
+// message, oldest first. A reply to a paged message uses it to find the
+// incidents the message announced; a grouped message returns one row per
+// incident.
+func (s *Store) TelegramMessageDeliveries(ctx context.Context, chatID, messageID int64) ([]Delivery, error) {
+	rows, err := s.pool.Query(ctx, `select `+deliveryColumns+`
+		from deliveries d
+		where d.telegram_chat_id = $1 and d.telegram_message_id = $2
+		order by d.id`, chatID, messageID)
 	if err != nil {
-		return nil, fmt.Errorf("read delivery by telegram message id: %w", err)
+		return nil, fmt.Errorf("read telegram message deliveries: %w", err)
 	}
-	return &delivery, nil
+	defer rows.Close()
+	var deliveries []Delivery
+	for rows.Next() {
+		var delivery Delivery
+		if err := scanDelivery(rows, &delivery); err != nil {
+			return nil, fmt.Errorf("scan delivery: %w", err)
+		}
+		deliveries = append(deliveries, delivery)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read telegram message deliveries: %w", err)
+	}
+	return deliveries, nil
 }
 
 // AppDayStats sums the hourly data of every app over a time range.
@@ -193,9 +213,7 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]DeliveryRow,
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		select d.id, d.incident_id, d.kind, d.channel, d.created_at, d.sent_at, d.attempts,
-		       d.status, d.error, d.telegram_message_id,
-		       coalesce(i.rule, ''), coalesce(i.subject, '')
+		select `+deliveryColumns+`, coalesce(i.rule, ''), coalesce(i.subject, '')
 		from deliveries d
 		left join incidents i on i.id = d.incident_id
 		order by d.created_at desc, d.id desc
@@ -207,9 +225,7 @@ func (s *Store) RecentDeliveries(ctx context.Context, limit int) ([]DeliveryRow,
 	out := make([]DeliveryRow, 0, limit)
 	for rows.Next() {
 		var row DeliveryRow
-		if err := rows.Scan(&row.ID, &row.IncidentID, &row.Kind, &row.Channel, &row.CreatedAt,
-			&row.SentAt, &row.Attempts, &row.Status, &row.Error, &row.TelegramMessageID,
-			&row.Rule, &row.Subject); err != nil {
+		if err := scanDelivery(rows, &row.Delivery, &row.Rule, &row.Subject); err != nil {
 			return nil, fmt.Errorf("scan delivery row: %w", err)
 		}
 		out = append(out, row)

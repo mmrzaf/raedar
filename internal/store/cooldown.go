@@ -8,20 +8,20 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// LastSent returns the most recent sent delivery for a (rule, subject)
-// pair, or nil when nothing has been delivered for that pair yet.
-// Used by the gate to implement pager cooldown.
+// LastSent returns the most recent sent opening or escalation page for a
+// (rule, subject) pair, or nil when none was sent yet. The gate uses it to
+// implement the pager cooldown; resolutions and tests do not count.
 func (s *Store) LastSent(ctx context.Context, rule, subject string) (*Delivery, error) {
 	var d Delivery
-	err := s.pool.QueryRow(ctx, `
-		select d.id, d.incident_id, d.kind, d.channel, d.created_at, d.sent_at, d.attempts, d.status, d.error, d.telegram_message_id
+	row := s.pool.QueryRow(ctx, `
+		select `+deliveryColumns+`
 		from deliveries d
 		join incidents i on i.id = d.incident_id
 		where i.rule = $1 and i.subject = $2
-		  and d.status = 'sent'
+		  and d.status = 'sent' and d.kind in ('opened', 'escalated')
 		order by d.sent_at desc nulls last, d.id desc
-		limit 1`, rule, subject).
-		Scan(&d.ID, &d.IncidentID, &d.Kind, &d.Channel, &d.CreatedAt, &d.SentAt, &d.Attempts, &d.Status, &d.Error, &d.TelegramMessageID)
+		limit 1`, rule, subject)
+	err := scanDelivery(row, &d)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

@@ -1,5 +1,5 @@
 -- Telegram inbound inbox tracking, ack metadata on incidents, and the wider
--- deliveries.status and .kind check constraints used by the new paging gate.
+-- deliveries.status check constraint used by the paging gate.
 
 create table telegram_inbox (
     -- The update_id we have already processed. Rows are deduped against this
@@ -16,10 +16,10 @@ alter table incidents add column acked_at timestamptz;
 alter table incidents add column acked_by text;
 
 -- Widen the deliveries.status check: in addition to 'pending', 'sent' and
--- 'failed', the paging gate writes 'silenced', 'cooldown', 'held', 'stand_down'
--- and 'escalated_blocked' so the deliveries page reflects every reason a page
--- did not happen. Drop the existing constraint if present so the migration is
--- idempotent against upgrades from versions where it was named differently.
+-- 'failed', the paging gate writes 'silenced', 'acked', 'held' and 'cooldown'
+-- so the deliveries page reflects every reason a page did not happen. The
+-- existing constraint is found by its definition because it was created
+-- unnamed.
 do $$
 declare name text;
 begin
@@ -33,4 +33,4 @@ begin
     end loop;
 end$$;
 alter table deliveries add constraint deliveries_status_check
-    check (status in ('pending', 'sent', 'failed', 'silenced', 'cooldown', 'held', 'stand_down', 'escalated_blocked'));
+    check (status in ('pending', 'sent', 'failed', 'silenced', 'acked', 'held', 'cooldown'));

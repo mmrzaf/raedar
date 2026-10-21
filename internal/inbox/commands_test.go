@@ -43,12 +43,11 @@ func TestParseRejectsNonCommands(t *testing.T) {
 	}
 }
 
-func TestParseMuteArgsSilent(t *testing.T) {
-	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	restore := setNow(now)
-	defer restore()
+// now is the fixed clock the mute parsing tests use.
+var now = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 
-	_, _, endsAt, err := ParseMuteArgs([]string{"2h"})
+func TestParseMuteArgsSilent(t *testing.T) {
+	_, _, endsAt, err := ParseMuteArgs([]string{"2h"}, now)
 	if err != nil {
 		t.Fatalf("ParseMuteArgs error = %v", err)
 	}
@@ -59,7 +58,7 @@ func TestParseMuteArgsSilent(t *testing.T) {
 }
 
 func TestParseMuteArgsSilentUntil(t *testing.T) {
-	_, _, endsAt, err := ParseMuteArgs([]string{"until", "2026-10-21T08:00:00Z"})
+	_, _, endsAt, err := ParseMuteArgs([]string{"until", "2026-10-21T08:00:00Z"}, now)
 	if err != nil {
 		t.Fatalf("ParseMuteArgs error = %v", err)
 	}
@@ -70,21 +69,20 @@ func TestParseMuteArgsSilentUntil(t *testing.T) {
 }
 
 func TestParseMuteArgsFull(t *testing.T) {
-	rule, subject, endsAt, err := ParseMuteArgs([]string{"route.down", "fallback@file", "30m"})
+	rule, subject, endsAt, err := ParseMuteArgs([]string{"route.down", "fallback@file", "30m"}, now)
 	if err != nil {
 		t.Fatalf("ParseMuteArgs error = %v", err)
 	}
 	if rule != "route.down" || subject != "fallback@file" {
 		t.Fatalf("got rule=%q subject=%q", rule, subject)
 	}
-	wantEnd := time.Now().Add(30 * time.Minute)
-	if d := endsAt.Sub(wantEnd); d < -time.Second || d > time.Second {
-		t.Fatalf("endsAt drift = %v", d)
+	if want := now.Add(30 * time.Minute); !endsAt.Equal(want) {
+		t.Fatalf("endsAt = %v, want %v", endsAt, want)
 	}
 }
 
 func TestParseMuteArgsFullUntil(t *testing.T) {
-	rule, subject, endsAt, err := ParseMuteArgs([]string{"route.down", "fallback@file", "until", "2026-10-21T08:00:00Z"})
+	rule, subject, endsAt, err := ParseMuteArgs([]string{"route.down", "fallback@file", "until", "2026-10-21T08:00:00Z"}, now)
 	if err != nil {
 		t.Fatalf("ParseMuteArgs error = %v", err)
 	}
@@ -106,13 +104,14 @@ func TestParseMuteArgsErrors(t *testing.T) {
 		{"route.down", "fallback@file", "until", "not-a-time"},
 		{"route.down", "fallback@file", "banana"},
 		{"route.down", "fallback@file", "-5m"},
+		{"route.down", "fallback@file", "30m", "extra"},
 		{"until"},
 		{"until", "not-a-time"},
 		{"not-a-duration"},
 		{"-1h"},
 	}
 	for _, args := range cases {
-		_, _, _, err := ParseMuteArgs(args)
+		_, _, _, err := ParseMuteArgs(args, now)
 		if err == nil {
 			t.Fatalf("ParseMuteArgs(%v) = nil err, want error", args)
 		}
@@ -146,12 +145,4 @@ func TestParseUnmuteArgs(t *testing.T) {
 	if id != 7 {
 		t.Fatalf("id = %d", id)
 	}
-}
-
-// setNow swaps time.Now for the duration of a test. Returns a function
-// that restores the package-private reference.
-func setNow(now time.Time) func() {
-	prev := nowFunc
-	nowFunc = func() time.Time { return now }
-	return func() { nowFunc = prev }
 }

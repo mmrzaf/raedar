@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"strings"
 	"time"
@@ -13,19 +14,17 @@ import (
 
 // Store is the slice of *store.Store the dispatcher uses.
 type Store interface {
-	RecordProcessedUpdate(ctx context.Context, updateID int64) (bool, error)
 	CreateSilence(ctx context.Context, silence store.Silence) (int64, error)
 	DeleteSilence(ctx context.Context, id int64) (bool, error)
 	AckIncident(ctx context.Context, id int64, at time.Time, by string) (bool, error)
 	IncidentByID(ctx context.Context, id int64) (*store.Incident, error)
 	OpenIncidents(ctx context.Context) (map[store.IncidentKey]store.Incident, error)
-	LookupDeliveryByTelegramMessageID(ctx context.Context, messageID int64) (*store.Delivery, error)
+	TelegramMessageDeliveries(ctx context.Context, chatID, messageID int64) ([]store.Delivery, error)
 	ActiveSilences(ctx context.Context, now time.Time) ([]store.Silence, error)
 }
 
-// notifier is what the dispatcher needs from the pager. Phase 2 wires
-// enough to acknowledge; the mute reply is enough to suppress pages
-// until the silence expires.
+// notifier is what the dispatcher needs from the pager: a way to answer the
+// operator.
 type notifier interface {
 	SendReply(ctx context.Context, chatID int64, text string) error
 }
@@ -39,6 +38,18 @@ type Dispatcher struct {
 	// AckBy is the identifier written to incidents.acked_by when an operator
 	// acks through Telegram. Typically "telegram:<user-id>".
 	AckBy func(chatID, userID int64) string
+	// Now returns the current time. Nil means time.Now.
+	Now func() time.Time
+	// Location formats times in replies. Nil means UTC.
+	Location *time.Location
+}
+
+// now returns the dispatcher clock.
+func (d *Dispatcher) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+	return time.Now()
 }
 
 // Reply is one Telegram reply the dispatcher wants to send. The inbox
@@ -54,8 +65,8 @@ type Result struct {
 }
 
 // Execute is the dispatcher. It parses the command, applies state, and
-// returns the reply to send back. The Reply in Result.Text is HTML;
-// the inbox Source passes it straight to the Telegram channel.
+// returns the reply to send back. The reply text is Telegram HTML, so every
+// piece of operator or database text in it is escaped.
 func (d *Dispatcher) Execute(ctx context.Context, msg Message) (Result, error) {
 	cmd, err := Parse(msg.Text)
 	if err != nil {
@@ -81,9 +92,9 @@ func (d *Dispatcher) Execute(ctx context.Context, msg Message) (Result, error) {
 	return Result{}, fmt.Errorf("unsupported command %q", cmd.Name)
 }
 
-// Send the reply to Telegram via the configured notifier. Called by the
-// Source loop after Execute returns. Returns an error when no reply
-// is configured or when the channel rejects the send.
+// SendReply sends the reply to Telegram through the configured notifier. The
+// Source loop calls it after Execute returns. It fails when no notifier is
+// configured or the channel rejects the send.
 func (d *Dispatcher) SendReply(ctx context.Context, result Result) error {
 	if result.Reply.Text == "" {
 		return nil
@@ -94,8 +105,23 @@ func (d *Dispatcher) SendReply(ctx context.Context, result Result) error {
 	return d.Notifier.SendReply(ctx, result.Reply.ChatID, result.Reply.Text)
 }
 
+// reply answers with text that is already Telegram HTML.
 func (d *Dispatcher) reply(msg Message, text string) Result {
 	return Result{Reply: Reply{ChatID: msg.ChatID, Text: text}}
+}
+
+// plain answers with text that may contain characters HTML treats as markup,
+// such as the <rule> placeholders of a usage message.
+func (d *Dispatcher) plain(msg Message, text string) Result {
+	return d.reply(msg, html.EscapeString(text))
+}
+
+// location returns the zone replies are formatted in.
+func (d *Dispatcher) location() *time.Location {
+	if d.Location != nil {
+		return d.Location
+	}
+	return time.UTC
 }
 
 func (d *Dispatcher) status(ctx context.Context, msg Message) (Result, error) {
@@ -103,104 +129,127 @@ func (d *Dispatcher) status(ctx context.Context, msg Message) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("read open incidents: %w", err)
 	}
-	now := time.Now()
+	now := d.now()
 	active, err := d.Store.ActiveSilences(ctx, now)
 	if err != nil {
 		return Result{}, fmt.Errorf("read silences: %w", err)
 	}
-	text := formatStatus(d.Host, open, active, now)
-	return d.reply(msg, text), nil
+	return d.reply(msg, formatStatus(d.Host, open, active, now)), nil
 }
 
 func (d *Dispatcher) ack(ctx context.Context, msg Message, cmd Command) (Result, error) {
 	id, err := ParseAckArgs(cmd.Args)
 	if err != nil {
-		return d.reply(msg, err.Error()), nil
+		return d.plain(msg, err.Error()), nil
 	}
 	incident, err := d.Store.IncidentByID(ctx, id)
 	if err != nil {
-		return d.reply(msg, fmt.Sprintf("could not read incident %d: %v", id, err)), nil
+		return Result{}, fmt.Errorf("read incident %d: %w", id, err)
 	}
 	if incident == nil {
-		return d.reply(msg, fmt.Sprintf("incident %d does not exist", id)), nil
+		return d.plain(msg, fmt.Sprintf("incident %d does not exist", id)), nil
 	}
 	if incident.ResolvedAt != nil {
-		return d.reply(msg, fmt.Sprintf("incident %d is already resolved", id)), nil
+		return d.plain(msg, fmt.Sprintf("incident %d is already resolved", id)), nil
 	}
-	if incident.Acked() {
-		return d.reply(msg, fmt.Sprintf("incident %d was already acked", id)), nil
-	}
-	acked, err := d.Store.AckIncident(ctx, id, time.Now(), d.ackBy(msg))
+	acked, err := d.Store.AckIncident(ctx, id, d.now(), d.ackBy(msg))
 	if err != nil {
-		return d.reply(msg, fmt.Sprintf("could not ack: %v", err)), nil
+		return Result{}, err
 	}
 	if !acked {
-		return d.reply(msg, fmt.Sprintf("incident %d was already acked by another operator", id)), nil
+		return d.plain(msg, fmt.Sprintf("incident %d was already acked", id)), nil
 	}
 	return d.reply(msg, fmt.Sprintf("acked incident %d (%s on %s)",
-		id, incident.Rule, incident.Subject)), nil
+		id, html.EscapeString(incident.Rule), html.EscapeString(incident.Subject))), nil
 }
 
 func (d *Dispatcher) mute(ctx context.Context, msg Message, cmd Command) (Result, error) {
-	rule, subject, endsAt, err := ParseMuteArgs(cmd.Args)
+	now := d.now()
+	rule, subject, endsAt, err := ParseMuteArgs(cmd.Args, now)
 	if err != nil {
-		return d.reply(msg, err.Error()), nil
+		return d.plain(msg, err.Error()), nil
 	}
-	// Silent form: resolve (rule, subject) from the reply-to message.
 	if rule == "" {
-		if msg.ReplyToUpdateID == 0 {
-			return d.reply(msg, "send `mute <rule> <subject> <duration>` or reply with `mute 2h` to a paged message"), nil
-		}
-		delivery, err := d.Store.LookupDeliveryByTelegramMessageID(ctx, msg.ReplyToUpdateID)
+		var problem string
+		rule, subject, problem, err = d.repliedTarget(ctx, msg)
 		if err != nil {
-			return d.reply(msg, fmt.Sprintf("could not resolve the replied-to message: %v", err)), nil
+			return Result{}, err
 		}
-		if delivery == nil {
-			return d.reply(msg, "the message you replied to is not a Raedar page I can mute"), nil
+		if problem != "" {
+			return d.plain(msg, problem), nil
 		}
-		if delivery.IncidentID == nil {
-			return d.reply(msg, "the message you replied to is not tied to a single incident"), nil
-		}
-		incident, err := d.Store.IncidentByID(ctx, *delivery.IncidentID)
-		if err != nil || incident == nil {
-			return d.reply(msg, "the original incident is gone"), nil
-		}
-		rule = incident.Rule
-		subject = incident.Subject
 	}
-	if endsAt.Before(time.Now()) {
-		return d.reply(msg, "the requested end time is already in the past"), nil
+	if !endsAt.After(now) {
+		return d.plain(msg, "the requested end time is already in the past"), nil
+	}
+	if endsAt.Sub(now) > store.MaxSilenceDuration {
+		return d.plain(msg, fmt.Sprintf("a mute may last at most %d days", int(store.MaxSilenceDuration/(24*time.Hour)))), nil
 	}
 	id, err := d.Store.CreateSilence(ctx, store.Silence{
 		Kind:      store.SilenceOneShotMute,
-		Rule:      stringPtr(rule),
-		Subject:   stringPtr(subject),
+		Rule:      &rule,
+		Subject:   &subject,
 		Reason:    d.ackBy(msg),
-		StartsAt:  time.Now(),
+		StartsAt:  now,
 		EndsAt:    endsAt,
 		CreatedBy: stringPtr("telegram"),
 		Comment:   stringPtr(msg.Text),
 	})
 	if err != nil {
-		return d.reply(msg, fmt.Sprintf("could not record the silence: %v", err)), nil
+		return Result{}, fmt.Errorf("record silence: %w", err)
 	}
 	return d.reply(msg, fmt.Sprintf("muted %s on %s until %s (silence #%d)",
-		rule, subject, endsAt.In(time.Local).Format(time.RFC1123), id)), nil
+		html.EscapeString(rule), html.EscapeString(subject),
+		endsAt.In(d.location()).Format("Mon 02 Jan 15:04 MST"), id)), nil
+}
+
+// repliedTarget resolves the (rule, subject) a short `mute` refers to from the
+// paged message the operator replied to. When it cannot, problem says why in
+// words for the operator.
+func (d *Dispatcher) repliedTarget(ctx context.Context, msg Message) (rule, subject, problem string, err error) {
+	if msg.ReplyToMessageID == 0 {
+		return "", "", "reply to a paged message, or send mute <rule> <subject> <duration>", nil
+	}
+	deliveries, err := d.Store.TelegramMessageDeliveries(ctx, msg.ChatID, msg.ReplyToMessageID)
+	if err != nil {
+		return "", "", "", fmt.Errorf("resolve replied-to message: %w", err)
+	}
+	incidents := make(map[int64]bool)
+	for _, delivery := range deliveries {
+		if delivery.IncidentID != nil {
+			incidents[*delivery.IncidentID] = true
+		}
+	}
+	switch len(incidents) {
+	case 0:
+		return "", "", "the message you replied to is not a Raedar page I can mute", nil
+	case 1:
+	default:
+		return "", "", fmt.Sprintf("that message covers %d incidents; send mute <rule> <subject> <duration> for the one you want", len(incidents)), nil
+	}
+	incident, err := d.Store.IncidentByID(ctx, *deliveries[0].IncidentID)
+	if err != nil {
+		return "", "", "", fmt.Errorf("read incident %d: %w", *deliveries[0].IncidentID, err)
+	}
+	if incident == nil {
+		return "", "", "the incident of that message no longer exists", nil
+	}
+	return incident.Rule, incident.Subject, "", nil
 }
 
 func (d *Dispatcher) unmute(ctx context.Context, msg Message, cmd Command) (Result, error) {
 	id, err := ParseUnmuteArgs(cmd.Args)
 	if err != nil {
-		return d.reply(msg, err.Error()), nil
+		return d.plain(msg, err.Error()), nil
 	}
 	deleted, err := d.Store.DeleteSilence(ctx, id)
 	if err != nil {
-		return d.reply(msg, fmt.Sprintf("could not delete silence %d: %v", id, err)), nil
+		return Result{}, err
 	}
 	if !deleted {
-		return d.reply(msg, fmt.Sprintf("silence %d does not exist (or already expired)", id)), nil
+		return d.plain(msg, fmt.Sprintf("silence %d does not exist", id)), nil
 	}
-	return d.reply(msg, fmt.Sprintf("removed silence #%d", id)), nil
+	return d.plain(msg, fmt.Sprintf("removed silence #%d", id)), nil
 }
 
 // ackBy returns the identifier the dispatcher writes to
@@ -214,25 +263,26 @@ func (d *Dispatcher) ackBy(msg Message) string {
 
 func stringPtr(s string) *string { return &s }
 
-// helpText is the response to `help`. The Telegram-style Markdown is
-// limited to code blocks and a few inline markers; we keep it minimal.
+// helpText is the response to `help`. Replies use Telegram's HTML parse
+// mode, so the commands are wrapped in <b>.
 func helpText() string {
 	return strings.TrimSpace(`
-Raedar commands
+<b>Raedar commands</b>
 
-*help* — this message
-*status* — open incidents and active silences
-*ack <id>* — mark an incident acked; all its messages stop
-*mute <rule> <subject> <duration>* — silence one (rule, subject)
-*mute <rule> <subject> until <RFC3339>* — silence until a timestamp
-*reply "mute 2h"* — silence the (rule, subject) of a paged message
-*reply "mute until 14:00"* — same, with an explicit end time
-*unmute <silence-id>* — remove a silence
+<b>help</b> — this message
+<b>status</b> — open incidents and active silences
+<b>ack &lt;id&gt;</b> — acknowledge an incident; all its later messages stop
+<b>mute &lt;rule&gt; &lt;subject&gt; &lt;duration&gt;</b> — silence one (rule, subject)
+<b>mute &lt;rule&gt; &lt;subject&gt; until &lt;RFC3339&gt;</b> — silence until a timestamp
+reply <b>mute 2h</b> — silence the (rule, subject) of a paged message
+reply <b>mute until 2026-10-21T08:00:00Z</b> — same, with an explicit end
+<b>unmute &lt;silence-id&gt;</b> — remove a silence
 
-Durations are Go durations: 30s, 5m, 2h, 14d.
+Durations are like 30s, 5m, 2h or 14d.
 `)
 }
 
+// formatStatus renders the status reply as Telegram HTML.
 func formatStatus(host string, open map[store.IncidentKey]store.Incident, silences []store.Silence, now time.Time) string {
 	critical := 0
 	warning := 0
@@ -245,7 +295,7 @@ func formatStatus(host string, open map[store.IncidentKey]store.Incident, silenc
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s · %d open (%d critical, %d warning) · %d active silences\n",
-		host, len(open), critical, warning, len(silences))
+		html.EscapeString(host), len(open), critical, warning, len(silences))
 	for _, silence := range silences {
 		rule := "any"
 		if silence.Rule != nil {
@@ -255,9 +305,13 @@ func formatStatus(host string, open map[store.IncidentKey]store.Incident, silenc
 		if silence.Subject != nil {
 			subject = *silence.Subject
 		}
+		scope := html.EscapeString(rule + " on " + subject)
+		if silence.AppID != nil && silence.Rule == nil && silence.Subject == nil {
+			scope = fmt.Sprintf("app #%d", *silence.AppID)
+		}
 		remaining := silence.EndsAt.Sub(now).Round(time.Minute)
-		fmt.Fprintf(&sb, "  #%d  %s  %s on %s  (%s left)\n",
-			silence.ID, silence.Kind, rule, subject, remaining)
+		fmt.Fprintf(&sb, "  #%d  %s  %s  (%s left)\n",
+			silence.ID, silence.Kind, scope, remaining)
 	}
 	return sb.String()
 }

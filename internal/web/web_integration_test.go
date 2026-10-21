@@ -496,7 +496,7 @@ func TestSilenceFormCreatesAndDeletes(t *testing.T) {
 	if !strings.Contains(page.Body.String(), "release 2.4.0") {
 		t.Fatalf("silences page does not list the new silence")
 	}
-	silences, err := server.store.ListSilences(context.Background(), 10)
+	silences, err := server.store.ListSilences(context.Background(), time.Now(), 10)
 	if err != nil || len(silences) != 1 {
 		t.Fatalf("ListSilences = %v, %v; want one", silences, err)
 	}
@@ -508,7 +508,7 @@ func TestSilenceFormCreatesAndDeletes(t *testing.T) {
 	if recorder.Code != http.StatusSeeOther {
 		t.Fatalf("delete status = %d, want 303", recorder.Code)
 	}
-	if left, _ := server.store.ListSilences(context.Background(), 10); len(left) != 0 {
+	if left, _ := server.store.ListSilences(context.Background(), time.Now(), 10); len(left) != 0 {
 		t.Fatalf("silences after delete = %d, want 0", len(left))
 	}
 
@@ -519,5 +519,32 @@ func TestSilenceFormCreatesAndDeletes(t *testing.T) {
 	handler.ServeHTTP(recorder, cross)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin status = %d, want 403", recorder.Code)
+	}
+}
+
+// TestSilenceFormRejectsUnsafeInput covers the bounds of the silence form: a
+// silence must name a rule or a subject, and may not exceed the maximum.
+func TestSilenceFormRejectsUnsafeInput(t *testing.T) {
+	server, _, _, _ := newIntegrationServer(t)
+	handler := server.Handler()
+
+	cases := map[string]url.Values{
+		"wildcard":     {"reason": {"x"}, "duration": {"1h"}},
+		"too long":     {"reason": {"x"}, "rule": {"route.down"}, "duration": {"31d"}},
+		"no reason":    {"rule": {"route.down"}, "duration": {"1h"}},
+		"bad duration": {"reason": {"x"}, "rule": {"route.down"}, "duration": {"soon"}},
+	}
+	for name, form := range cases {
+		request := httptest.NewRequest(http.MethodPost, "/silences", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request.Header.Set("Origin", "http://"+request.Host)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, recorder.Code)
+		}
+	}
+	if silences, err := server.store.ListSilences(context.Background(), time.Now(), 10); err != nil || len(silences) != 0 {
+		t.Fatalf("silences after rejected forms = %v, %v; want none", silences, err)
 	}
 }

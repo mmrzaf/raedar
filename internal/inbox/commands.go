@@ -3,6 +3,7 @@ package inbox
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,82 +58,55 @@ func Parse(text string) (Command, error) {
 	return Command{}, ErrUnknownCmd
 }
 
-// ParseMuteArgs parses the args of a `mute` command. The arg shape is:
+// muteUsage is the reply to a mute command the parser cannot read.
+const muteUsage = "usage: mute <rule> <subject> <duration>  ·  mute <rule> <subject> until <RFC3339>  ·  " +
+	"reply mute 2h to a paged message"
+
+// ParseMuteArgs parses the args of a `mute` command:
 //
-//	mute <rule> <subject> <duration|until>
+//	mute <rule> <subject> <duration>
 //	mute <rule> <subject> until <RFC3339>
+//	mute <duration>                  (a reply to a paged message)
+//	mute until <RFC3339>             (a reply to a paged message)
 //
-// and the silent form (operator just types `mute 2h` or `mute until 14:00`)
-// when the message was a reply to a paged message; in that case rule and
-// subject are nil and the caller resolves them from the replied-to delivery.
-//
-// A duration is one of "30s", "5m", "2h", "14d", or any Go duration the
-// `time.ParseDuration` accepts. A leading word `until` requests an RFC3339
-// end-time.
-//
-// End times are anchored to nowFunc so tests can fix the clock.
-func ParseMuteArgs(args []string) (rule, subject string, endsAt time.Time, err error) {
-	// Silent form: just `mute 2h` or `mute until 14:00` (subject inferred
-	// from the replied-to message).
-	if len(args) == 1 {
-		rule, subject, endsAt, err = parseMuteDuration(args[0])
-		return
+// The short forms return an empty rule and subject; the caller resolves them
+// from the replied-to message. A duration is like 30s, 5m, 2h or 14d. Relative
+// end times are anchored to now.
+func ParseMuteArgs(args []string, now time.Time) (rule, subject string, endsAt time.Time, err error) {
+	switch {
+	case len(args) == 1:
+		endsAt, err = parseMuteEnd(args, now)
+	case len(args) == 2 && strings.EqualFold(args[0], "until"):
+		endsAt, err = parseMuteEnd(args, now)
+	case len(args) == 3 || len(args) == 4:
+		rule, subject = args[0], args[1]
+		endsAt, err = parseMuteEnd(args[2:], now)
+	default:
+		err = errors.New(muteUsage)
 	}
-	if len(args) == 2 && strings.EqualFold(args[0], "until") {
-		rule, subject, endsAt, err = parseMuteUntil(args[1])
-		return
-	}
-	// Full form: rule subject <duration|until X>
-	if len(args) < 3 {
-		err = errors.New("usage: mute <rule> <subject> <duration>  ·  mute <rule> <subject> until <RFC3339>  ·  reply `mute 2h` to any paged message")
-		return
-	}
-	rule = args[0]
-	subject = args[1]
-	if strings.EqualFold(args[2], "until") {
-		if len(args) < 4 {
-			err = errors.New("usage: mute <rule> <subject> until <RFC3339>")
-			return
-		}
-		t, parseErr := time.Parse(time.RFC3339, args[3])
-		if parseErr != nil {
-			err = fmt.Errorf("until must be RFC3339, for example 2026-10-21T08:00:00Z: %w", parseErr)
-			return
-		}
-		endsAt = t
-		return
-	}
-	d, parseErr := config.ParseDuration(args[2])
-	if parseErr != nil {
-		err = fmt.Errorf("duration must be like 30s, 5m, 2h or 14d: %v", parseErr)
-		return
-	}
-	endsAt = nowFunc().Add(d)
-	return
+	return rule, subject, endsAt, err
 }
 
-func parseMuteDuration(arg string) (rule, subject string, endsAt time.Time, err error) {
-	if strings.EqualFold(arg, "until") {
-		err = errors.New("until takes an RFC3339 time, for example `mute until 2026-10-21T08:00:00Z`")
-		return
+// parseMuteEnd reads the end of a mute: a duration, or `until <RFC3339>`.
+func parseMuteEnd(args []string, now time.Time) (time.Time, error) {
+	if strings.EqualFold(args[0], "until") {
+		if len(args) != 2 {
+			return time.Time{}, errors.New("usage: until <RFC3339>, for example until 2026-10-21T08:00:00Z")
+		}
+		at, err := time.Parse(time.RFC3339, args[1])
+		if err != nil {
+			return time.Time{}, fmt.Errorf("until must be RFC3339, for example 2026-10-21T08:00:00Z: %w", err)
+		}
+		return at, nil
 	}
-	d, parseErr := config.ParseDuration(arg)
-	if parseErr != nil {
-		err = fmt.Errorf("duration must be like 30s, 5m, 2h or 14d: %v", parseErr)
-		return
+	if len(args) != 1 {
+		return time.Time{}, errors.New(muteUsage)
 	}
-	endsAt = nowFunc().Add(d)
-	return
-}
-
-func parseMuteUntil(arg string) (rule, subject string, endsAt time.Time, err error) {
-	t, parseErr := time.Parse(time.RFC3339, arg)
-	if parseErr != nil {
-		err = fmt.Errorf("until must be RFC3339, for example 2026-10-21T08:00:00Z: %w", parseErr)
-		return
+	d, err := config.ParseDuration(args[0])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("duration must be like 30s, 5m, 2h or 14d: %w", err)
 	}
-	endsAt = t
-	return
+	return now.Add(d), nil
 }
 
 // ParseAckArgs expects an incident id.
@@ -160,16 +134,9 @@ func ParseUnmuteArgs(args []string) (int64, error) {
 }
 
 func parseInt64(s string) (int64, error) {
-	var n int64
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0, errors.New("not a number")
-		}
-		n = n*10 + int64(r-'0')
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, errors.New("not a positive number")
 	}
 	return n, nil
 }
-
-// nowFunc lets tests fix the clock. Production code paths always use
-// time.Now via the closure below.
-var nowFunc = func() time.Time { return time.Now() }

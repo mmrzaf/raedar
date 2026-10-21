@@ -66,16 +66,16 @@ type Message struct {
 	ChatID    int64
 	UserID    int64
 	Text      string
-	// ReplyToUpdateID is the message_id of the message the operator
+	// ReplyToMessageID is the message_id of the message the operator
 	// replied to, or 0 when the message was a fresh command.
-	ReplyToUpdateID int64
-	ReceivedAt      time.Time
+	ReplyToMessageID int64
+	ReceivedAt       time.Time
 }
 
-// DedupeFunc records an update_id that has been handled, returning
-// whether the id had already been seen before. Implementations live in
-// the store package and must be safe for concurrent use.
-type DedupeFunc func(ctx context.Context, updateID int64) (bool, error)
+// ClaimFunc claims an update_id. It reports true when this process should
+// handle the update and false when another poll (or an earlier run) already
+// did. Implementations live in the store package.
+type ClaimFunc func(ctx context.Context, updateID int64) (bool, error)
 
 // Source polls Telegram getUpdates and dispatches commands. Each Run
 // call blocks until ctx is done.
@@ -91,17 +91,16 @@ type Source struct {
 	Logger *slog.Logger
 	Clock  clock.Clock
 
-	// Deduper records which update_ids have already been processed.
-	Deduper DedupeFunc
-	// Dispatcher parses and applies every parsed message. It is expected
-	// to also write its reply to the operator via the provided channel
-	// (typically the notifier's SendReply).
+	// Claim takes ownership of an update_id.
+	Claim ClaimFunc
+	// Dispatcher parses and applies every parsed message and writes the
+	// reply back to the operator.
 	Dispatcher *Dispatcher
 }
 
-// NewSource returns a Source. dedupe records which update_ids have been
-// processed; it must be safe to call from multiple goroutines.
-func NewSource(cfg *config.Config, logger *slog.Logger, cl clock.Clock, dedupe DedupeFunc) *Source {
+// NewSource returns a Source. claim takes ownership of an update_id and
+// dispatcher handles the parsed commands.
+func NewSource(cfg *config.Config, logger *slog.Logger, cl clock.Clock, claim ClaimFunc, dispatcher *Dispatcher) *Source {
 	chatIDs := make([]int64, 0, len(cfg.Notify.Telegram.ChatIDs))
 	for _, value := range cfg.Notify.Telegram.ChatIDs {
 		id, err := strconv.ParseInt(value, 10, 64)
@@ -119,8 +118,8 @@ func NewSource(cfg *config.Config, logger *slog.Logger, cl clock.Clock, dedupe D
 		HTTP:       &http.Client{Timeout: 60 * time.Second},
 		Logger:     logger,
 		Clock:      cl,
-		Deduper:    dedupe,
-		Dispatcher: &Dispatcher{},
+		Claim:      claim,
+		Dispatcher: dispatcher,
 	}
 }
 
@@ -146,17 +145,20 @@ func (s *Source) Run(ctx context.Context) error {
 			sleep(ctx, 5*time.Second)
 			continue
 		}
-		offset = nextOffset
+		// Advance the offset only after the batch is handled; a claim error
+		// leaves it alone so the update is retried instead of lost.
+		failed := false
 		for _, msg := range msgs {
 			if !s.chatAllowed(msg.ChatID) {
 				continue
 			}
-			seen, err := s.Deduper(ctx, msg.UpdateID)
+			claimed, err := s.Claim(ctx, msg.UpdateID)
 			if err != nil {
-				s.Logger.Warn("record update", slog.String("error", err.Error()))
-				continue
+				s.Logger.Warn("claim update", slog.String("error", err.Error()))
+				failed = true
+				break
 			}
-			if seen {
+			if !claimed {
 				continue
 			}
 			select {
@@ -170,7 +172,7 @@ func (s *Source) Run(ctx context.Context) error {
 					slog.Int64("chat", msg.ChatID),
 					slog.String("text", msg.Text),
 					slog.String("error", err.Error()))
-				continue
+				result = Result{Reply: Reply{ChatID: msg.ChatID, Text: "could not run that command, see the Raedar log"}}
 			}
 			if err := s.Dispatcher.SendReply(ctx, result); err != nil {
 				s.Logger.Warn("send reply",
@@ -178,6 +180,11 @@ func (s *Source) Run(ctx context.Context) error {
 					slog.String("error", err.Error()))
 			}
 		}
+		if failed {
+			sleep(ctx, 5*time.Second)
+			continue
+		}
+		offset = nextOffset
 	}
 }
 
@@ -188,7 +195,7 @@ func (s *Source) pull(ctx context.Context, offset int64) ([]Message, int64, erro
 	form := url.Values{
 		"offset":          {strconv.FormatInt(offset+1, 10)},
 		"timeout":         {strconv.Itoa(int(s.LongPoll.Seconds()))},
-		"allowed_updates": {`{"message":true}`},
+		"allowed_updates": {`["message"]`},
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -232,7 +239,7 @@ func (s *Source) pull(ctx context.Context, offset int64) ([]Message, int64, erro
 			msg.UserID = u.Message.From.ID
 		}
 		if u.Message.ReplyToMessage != nil {
-			msg.ReplyToUpdateID = u.Message.ReplyToMessage.MessageID
+			msg.ReplyToMessageID = u.Message.ReplyToMessage.MessageID
 		}
 		out = append(out, msg)
 	}

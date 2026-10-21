@@ -120,10 +120,12 @@ func (s *Store) UpdateIncident(ctx context.Context, incident Incident) error {
 }
 
 // ReopenIncident starts a new episode of a resolved incident, keeping its ID.
+// The ack belongs to the earlier episode, so it is cleared: the new episode
+// pages again.
 func (s *Store) ReopenIncident(ctx context.Context, incident Incident) error {
 	_, err := s.pool.Exec(ctx, `
 		update incidents
-		set resolved_at = null, opened_at = $2, severity = $3, summary = $4, details = $5
+		set resolved_at = null, acked_at = null, acked_by = null, opened_at = $2, severity = $3, summary = $4, details = $5
 		where id = $1`, incident.ID, incident.OpenedAt, incident.Severity, incident.Summary, incident.Details)
 	if err != nil {
 		return fmt.Errorf("reopen incident %d: %w", incident.ID, err)
@@ -181,21 +183,36 @@ func (s *Store) Incidents(ctx context.Context, from, to time.Time) ([]Incident, 
 	return incidents, nil
 }
 
-// IncidentByID returns one incident by id, including ack metadata. Returns
-// (nil, nil) when no row matches. The web package calls this; it lives here
-// because it is the canonical store-level incident read.
-// IncidentByID is defined in web.go to keep its dependency on store types local;
-
-// AckIncident records an ack on the incident. The first ack wins: subsequent
-// calls do not overwrite acked_at/acked_by, so the duration in the resolved
-// footer is anchored to the first ack. Returns whether the row was changed.
+// AckIncident records an ack on an open incident and reports whether this
+// call set it. The first ack wins: an already acked or resolved incident is
+// left alone and reports false, so the duration in the resolved footer is
+// anchored to the first ack.
 func (s *Store) AckIncident(ctx context.Context, id int64, at time.Time, by string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		update incidents
-		set acked_at = coalesce(acked_at, $2), acked_by = coalesce(acked_by, $3)
-		where id = $1`, id, at, by)
+		update incidents set acked_at = $2, acked_by = $3
+		where id = $1 and acked_at is null and resolved_at is null`, id, at, by)
 	if err != nil {
 		return false, fmt.Errorf("ack incident %d: %w", id, err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// IncidentByID returns one incident by id, including its ack metadata.
+// Returns (nil, nil) when no row matches.
+func (s *Store) IncidentByID(ctx context.Context, id int64) (*Incident, error) {
+	var incident Incident
+	err := s.pool.QueryRow(ctx, `
+		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at,
+		       one_shot, summary, details, acked_at, acked_by
+		from incidents where id = $1`, id).
+		Scan(&incident.ID, &incident.Rule, &incident.Subject, &incident.AppID, &incident.SlotID,
+			&incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt,
+			&incident.OneShot, &incident.Summary, &incident.Details, &incident.AckedAt, &incident.AckedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read incident %d: %w", id, err)
+	}
+	return &incident, nil
 }

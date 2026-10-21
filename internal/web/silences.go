@@ -12,10 +12,6 @@ import (
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
-// maxSilenceDuration bounds a UI-created silence so a typo cannot mute a
-// subject for a year.
-const maxSilenceDuration = 30 * 24 * time.Hour
-
 // silenceView is one row of the silences page.
 type silenceView struct {
 	ID        int64
@@ -33,23 +29,22 @@ func (s *Server) silencesPage(w http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) renderSilences(w http.ResponseWriter, request *http.Request, status int, message string) {
-	silences, err := s.store.ListSilences(request.Context(), 100)
+	now := s.clock.Now()
+	silences, err := s.store.ListSilences(request.Context(), now, 100)
 	if err != nil {
 		s.logger.Error("read silences", "error", err)
 		http.Error(w, "cannot read silences", http.StatusInternalServerError)
 		return
 	}
-	now := s.clock.Now()
 	views := make([]silenceView, 0, len(silences))
 	for _, silence := range silences {
 		views = append(views, s.silenceView(silence, now))
 	}
-	w.WriteHeader(status)
-	s.render(w, "silences.html", map[string]any{
+	s.renderStatus(w, "silences.html", map[string]any{
 		"Page":     pageData{Title: "Silences", HostName: s.cfg.HostName, Now: now, Version: s.version, Sources: s.sourceViews(request), Nav: "silences", Location: s.cfg.Location},
 		"Silences": views,
 		"Error":    message,
-	})
+	}, status)
 }
 
 // silenceView renders one silence for the page.
@@ -104,14 +99,18 @@ func (s *Server) createSilence(w http.ResponseWriter, request *http.Request) {
 		s.renderSilences(w, request, http.StatusBadRequest, "a reason is required")
 		return
 	}
+	if rule == "" && subject == "" {
+		s.renderSilences(w, request, http.StatusBadRequest, "a rule or a subject is required; a silence must not cover everything")
+		return
+	}
 	duration, err := config.ParseDuration(rawDuration)
 	if err != nil {
 		s.renderSilences(w, request, http.StatusBadRequest, "duration: "+err.Error())
 		return
 	}
-	if duration > maxSilenceDuration {
+	if duration > store.MaxSilenceDuration {
 		s.renderSilences(w, request, http.StatusBadRequest,
-			fmt.Sprintf("duration must be at most %s", maxSilenceDuration))
+			fmt.Sprintf("duration must be at most %d days", int(store.MaxSilenceDuration/(24*time.Hour))))
 		return
 	}
 	now := s.clock.Now()

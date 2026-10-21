@@ -2,12 +2,15 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// MaxSilenceDuration bounds a silence created by an operator so a typo cannot
+// mute a subject for a year.
+const MaxSilenceDuration = 30 * 24 * time.Hour
 
 // SilenceKind is the kind of a silence row.
 type SilenceKind string
@@ -16,8 +19,6 @@ type SilenceKind string
 const (
 	SilenceMaintenanceWindow SilenceKind = "maintenance_window"
 	SilenceOneShotMute       SilenceKind = "one_shot_mute"
-	SilenceQuietHours        SilenceKind = "quiet_hours"
-	SilencePagerCooldown     SilenceKind = "pager_cooldown"
 	SilenceAutoDeploy        SilenceKind = "auto_deploy"
 )
 
@@ -36,9 +37,6 @@ type Silence struct {
 	DedupKey  *string
 	Comment   *string
 }
-
-// ErrSilenceNotFound is returned by SilenceByID when no row matches.
-var ErrSilenceNotFound = errors.New("silence not found")
 
 // CreateSilence inserts one silence. A non-null DedupKey makes the insert
 // idempotent per (kind, dedup_key): a duplicate returns the existing row's
@@ -78,11 +76,6 @@ func (s *Store) CreateSilence(ctx context.Context, silence Silence) (int64, erro
 	return id, nil
 }
 
-// SilenceByID returns the silence with id. ErrSilenceNotFound when none.
-func (s *Store) SilenceByID(ctx context.Context, id int64) (*Silence, error) {
-	return scanSilence(s.pool.QueryRow(ctx, silenceSelect+" where id = $1", id))
-}
-
 // DeleteSilence removes one silence by id and returns whether anything was
 // removed.
 func (s *Store) DeleteSilence(ctx context.Context, id int64) (bool, error) {
@@ -93,24 +86,21 @@ func (s *Store) DeleteSilence(ctx context.Context, id int64) (bool, error) {
 	return tag.RowsAffected() > 0, nil
 }
 
-// ActiveSilences returns every currently active silence, most-specific-match
-// first then longest-ending first. activity = now is in [StartsAt, EndsAt].
+// ActiveSilences returns every silence in force at now, oldest end first
+// so the caller can rely on a stable order for equally specific matches.
 func (s *Store) ActiveSilences(ctx context.Context, now time.Time) ([]Silence, error) {
 	rows, err := s.pool.Query(ctx, silenceSelect+`
 		where starts_at <= $1 and ends_at > $1
-		order by
-		    case when rule is not null then 0 else 1 end,
-		    case when subject is not null then 0 else 1 end,
-		    ends_at asc`,
-		now)
+		order by ends_at asc`, now)
 	if err != nil {
 		return nil, fmt.Errorf("read silences: %w", err)
 	}
 	return scanSilences(rows)
 }
 
-// FindActiveSilence reports the most-specific active silence for rule,
-// subject at now, or nil when there is none. The match precedence is:
+// FindActiveSilence reports the most specific active silence for rule,
+// subject and app at now, or nil when there is none. The match precedence
+// is:
 //
 //	rule + subject > rule > subject > app > *
 //
@@ -170,21 +160,6 @@ select id, kind, rule, subject, app_id, reason, starts_at, ends_at,
        created_at, created_by, dedup_key, comment
 from silences`
 
-// scanSilence reads one silence from a row.
-func scanSilence(row pgx.Row) (*Silence, error) {
-	var silence Silence
-	err := row.Scan(&silence.ID, &silence.Kind, &silence.Rule, &silence.Subject, &silence.AppID,
-		&silence.Reason, &silence.StartsAt, &silence.EndsAt, &silence.CreatedAt,
-		&silence.CreatedBy, &silence.DedupKey, &silence.Comment)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrSilenceNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("scan silence: %w", err)
-	}
-	return &silence, nil
-}
-
 // scanSilences reads many silences from rows.
 func scanSilences(rows pgx.Rows) ([]Silence, error) {
 	defer rows.Close()
@@ -205,14 +180,14 @@ func scanSilences(rows pgx.Rows) ([]Silence, error) {
 }
 
 // ListSilences returns silences ordered by their start, newest first.
-// Active ones come first so the operator sees what is in force.
-func (s *Store) ListSilences(ctx context.Context, limit int) ([]Silence, error) {
+// Silences in force at now come first so the operator sees what is active.
+func (s *Store) ListSilences(ctx context.Context, now time.Time, limit int) ([]Silence, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, silenceSelect+`
-		order by (ends_at > now()) desc, starts_at desc
-		limit $1`, limit)
+		order by (ends_at > $1) desc, starts_at desc
+		limit $2`, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read silences: %w", err)
 	}

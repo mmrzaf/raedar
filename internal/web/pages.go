@@ -423,6 +423,12 @@ func decodeJSON(data []byte, value any) error {
 // render writes one page. A template error becomes a 500 instead of a
 // half-written page.
 func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) {
+	s.renderStatus(w, name, data, http.StatusOK)
+}
+
+// renderStatus renders a page with an explicit status. Headers are set
+// before WriteHeader so the content type is not lost.
+func (s *Server) renderStatus(w http.ResponseWriter, name string, data map[string]any, status int) {
 	var page bytes.Buffer
 	if err := s.templates.ExecuteTemplate(&page, name, data); err != nil {
 		s.logger.Error("render page", "page", name, "error", err)
@@ -430,6 +436,7 @@ func (s *Server) render(w http.ResponseWriter, name string, data map[string]any)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	w.Write(page.Bytes())
 }
 
@@ -455,6 +462,7 @@ func (s *Server) settings() []setting {
 		{"RAEDAR_SYSTEMD", string(cfg.Host.Systemd)},
 		{"RAEDAR_TELEGRAM_TOKEN", mask(cfg.Notify.Telegram.Token)},
 		{"RAEDAR_SMS_FROM", cfg.Notify.SMS.From},
+		{"RAEDAR_SMS_HTTP_API_KEY", mask(cfg.Notify.SMS.HTTP.APIKey)},
 		{"RAEDAR_WEBHOOK_SECRET", mask(cfg.Notify.Webhook.Secret)},
 		{"RAEDAR_HEARTBEAT_RECEIVE_TOKEN", mask(cfg.Heartbeat.ReceiveToken)},
 		{"RAEDAR_RETENTION_MINUTE", cfg.Retention.Minute.String()},

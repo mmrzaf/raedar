@@ -1,7 +1,7 @@
 {{template "header" .}}
 <section class="card">
   <h1>Silences</h1>
-  <p class="muted">A silence stops pages for one subject (or one app) until it expires. Ack and mute from Telegram, or create a maintenance window here.</p>
+  <p class="muted">A silence stops pages for a rule, a subject or both until it expires. Give at least one of them. Ack and mute from Telegram, or create a maintenance window here.</p>
   {{if .Error}}<p class="flash flash-error">{{.Error}}</p>{{end}}
   <form method="post" action="/silences" class="form-grid">
     <label>Reason

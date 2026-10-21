@@ -76,7 +76,7 @@ func TestSilencePrecedenceIntegration(t *testing.T) {
 		StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour),
 	})
 	mustSilence(t, ctx, s, Silence{
-		Kind:     SilenceQuietHours,
+		Kind:     SilenceMaintenanceWindow,
 		Reason:   "global",
 		StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour),
 	})
