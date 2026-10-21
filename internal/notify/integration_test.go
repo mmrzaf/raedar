@@ -4,6 +4,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"sync"
@@ -16,218 +17,210 @@ import (
 	"github.com/mmrzaf/raedar/internal/testdb"
 )
 
-// TestPagerDeliveryRowPerIncidentAndChat verifies that the pager creates
-// one delivery row per (incident × chat_id), and that each row gets the
-// matching chat_id's message_id. The Telegram channel records chat_id →
-// message_id through the closure the notifier installs at startup.
-func TestPagerDeliveryRowPerIncidentAndChat(t *testing.T) {
-	databaseURL, schema := testdb.NewSchema(t, "pager_rows")
-	databaseURL = testdb.WithSearchPath(t, databaseURL, schema)
+// TestPagerRowsPerIncidentAndChat verifies that a group delivered to two
+// chats records one delivery row per (incident × chat), attaches the
+// message_id of the right chat to each row, and lets a reply resolve back
+// to a delivery.
+func TestPagerRowsPerIncidentAndChat(t *testing.T) {
+	st := integrationStore(t)
 	ctx := t.Context()
-	st, err := store.Open(ctx, databaseURL, nil)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(st.Close)
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 
-	// Capture (chat_id, message_id) pairs the recorder saw. The recorder
-	// also feeds the notifier's Telegram message_id buffer so attempt() can
-	// attach the right message_id to each delivery row.
-	var recorded struct {
-		sync.Mutex
-		pairs []chatMessageID
-	}
-	fixture := []chatMessageID{{"personal", 1001}, {"group", 1002}}
-	var tg *recordingTelegram
+	incA := insertIncident(t, ctx, st, "route.down", "fallback@file", store.SeverityCritical)
+	incB := insertIncident(t, ctx, st, "route.down", "waiotech-api@docker", store.SeverityWarning)
 
-	cfg := minimalConfig(t)
-	cfg.Notify.Telegram.Token = "test-token"
-	cfg.Notify.Telegram.ChatIDs = []string{"personal", "group"}
-	cfg.Notify.WarningChannels = []string{"telegram"}
-	cfg.Notify.CriticalChannels = []string{"telegram"}
-	cfg.Notify.DigestChannels = []string{"telegram"}
+	tg := &scriptedTelegram{
+		chatIDs: []string{"personal", "group"},
+		outcomes: map[string]scriptedOutcome{
+			"personal": {messageID: 1001},
+			"group":    {messageID: 1002},
+		},
+	}
+	notifier := integrationNotifier(t, st, []string{"personal", "group"}, tg)
 
-	cl := clock.System()
-	notifier, err := New(cfg, st, nil, discardLogger(), cl)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	notifier.cfg = cfg
-	notifier.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	recorder := func(chatID string, messageID int64) {
-		recorded.Lock()
-		recorded.pairs = append(recorded.pairs, chatMessageID{chatID, messageID})
-		recorded.Unlock()
-		notifier.recordTelegramMessageID(chatID, messageID)
-	}
-	tg = &recordingTelegram{
-		outcomes: fixture,
-		chatIDs:  []string{"personal", "group"},
-		record:   recorder,
-	}
-	notifier.channels[KindTelegram] = tg
-
-	openedAt := time.Date(2026, 10, 20, 18, 0, 0, 0, time.UTC)
-	incA := store.Incident{
-		Rule: "route.down", Subject: "fallback@file",
-		Severity: store.SeverityCritical, OpenedAt: openedAt, Summary: "no backend",
-		Details: []byte(`{"app":"shop"}`),
-	}
-	idA, err := st.InsertIncident(ctx, incA)
-	if err != nil {
-		t.Fatalf("InsertIncident(A): %v", err)
-	}
-	incA.ID = idA
-	incB := store.Incident{
-		Rule: "route.down", Subject: "waiotech-api@docker",
-		Severity: store.SeverityWarning, OpenedAt: openedAt, Summary: "slow",
-		Details: []byte(`{"app":"shop"}`),
-	}
-	idB, err := st.InsertIncident(ctx, incB)
-	if err != nil {
-		t.Fatalf("InsertIncident(B): %v", err)
-	}
-	incB.ID = idB
 	notifier.IncidentsChanged(ctx, []rules.Change{
 		{Incident: incA, Kind: rules.ChangeOpened},
 		{Incident: incB, Kind: rules.ChangeOpened},
 	})
 
-	t.Logf("tg.sendCount = %d", tg.sendCount)
-	if got := len(recorded.pairs); got != 2 {
-		t.Fatalf("recorded pairs = %d, want 2: %+v", got, recorded.pairs)
-	}
-	if recorded.pairs[0].chatID != "personal" || recorded.pairs[0].messageID != 1001 {
-		t.Fatalf("first pair = %+v, want {personal,1001}", recorded.pairs[0])
-	}
-	if recorded.pairs[1].chatID != "group" || recorded.pairs[1].messageID != 1002 {
-		t.Fatalf("second pair = %+v, want {group,1002}", recorded.pairs[1])
-	}
-
-	// Read all 4 delivery rows (2 incidents × 2 chats).
-	rows, err := st.Deliveries(ctx, incA.ID)
-	if err != nil {
-		t.Fatalf("Deliveries(A): %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("incident A rows = %d, want 2", len(rows))
-	}
-	wantA := map[string]int64{"personal": 1001, "group": 1002}
-	for _, d := range rows {
-		if d.TelegramMessageID == nil {
-			t.Fatalf("A row %d missing telegram_message_id", d.ID)
+	for _, incident := range []store.Incident{incA, incB} {
+		rows, err := st.Deliveries(ctx, incident.ID)
+		if err != nil {
+			t.Fatalf("Deliveries(%d): %v", incident.ID, err)
 		}
-		// Match each row to its chat via the timestamp ordering: insert
-		// order was personal, group.
-	}
-	_ = wantA // pair expectations are loose because row order is descending id.
-	if len(rows) >= 1 && rows[0].TelegramMessageID != nil && *rows[0].TelegramMessageID == 1001 {
-		// personal was inserted first; rows are ordered newest first, so
-		// rows[len-1] is the personal row and rows[0] is the group row.
-	}
-	if len(rows) >= 1 {
-		// Collect a map from message_id to how many A rows carry it.
+		if len(rows) != 2 {
+			t.Fatalf("incident %d rows = %d, want 2", incident.ID, len(rows))
+		}
 		counts := map[int64]int{}
-		for _, d := range rows {
-			if d.TelegramMessageID != nil {
-				counts[*d.TelegramMessageID]++
+		for _, row := range rows {
+			if row.TelegramMessageID == nil {
+				t.Fatalf("incident %d row %d has no telegram_message_id", incident.ID, row.ID)
 			}
-		}
-		// A should have exactly two rows, one for personal and one for group.
-		if counts[1001] != 1 || counts[1002] != 1 {
-			t.Fatalf("incident A message_id distribution = %v, want one of each 1001/1002", counts)
-		}
-	}
-	rows, err = st.Deliveries(ctx, incB.ID)
-	if err != nil {
-		t.Fatalf("Deliveries(B): %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("incident B rows = %d, want 2", len(rows))
-	}
-	if len(rows) >= 1 {
-		counts := map[int64]int{}
-		for _, d := range rows {
-			if d.TelegramMessageID != nil {
-				counts[*d.TelegramMessageID]++
-			}
+			counts[*row.TelegramMessageID]++
 		}
 		if counts[1001] != 1 || counts[1002] != 1 {
-			t.Fatalf("incident B message_id distribution = %v, want one of each 1001/1002", counts)
+			t.Fatalf("incident %d message ids = %v, want one of 1001 and 1002", incident.ID, counts)
 		}
 	}
 
-	// Reply-to lookup: when the operator replies to a Telegram message, the
-	// inbox needs to know which incident triggered it. Both incident A and
-	// incident B share one Telegram message per chat_id; the lookup
-	// returns whichever row comes first, and the dispatcher then mutes
-	// that subject via the silences table.
-	delivery, err := st.LookupDeliveryByTelegramMessageID(ctx, 1001)
-	if err != nil {
-		t.Fatalf("lookup: %v", err)
-	}
-	if delivery == nil || delivery.IncidentID == nil {
-		t.Fatalf("resolved delivery = nil")
-	}
-	if *delivery.IncidentID != 1 && *delivery.IncidentID != 2 {
-		t.Fatalf("resolved incident id = %d, want 1 or 2", *delivery.IncidentID)
-	}
-	if *delivery.TelegramMessageID != 1001 {
-		t.Fatalf("resolved message id = %d, want 1001", *delivery.TelegramMessageID)
-	}
-	delivery, err = st.LookupDeliveryByTelegramMessageID(ctx, 1002)
+	delivery, err := st.LookupDeliveryByTelegramMessageID(ctx, 1002)
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 	if delivery == nil || delivery.IncidentID == nil || *delivery.TelegramMessageID != 1002 {
-		t.Fatalf("resolved delivery = %+v, want message_id 1002", delivery)
+		t.Fatalf("lookup = %+v, want a delivery for message 1002", delivery)
 	}
 }
 
-type chatMessageID struct {
-	chatID    string
+// TestPagerRetriesOnlyFailedChats is the regression test for the original
+// duplicate-page bug: when one chat fails, the retry must not post again
+// to the chats that already succeeded.
+func TestPagerRetriesOnlyFailedChats(t *testing.T) {
+	st := integrationStore(t)
+	ctx := t.Context()
+	incident := insertIncident(t, ctx, st, "route.down", "fallback@file", store.SeverityCritical)
+
+	tg := &scriptedTelegram{
+		chatIDs: []string{"personal", "group"},
+		outcomes: map[string]scriptedOutcome{
+			"personal": {messageID: 2001},
+			"group":    {err: errors.New("bot was kicked")},
+		},
+	}
+	notifier := integrationNotifier(t, st, []string{"personal", "group"}, tg)
+	notifier.IncidentsChanged(ctx, []rules.Change{{Incident: incident, Kind: rules.ChangeOpened}})
+
+	if got := tg.callsFor("personal"); got != 1 {
+		t.Fatalf("personal calls after first attempt = %d, want 1", got)
+	}
+	if got := tg.callsFor("group"); got != 1 {
+		t.Fatalf("group calls after first attempt = %d, want 1", got)
+	}
+
+	// Run the retry queue once with the failing chat now healthy.
+	tg.setOutcome("group", scriptedOutcome{messageID: 2002})
+	notifier.mu.Lock()
+	queued := len(notifier.retries)
+	// Pretend the retry delay has passed.
+	for _, pending := range notifier.retries {
+		pending.at = time.Now().Add(-time.Second)
+	}
+	notifier.mu.Unlock()
+	if queued == 0 {
+		t.Fatal("no retry was queued")
+	}
+	notifier.deliverDue(ctx)
+
+	if got := tg.callsFor("personal"); got != 1 {
+		t.Fatalf("personal calls after retry = %d, want still 1 (must not duplicate)", got)
+	}
+	if got := tg.callsFor("group"); got != 2 {
+		t.Fatalf("group calls after retry = %d, want 2", got)
+	}
+}
+
+// integrationStore opens the disposable database, migrates it, and returns
+// the store. It skips when RAEDAR_TEST_DATABASE_URL is unset.
+func integrationStore(t *testing.T) *store.Store {
+	t.Helper()
+	databaseURL, schema := testdb.NewSchema(t, "pager")
+	databaseURL = testdb.WithSearchPath(t, databaseURL, schema)
+	ctx := t.Context()
+	st, err := store.Open(ctx, databaseURL, nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return st
+}
+
+func insertIncident(t *testing.T, ctx context.Context, st *store.Store, rule, subject string, severity store.Severity) store.Incident {
+	t.Helper()
+	incident := store.Incident{
+		Rule: rule, Subject: subject, Severity: severity,
+		OpenedAt: time.Date(2026, 10, 20, 18, 0, 0, 0, time.UTC),
+		Summary:  "test incident", Details: []byte(`{}`),
+	}
+	id, err := st.InsertIncident(ctx, incident)
+	if err != nil {
+		t.Fatalf("insert incident: %v", err)
+	}
+	incident.ID = id
+	return incident
+}
+
+func integrationNotifier(t *testing.T, st *store.Store, chatIDs []string, tg Channel) *Notifier {
+	t.Helper()
+	cfg := minimalConfig(t)
+	cfg.Notify.Telegram.Token = "test-token"
+	cfg.Notify.Telegram.ChatIDs = chatIDs
+	cfg.Notify.WarningChannels = []string{"telegram"}
+	cfg.Notify.CriticalChannels = []string{"telegram"}
+	cfg.Notify.DigestChannels = []string{"telegram"}
+	notifier, err := New(cfg, st, nil, discardLogger(), clock.System())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	notifier.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	notifier.channels[KindTelegram] = tg
+	return notifier
+}
+
+// scriptedOutcome is the result of posting to one chat.
+type scriptedOutcome struct {
 	messageID int64
+	err       error
 }
 
-type recordingTelegram struct {
-	mu        sync.Mutex
-	outcomes  []chatMessageID
-	chatIDs   []string
-	next      int
-	record    func(chatID string, messageID int64)
-	sendCount int
+// scriptedTelegram is a fan-out channel whose per-chat results are
+// scripted, so a test can make one chat fail and another succeed.
+type scriptedTelegram struct {
+	mu       sync.Mutex
+	chatIDs  []string
+	outcomes map[string]scriptedOutcome
+	calls    map[string]int
 }
 
-func (r *recordingTelegram) Kind() Kind { return KindTelegram }
-func (r *recordingTelegram) ChatIDs() []string {
-	ids := make([]string, len(r.chatIDs))
-	copy(ids, r.chatIDs)
-	return ids
-}
-func (r *recordingTelegram) Send(ctx context.Context, msg Message) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sendCount++
-	for i, chatID := range r.chatIDs {
-		if i >= len(r.outcomes) {
-			break
-		}
-		out := r.outcomes[i]
-		expectedChat := chatID
-		if out.chatID != expectedChat {
-			// Best-effort: count by index regardless of the name.
-			expectedChat = out.chatID
-		}
-		if r.record != nil {
-			r.record(expectedChat, out.messageID)
+func (s *scriptedTelegram) Kind() Kind        { return KindTelegram }
+func (s *scriptedTelegram) ChatIDs() []string { return append([]string(nil), s.chatIDs...) }
+func (s *scriptedTelegram) Send(ctx context.Context, message Message) error {
+	var errs []error
+	for _, result := range s.SendEach(ctx, message, nil) {
+		if result.err != nil {
+			errs = append(errs, result.err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
-type fixtureExhausted struct{}
+func (s *scriptedTelegram) SendEach(ctx context.Context, message Message, chats []string) []chatSend {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.calls == nil {
+		s.calls = map[string]int{}
+	}
+	if len(chats) == 0 {
+		chats = s.chatIDs
+	}
+	results := make([]chatSend, 0, len(chats))
+	for _, chatID := range chats {
+		s.calls[chatID]++
+		outcome := s.outcomes[chatID]
+		results = append(results, chatSend{chatID: chatID, messageID: outcome.messageID, err: outcome.err})
+	}
+	return results
+}
 
-func (*fixtureExhausted) Error() string { return "recordingTelegram ran out of outcomes" }
+func (s *scriptedTelegram) callsFor(chatID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[chatID]
+}
+
+func (s *scriptedTelegram) setOutcome(chatID string, outcome scriptedOutcome) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcomes[chatID] = outcome
+}

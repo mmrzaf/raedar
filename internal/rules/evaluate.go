@@ -152,7 +152,7 @@ func (s *snapshot) fillModel() {
 		return
 	}
 	for _, route := range s.model.Routes {
-		if route.ID == 0 {
+		if route.ID == 0 || route.Ignored {
 			continue
 		}
 		s.routes[route.ID] = &routeInfo{route: route, app: route.App, routeID: route.ID}
@@ -478,12 +478,12 @@ func (e *Engine) restartingReading(now time.Time, slot *slotInfo, s *snapshot) r
 	}
 	var exitCodes []int
 	for _, event := range s.crashes[slot.slotID] {
-		if event.TS.Before(now.Add(-crashLoopWindow)) {
+		if event.TS.Before(now.Add(-e.cfg.Rules.CrashLoopWindow)) {
 			continue
 		}
 		exitCodes = append(exitCodes, crashExitCode(event))
 	}
-	reading.firing = len(exitCodes) >= crashLoopCrashes
+	reading.firing = len(exitCodes) >= e.cfg.Rules.CrashLoopCrashes
 	details := map[string]any{"crashes": len(exitCodes)}
 	if len(exitCodes) > 0 {
 		details["last_exit_code"] = exitCodes[len(exitCodes)-1]

@@ -37,7 +37,7 @@ type Store interface {
 	// FindActiveSilence reports the most-specific active silence for the
 	// (rule, subject) at now, or nil when nothing matches. Used by the
 	// gate to suppress pages without changing the engine.
-	FindActiveSilence(ctx context.Context, rule, subject string, now time.Time) (*store.Silence, error)
+	FindActiveSilence(ctx context.Context, rule, subject string, appID *int64, now time.Time) (*store.Silence, error)
 	// IncidentByID returns one incident, including its ack metadata.
 	IncidentByID(ctx context.Context, id int64) (*store.Incident, error)
 	// LastSent returns the most recent sent delivery for a (rule, subject)
@@ -70,33 +70,15 @@ type Notifier struct {
 	mu      sync.Mutex
 	retries []*pendingDelivery
 	held    map[Kind]int
-
-	// pendingTelegram holds the chat_id → message_id assignments the
-	// Telegram channel returns for each POST in the current sendMessage
-	// call. The notifier drains it in attempt() to attach the right
-	// message_id to each (incident × chat) delivery row.
-	pendingTelegram map[string]int64
-}
-
-// recordTelegramMessageID is the hook the Telegram channel calls per
-// POST. It buffers message_ids keyed by chat_id for the current attempt.
-func (n *Notifier) recordTelegramMessageID(chatID string, messageID int64) {
-	n.mu.Lock()
-	if n.pendingTelegram == nil {
-		n.pendingTelegram = make(map[string]int64)
-	}
-	n.pendingTelegram[chatID] = messageID
-	n.mu.Unlock()
-}
-
-// drainTelegramIDs returns the buffered chat_id → message_id map and
-// resets the buffer. Held under the notifier mutex.
-func (n *Notifier) drainTelegramIDs() map[string]int64 {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	snapshot := n.pendingTelegram
-	n.pendingTelegram = nil
-	return snapshot
+	// deferred holds pages the gate postponed (quiet hours, cooldown) until
+	// their ReadyAt. Keyed by channel + rule + subject so repeated
+	// suppressions collapse into one message.
+	deferred map[string]*deferredPage
+	// lastPageAt is the time of the most recent successful page, used by
+	// the stand-down announcement. lastStandDownAt is when the last "all
+	// quiet" message went out.
+	lastPageAt      time.Time
+	lastStandDownAt time.Time
 }
 
 // pendingDelivery is one message waiting for a retry.
@@ -106,6 +88,17 @@ type pendingDelivery struct {
 	slots   []slot
 	attempt int
 	at      time.Time
+}
+
+// deferredPage is one page the gate postponed. The most recent incident
+// for a key replaces the earlier one, so a flapping subject produces one
+// catch-up message rather than a burst.
+type deferredPage struct {
+	channel   Channel
+	kind      store.DeliveryKind
+	incidents []store.Incident
+	readyAt   time.Time
+	status    GateStatus
 }
 
 // limiter counts the messages sent through one channel in a sliding window.
@@ -156,6 +149,7 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 		channels: newChannels(cfg, proxied, direct, clock),
 		limiters: make(map[Kind]*limiter),
 		held:     make(map[Kind]int),
+		deferred: make(map[string]*deferredPage),
 	}
 	notifier.formatter = formatter{
 		host:      cfg.HostName,
@@ -171,7 +165,6 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 		QuietFrom:      silentFrom(cfg.Notify.Silent.QuietFrom),
 		QuietTo:        silentFrom(cfg.Notify.Silent.QuietTo),
 		QuietZone:      cfg.Notify.Silent.QuietZone,
-		StandDownAfter: cfg.Notify.Silent.StandDownAfter,
 	}
 	for kind := range notifier.channels {
 		limit := cfg.Notify.RateLimit
@@ -179,11 +172,6 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 			limit = cfg.Notify.SMSRateLimit
 		}
 		notifier.limiters[kind] = &limiter{limit: limit, window: time.Hour}
-	}
-	if telegram, ok := notifier.channels[KindTelegram].(*telegramChannel); ok {
-		telegram.record = func(chatID string, messageID int64) {
-			notifier.recordTelegramMessageID(chatID, messageID)
-		}
 	}
 	return notifier, nil
 }
@@ -240,60 +228,82 @@ func (n *Notifier) IncidentsChanged(ctx context.Context, changes []rules.Change)
 
 // sendGroup builds the message of one group and delivers it to its channels.
 //
-// The gate decides, per (incident × change-kind × channel), whether to send
-// the message now, hold it, mute it, or skip it entirely. We always record a
-// delivery row so the deliveries page (and the rule engine) can see what
-// happened with every incident change.
-//
-// When one or more incidents are suppressed, the visible message lists only
-// the incidents that still page, and the rest of the row is recorded with
-// the gate status so the audit trail stays complete.
+// Every incident of the group is evaluated by the gate for this channel.
+// Recorded incidents are sent now; acked and silenced ones are recorded so
+// the deliveries page keeps the audit trail; held and cooldown ones are
+// recorded and queued for a single catch-up message when the gate's
+// ReadyAt passes.
 func (n *Notifier) sendGroup(ctx context.Context, g *group) {
 	now := n.clock.Now()
 	for _, channel := range n.channelsFor(ctx, g) {
 		kept := make([]store.Incident, 0, len(g.incidents))
-		suppressed := make(map[int64]GateStatus)
 		for _, incident := range g.incidents {
 			decision := n.gate.Evaluate(ctx, DecisionInputs{
 				Incident:   incident,
 				ChangeKind: g.kind,
 				Channel:    channel.Kind(),
 				Now:        now,
-			}, Message{})
-			if decision.Status == GateRecorded {
+			})
+			switch decision.Status {
+			case GateRecorded:
 				kept = append(kept, incident)
-				continue
-			}
-			suppressed[incident.ID] = decision.Status
-		}
-		// Record the suppressed deliveries first so the audit row exists even
-		// when no Telegram POST happens.
-		for incidentID, status := range suppressed {
-			if _, err := n.store.AddDelivery(ctx, store.Delivery{
-				IncidentID: &incidentID,
-				Kind:       g.kind,
-				Channel:    string(channel.Kind()),
-				CreatedAt:  now,
-				Status:     string(status),
-			}); err != nil {
-				n.logger.Warn("record suppressed delivery", slog.String("error", err.Error()))
+			case GateAcked, GateSilenced:
+				n.recordSuppressed(ctx, channel, g.kind, incident, decision.Status, now)
+			case GateHeld, GateCooldown:
+				n.recordSuppressed(ctx, channel, g.kind, incident, decision.Status, now)
+				n.deferIncident(channel, g.kind, incident, decision)
 			}
 		}
 		if len(kept) == 0 {
 			continue
 		}
-		f := n.formatter
-		f.now = now
-		f.deploys = n.deployContexts(ctx, g)
-		sub := *g
-		sub.incidents = kept
-		message := Message{
-			Text:     f.text(sub),
-			SMS:      f.smsText(sub),
-			Document: f.document(sub),
-		}
-		n.deliver(ctx, channel, g.kind, kept, message)
+		n.sendMessage(ctx, channel, g.kind, *g, kept, now)
 	}
+}
+
+// sendMessage renders a group of incidents for one channel and delivers it.
+func (n *Notifier) sendMessage(ctx context.Context, channel Channel, kind store.DeliveryKind, g group, incidents []store.Incident, now time.Time) {
+	f := n.formatter
+	f.now = now
+	f.deploys = n.deployContexts(ctx, &g)
+	sub := g
+	sub.incidents = incidents
+	n.deliver(ctx, channel, kind, incidents, Message{
+		Text:     f.text(sub),
+		SMS:      f.smsText(sub),
+		Document: f.document(sub),
+	})
+}
+
+// recordSuppressed writes a delivery row for a page the gate suppressed.
+func (n *Notifier) recordSuppressed(ctx context.Context, channel Channel, kind store.DeliveryKind, incident store.Incident, status GateStatus, now time.Time) {
+	id := incident.ID
+	if _, err := n.store.AddDelivery(ctx, store.Delivery{
+		IncidentID: &id,
+		Kind:       kind,
+		Channel:    string(channel.Kind()),
+		CreatedAt:  now,
+		Status:     string(status),
+	}); err != nil {
+		n.logger.Warn("record suppressed delivery", slog.String("error", err.Error()))
+	}
+}
+
+// deferIncident queues an incident for a catch-up message. Repeated
+// suppressions of the same (channel, rule, subject) collapse into one
+// entry, keeping the latest incident and the latest ready time.
+func (n *Notifier) deferIncident(channel Channel, kind store.DeliveryKind, incident store.Incident, decision Decision) {
+	key := string(channel.Kind()) + "\x00" + incident.Rule + "\x00" + incident.Subject
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	entry := n.deferred[key]
+	if entry == nil {
+		entry = &deferredPage{channel: channel, kind: kind}
+		n.deferred[key] = entry
+	}
+	entry.incidents = []store.Incident{incident}
+	entry.readyAt = decision.ReadyAt
+	entry.status = decision.Status
 }
 
 // channelsFor returns the channels a group is delivered to.
@@ -397,6 +407,16 @@ func (n *Notifier) deliver(ctx context.Context, channel Channel, kind store.Deli
 		chatIDs = []string{""}
 	}
 	now := n.clock.Now()
+	// Rate limit before recording rows: a withheld message must not leave
+	// pending rows behind that nothing will ever resolve.
+	if limit := n.limiters[channel.Kind()]; limit != nil && !limit.allow(now) {
+		n.mu.Lock()
+		n.held[channel.Kind()] += len(incidents)
+		n.mu.Unlock()
+		n.logger.Warn("notification rate limit reached", slog.String("channel", string(channel.Kind())),
+			slog.Int("incidents", len(incidents)))
+		return
+	}
 	slots := make([]slot, 0, len(incidents)*len(chatIDs))
 	writeRow := func(incidentID *int64, chatID string) bool {
 		id, err := n.store.AddDelivery(ctx, store.Delivery{
@@ -430,60 +450,55 @@ func (n *Notifier) deliver(ctx context.Context, channel Channel, kind store.Deli
 	if len(slots) == 0 {
 		return
 	}
-	limit := n.limiters[channel.Kind()]
-	if limit != nil && !limit.allow(n.clock.Now()) {
-		n.mu.Lock()
-		n.held[channel.Kind()] += len(incidents)
-		n.mu.Unlock()
-		n.logger.Warn("notification rate limit reached", slog.String("channel", string(channel.Kind())),
-			slog.Int("incidents", len(incidents)))
-		return
-	}
 	n.attempt(ctx, channel, message, slots, 0)
 }
 
-// attempt sends one message, attaches the per-chat message_id recorded
-// by the Telegram channel to every matching delivery row, and schedules a
-// retry when the channel returns an error. The retry queue keeps the
-// channel + message + slots so an attempt can replay the exact same
-// set of (incident × chat_id) pairs.
+// attempt sends one message, marks every delivery row with its own chat's
+// outcome, and queues a retry for the chats that failed. A chat that
+// already received the message is never retried, so one dead chat cannot
+// duplicate pages to the working ones.
 func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message, slots []slot, failed int) {
-	err := channel.Send(ctx, message)
-	telegramIDs := n.drainTelegramIDs()
+	results := n.sendToChats(ctx, channel, message, slots)
 	now := n.clock.Now()
+	finalFailure := failed >= len(retryDelays())
+
+	var retry []slot
+	var lastErr error
 	for _, s := range slots {
+		outcome := outcomeFor(results, s.chatID)
 		delivery := store.Delivery{ID: s.id, Attempts: failed + 1, Status: "sent"}
 		switch {
-		case err == nil:
+		case outcome.err == nil:
 			delivery.SentAt = &now
-		case failed >= len(retryDelays()):
+			if outcome.messageID != 0 {
+				id := outcome.messageID
+				delivery.TelegramMessageID = &id
+			}
+		case finalFailure:
 			delivery.Status = "failed"
 		default:
 			delivery.Status = "pending"
+			retry = append(retry, s)
 		}
-		if err != nil {
-			text := safeError(err).Error()
+		if outcome.err != nil {
+			text := safeError(outcome.err).Error()
 			delivery.Error = &text
-		}
-		// When the channel can record a per-chat message_id, attach it to
-		// every delivery row that corresponds to that chat. The dispatcher
-		// later resolves reply-to messages through this.
-		if s.chatID != "" {
-			if id, ok := telegramIDs[s.chatID]; ok && id != 0 {
-				tgid := id
-				delivery.TelegramMessageID = &tgid
-			}
+			lastErr = outcome.err
 		}
 		if updateErr := n.store.UpdateDelivery(ctx, delivery); updateErr != nil {
 			n.logger.Warn("update delivery", slog.String("error", updateErr.Error()))
 		}
 	}
-	if err == nil {
+	if lastErr == nil {
+		n.markPaged(now, len(slots) > 0)
 		return
 	}
-	if failed >= len(retryDelays()) {
+	if finalFailure {
 		n.logger.Warn("notification failed", slog.String("channel", string(channel.Kind())),
-			slog.Int("attempts", failed+1), slog.String("error", safeError(err).Error()))
+			slog.Int("attempts", failed+1), slog.String("error", safeError(lastErr).Error()))
+		return
+	}
+	if len(retry) == 0 {
 		return
 	}
 	delay := retryDelays()[failed]
@@ -491,13 +506,62 @@ func (n *Notifier) attempt(ctx context.Context, channel Channel, message Message
 	n.retries = append(n.retries, &pendingDelivery{
 		channel: channel,
 		message: message,
-		slots:   slots,
+		slots:   retry,
 		attempt: failed + 1,
 		at:      now.Add(delay),
 	})
 	n.mu.Unlock()
 	n.logger.Warn("notification will be retried", slog.String("channel", string(channel.Kind())),
-		slog.Duration("in", delay), slog.String("error", safeError(err).Error()))
+		slog.Int("chats", len(retry)), slog.Duration("in", delay), slog.String("error", safeError(lastErr).Error()))
+}
+
+// sendToChats posts a message through a channel and returns one result per
+// recipient. Channels that do not fan out are reported at the empty chat.
+func (n *Notifier) sendToChats(ctx context.Context, channel Channel, message Message, slots []slot) []chatSend {
+	if fan, ok := channel.(fanOut); ok {
+		return fan.SendEach(ctx, message, uniqueChats(slots))
+	}
+	return []chatSend{{err: channel.Send(ctx, message)}}
+}
+
+// uniqueChats returns the distinct chat ids of the slots, in first-seen
+// order. Slots of a non-fanout channel carry the empty chat.
+func uniqueChats(slots []slot) []string {
+	seen := make(map[string]bool, len(slots))
+	chats := make([]string, 0, len(slots))
+	for _, s := range slots {
+		if s.chatID == "" || seen[s.chatID] {
+			continue
+		}
+		seen[s.chatID] = true
+		chats = append(chats, s.chatID)
+	}
+	return chats
+}
+
+// outcomeFor returns the result for one chat. A non-fanout channel reports
+// its single result at the empty chat, which is the chat id of its slots.
+func outcomeFor(results []chatSend, chatID string) chatSend {
+	for _, result := range results {
+		if result.chatID == chatID {
+			return result
+		}
+	}
+	// Fall back to the single non-fanout result when there is one.
+	if len(results) == 1 && results[0].chatID == "" {
+		return results[0]
+	}
+	return chatSend{chatID: chatID, err: fmt.Errorf("no result for chat %q", chatID)}
+}
+
+// markPaged records a successful page for the stand-down announcement.
+func (n *Notifier) markPaged(now time.Time, paged bool) {
+	if !paged {
+		return
+	}
+	n.mu.Lock()
+	n.lastPageAt = now
+	n.mu.Unlock()
 }
 
 // channelChatIDs returns the chat_ids this channel posts to. Channels
@@ -519,6 +583,8 @@ func (n *Notifier) Run(ctx context.Context) error {
 		case <-ticker.C:
 			n.deliverDue(ctx)
 			n.deliverHeld(ctx)
+			n.deliverDeferred(ctx)
+			n.maybeStandDown(ctx)
 		}
 	}
 }
@@ -577,6 +643,102 @@ func (n *Notifier) deliverHeld(ctx context.Context) {
 		n.held[kind] -= held
 		n.mu.Unlock()
 	}
+}
+
+// deliverDeferred sends the catch-up message for pages the gate held or
+// cooled down once their ready time has passed. Incidents with the same
+// channel, rule and subject collapse into one message.
+func (n *Notifier) deliverDeferred(ctx context.Context) {
+	now := n.clock.Now()
+	n.mu.Lock()
+	var due []*deferredPage
+	for key, entry := range n.deferred {
+		if entry.readyAt.After(now) {
+			continue
+		}
+		due = append(due, entry)
+		delete(n.deferred, key)
+	}
+	n.mu.Unlock()
+	if len(due) == 0 {
+		return
+	}
+	// Group by channel so one channel gets one catch-up message.
+	byKind := make(map[Kind][]*deferredPage)
+	var order []Kind
+	for _, entry := range due {
+		kind := entry.channel.Kind()
+		if _, seen := byKind[kind]; !seen {
+			order = append(order, kind)
+		}
+		byKind[kind] = append(byKind[kind], entry)
+	}
+	for _, kind := range order {
+		entries := byKind[kind]
+		incidents := make([]store.Incident, 0, len(entries))
+		for _, entry := range entries {
+			incidents = append(incidents, entry.incidents...)
+		}
+		header := fmt.Sprintf("%d held while quiet:", len(incidents))
+		for _, entry := range entries {
+			if entry.status == GateCooldown {
+				header = fmt.Sprintf("%d still unresolved:", len(incidents))
+			}
+		}
+		g := group{kind: entries[0].kind, incidents: incidents, reopened: map[int64]bool{}}
+		f := n.formatter
+		f.now = now
+		f.deploys = n.deployContexts(ctx, &g)
+		text := header + "\n\n" + f.text(g)
+		message := Message{
+			Text:     text,
+			SMS:      truncateSMS(header + " raedar"),
+			Document: f.document(g),
+		}
+		n.deliver(ctx, entries[0].channel, entries[0].kind, incidents, message)
+	}
+}
+
+// maybeStandDown sends one "all quiet" message per quiet period. It runs
+// when no incident has paged for StandDownAfter and nothing is open, so an
+// operator who hears nothing can still tell the pipeline is alive.
+func (n *Notifier) maybeStandDown(ctx context.Context) {
+	window := n.cfg.Notify.Silent.StandDownAfter
+	if window <= 0 {
+		return
+	}
+	now := n.clock.Now()
+	n.mu.Lock()
+	lastPage := n.lastPageAt
+	lastStandDown := n.lastStandDownAt
+	n.mu.Unlock()
+	if !lastPage.IsZero() && now.Sub(lastPage) < window {
+		return
+	}
+	// Only one notice per quiet period: once it has been sent after the
+	// last page, stay silent.
+	if !lastStandDown.IsZero() && (lastPage.IsZero() || lastStandDown.After(lastPage)) {
+		return
+	}
+	count, err := n.store.OpenIncidentCount(ctx)
+	if err != nil || count > 0 {
+		return
+	}
+	hours := int(window.Round(time.Hour) / time.Hour)
+	text := fmt.Sprintf("%s · all quiet for %d h", n.cfg.HostName, hours)
+	message := Message{
+		Text:     text,
+		SMS:      truncateSMS("RAEDAR " + text),
+		Document: digestDocument(n.cfg.HostName, now, text),
+	}
+	for _, channel := range n.digestChannels() {
+		if err := channel.Send(ctx, message); err != nil {
+			n.logger.Warn("stand-down message", slog.String("channel", string(channel.Kind())), slog.String("error", safeError(err).Error()))
+		}
+	}
+	n.mu.Lock()
+	n.lastStandDownAt = now
+	n.mu.Unlock()
 }
 
 // SendDigest delivers the daily digest through the digest channels.

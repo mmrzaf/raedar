@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/mmrzaf/raedar/internal/config"
 )
 
 // Command is one parsed operator command. Unknown text produces an empty
@@ -100,9 +102,9 @@ func ParseMuteArgs(args []string) (rule, subject string, endsAt time.Time, err e
 		endsAt = t
 		return
 	}
-	d, parseErr := time.ParseDuration(args[2])
-	if parseErr != nil || d <= 0 {
-		err = fmt.Errorf("duration must be a Go duration like 30s, 5m, 2h or 14d: %v", parseErr)
+	d, parseErr := config.ParseDuration(args[2])
+	if parseErr != nil {
+		err = fmt.Errorf("duration must be like 30s, 5m, 2h or 14d: %v", parseErr)
 		return
 	}
 	endsAt = nowFunc().Add(d)
@@ -114,9 +116,9 @@ func parseMuteDuration(arg string) (rule, subject string, endsAt time.Time, err 
 		err = errors.New("until takes an RFC3339 time, for example `mute until 2026-10-21T08:00:00Z`")
 		return
 	}
-	d, parseErr := time.ParseDuration(arg)
-	if parseErr != nil || d <= 0 {
-		err = fmt.Errorf("duration must be a Go duration like 30s, 5m, 2h or 14d: %v", parseErr)
+	d, parseErr := config.ParseDuration(arg)
+	if parseErr != nil {
+		err = fmt.Errorf("duration must be like 30s, 5m, 2h or 14d: %v", parseErr)
 		return
 	}
 	endsAt = nowFunc().Add(d)

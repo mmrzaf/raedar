@@ -158,7 +158,7 @@ func (s *stubNotifier) SendReply(ctx context.Context, chatID int64, text string)
 type nilStore struct{}
 
 func (nilStore) RecordProcessedUpdate(context.Context, int64) (bool, error) { return false, nil }
-func (nilStore) FindActiveSilence(context.Context, string, string, time.Time) (*store.Silence, error) {
+func (nilStore) FindActiveSilence(context.Context, string, string, *int64, time.Time) (*store.Silence, error) {
 	return nil, nil
 }
 func (nilStore) IncidentByID(context.Context, int64) (*store.Incident, error) { return nil, nil }

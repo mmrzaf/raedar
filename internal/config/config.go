@@ -107,6 +107,10 @@ type RulesConfig struct {
 	// ResolveAfter is the time a condition must be false before an incident
 	// resolves, for rules that do not define their own resolution.
 	ResolveAfter time.Duration
+	// CrashLoopWindow and CrashLoopCrashes define when container.restarting
+	// fires: at least CrashLoopCrashes crashes inside CrashLoopWindow.
+	CrashLoopWindow  time.Duration
+	CrashLoopCrashes int
 }
 
 // NotifyConfig holds the notification and digest settings.

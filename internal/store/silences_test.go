@@ -37,7 +37,7 @@ func mustSilence(t *testing.T, ctx timeoutContext, s *Store, silence Silence) {
 
 func mustMatch(t *testing.T, ctx timeoutContext, s *Store, rule, subject string, now time.Time) *Silence {
 	t.Helper()
-	got, err := s.FindActiveSilence(ctx, rule, subject, now)
+	got, err := s.FindActiveSilence(ctx, rule, subject, nil, now)
 	if err != nil {
 		t.Fatalf("find silence: %v", err)
 	}

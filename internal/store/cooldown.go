@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // LastSent returns the most recent sent delivery for a (rule, subject)
@@ -19,10 +22,10 @@ func (s *Store) LastSent(ctx context.Context, rule, subject string) (*Delivery, 
 		order by d.sent_at desc nulls last, d.id desc
 		limit 1`, rule, subject).
 		Scan(&d.ID, &d.IncidentID, &d.Kind, &d.Channel, &d.CreatedAt, &d.SentAt, &d.Attempts, &d.Status, &d.Error, &d.TelegramMessageID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if isNoRows(err) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("read last sent: %w", err)
 	}
 	return &d, nil
@@ -36,11 +39,4 @@ func (s *Store) OpenIncidentCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("count open incidents: %w", err)
 	}
 	return n, nil
-}
-
-// isNoRows matches pgx.ErrNoRows without importing it twice across
-// packages; callers use the result to convert empty results into nil.
-func isNoRows(err error) bool {
-	return err != nil && (err.Error() == "no rows in result set" ||
-		err.Error() == "ErrNoRows")
 }

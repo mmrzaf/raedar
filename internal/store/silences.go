@@ -27,6 +27,7 @@ type Silence struct {
 	Kind      SilenceKind
 	Rule      *string
 	Subject   *string
+	AppID     *int64
 	Reason    string
 	StartsAt  time.Time
 	EndsAt    time.Time
@@ -46,10 +47,10 @@ func (s *Store) CreateSilence(ctx context.Context, silence Silence) (int64, erro
 	if silence.DedupKey == nil {
 		var id int64
 		err := s.pool.QueryRow(ctx, `
-			insert into silences (kind, rule, subject, reason, starts_at, ends_at, created_by, dedup_key, comment)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			insert into silences (kind, rule, subject, app_id, reason, starts_at, ends_at, created_by, dedup_key, comment)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			returning id`,
-			string(silence.Kind), silence.Rule, silence.Subject, silence.Reason,
+			string(silence.Kind), silence.Rule, silence.Subject, silence.AppID, silence.Reason,
 			silence.StartsAt, silence.EndsAt, silence.CreatedBy, silence.DedupKey, silence.Comment,
 		).Scan(&id)
 		if err != nil {
@@ -61,11 +62,14 @@ func (s *Store) CreateSilence(ctx context.Context, silence Silence) (int64, erro
 	// index's WHERE clause for ON CONFLICT (cols) to find it.
 	var id int64
 	err := s.pool.QueryRow(ctx, `
-		insert into silences (kind, rule, subject, reason, starts_at, ends_at, created_by, dedup_key, comment)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		on conflict (kind, dedup_key) where dedup_key is not null do update set starts_at = excluded.starts_at
+		insert into silences (kind, rule, subject, app_id, reason, starts_at, ends_at, created_by, dedup_key, comment)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		on conflict (kind, dedup_key) where dedup_key is not null do update set
+			rule = excluded.rule, subject = excluded.subject, app_id = excluded.app_id,
+			reason = excluded.reason, starts_at = excluded.starts_at, ends_at = excluded.ends_at,
+			created_by = excluded.created_by, comment = excluded.comment
 		returning id`,
-		string(silence.Kind), silence.Rule, silence.Subject, silence.Reason,
+		string(silence.Kind), silence.Rule, silence.Subject, silence.AppID, silence.Reason,
 		silence.StartsAt, silence.EndsAt, silence.CreatedBy, silence.DedupKey, silence.Comment,
 	).Scan(&id)
 	if err != nil {
@@ -108,37 +112,42 @@ func (s *Store) ActiveSilences(ctx context.Context, now time.Time) ([]Silence, e
 // FindActiveSilence reports the most-specific active silence for rule,
 // subject at now, or nil when there is none. The match precedence is:
 //
-//	rule + subject > rule > subject > *
+//	rule + subject > rule > subject > app > *
 //
 // and ties are broken by the latest ends_at (longest remaining), so a more
 // specific rule wins over a wider rule that ends later.
-func (s *Store) FindActiveSilence(ctx context.Context, rule, subject string, now time.Time) (*Silence, error) {
+func (s *Store) FindActiveSilence(ctx context.Context, rule, subject string, appID *int64, now time.Time) (*Silence, error) {
 	all, err := s.ActiveSilences(ctx, now)
 	if err != nil {
 		return nil, err
 	}
-	return matchSilence(all, rule, subject), nil
+	return matchSilence(all, rule, subject, appID), nil
 }
 
-// matchSilence finds the most-specific active silence for rule+subject. A
-// silence with rule=nil matches any rule; a silence with subject=nil matches
-// any subject. The most-specific match wins: (rule+subject) > (rule) >
-// (subject) > (wildcard). Ties on rank prefer the silence ending later.
-func matchSilence(active []Silence, rule, subject string) *Silence {
+// matchSilence finds the most specific active silence for rule+subject,
+// where an app-scoped silence matches when appID matches. A silence with
+// rule=nil matches any rule; subject=nil matches any subject; app=nil
+// matches any app. Precedence:
+//
+//	(rule, subject) > (rule) > (subject) > (app) > (wildcard)
+//
+// Ties on rank prefer the silence ending later.
+func matchSilence(active []Silence, rule, subject string, appID *int64) *Silence {
 	var best *Silence
 	bestRank := -1
 	for i := range active {
 		candidate := &active[i]
-		// Specificity: rule+subject beats rule beats subject beats wildcard.
 		var rank int
 		switch {
 		case candidate.Rule != nil && *candidate.Rule == rule && candidate.Subject != nil && *candidate.Subject == subject:
+			rank = 4
+		case candidate.Rule != nil && *candidate.Rule == rule && candidate.Subject == nil && candidate.AppID == nil:
 			rank = 3
-		case candidate.Rule != nil && *candidate.Rule == rule && candidate.Subject == nil:
+		case candidate.Rule == nil && candidate.Subject != nil && *candidate.Subject == subject && candidate.AppID == nil:
 			rank = 2
-		case candidate.Rule == nil && candidate.Subject != nil && *candidate.Subject == subject:
+		case candidate.Rule == nil && candidate.Subject == nil && candidate.AppID != nil && appID != nil && *candidate.AppID == *appID:
 			rank = 1
-		case candidate.Rule == nil && candidate.Subject == nil:
+		case candidate.Rule == nil && candidate.Subject == nil && candidate.AppID == nil:
 			rank = 0
 		default:
 			continue
@@ -157,16 +166,16 @@ func matchSilence(active []Silence, rule, subject string) *Silence {
 
 // silenceSelect is the SELECT fragment shared by silence queries.
 const silenceSelect = `
-select id, kind, rule, subject, reason, starts_at, ends_at,
+select id, kind, rule, subject, app_id, reason, starts_at, ends_at,
        created_at, created_by, dedup_key, comment
 from silences`
 
 // scanSilence reads one silence from a row.
 func scanSilence(row pgx.Row) (*Silence, error) {
 	var silence Silence
-	err := row.Scan(&silence.ID, &silence.Kind, &silence.Rule, &silence.Subject, &silence.Reason,
-		&silence.StartsAt, &silence.EndsAt, &silence.CreatedAt, &silence.CreatedBy,
-		&silence.DedupKey, &silence.Comment)
+	err := row.Scan(&silence.ID, &silence.Kind, &silence.Rule, &silence.Subject, &silence.AppID,
+		&silence.Reason, &silence.StartsAt, &silence.EndsAt, &silence.CreatedAt,
+		&silence.CreatedBy, &silence.DedupKey, &silence.Comment)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrSilenceNotFound
 	}
@@ -183,8 +192,8 @@ func scanSilences(rows pgx.Rows) ([]Silence, error) {
 	for rows.Next() {
 		var silence Silence
 		if err := rows.Scan(&silence.ID, &silence.Kind, &silence.Rule, &silence.Subject,
-			&silence.Reason, &silence.StartsAt, &silence.EndsAt, &silence.CreatedAt,
-			&silence.CreatedBy, &silence.DedupKey, &silence.Comment); err != nil {
+			&silence.AppID, &silence.Reason, &silence.StartsAt, &silence.EndsAt,
+			&silence.CreatedAt, &silence.CreatedBy, &silence.DedupKey, &silence.Comment); err != nil {
 			return nil, fmt.Errorf("scan silence: %w", err)
 		}
 		silences = append(silences, silence)

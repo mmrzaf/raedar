@@ -51,6 +51,8 @@ func variables() []variable {
 		{name: "RAEDAR_CERT_WARN", apply: parseVar(func(c *Config) *time.Duration { return &c.Rules.CertWarn }, parseDuration)},
 		{name: "RAEDAR_CERT_CRIT", apply: parseVar(func(c *Config) *time.Duration { return &c.Rules.CertCrit }, parseDuration)},
 		{name: "RAEDAR_RESOLVE_AFTER", apply: parseVar(func(c *Config) *time.Duration { return &c.Rules.ResolveAfter }, parseDuration)},
+		{name: "RAEDAR_CRASH_LOOP_WINDOW", apply: parseVar(func(c *Config) *time.Duration { return &c.Rules.CrashLoopWindow }, parseDuration)},
+		{name: "RAEDAR_CRASH_LOOP_CRASHES", apply: parseVar(func(c *Config) *int { return &c.Rules.CrashLoopCrashes }, parseIntAtLeast(2))},
 
 		// Notifications
 		{name: "RAEDAR_NOTIFY_WARNING", apply: parseVar(func(c *Config) *[]string { return &c.Notify.WarningChannels }, parseChannels)},

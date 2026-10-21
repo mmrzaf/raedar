@@ -2,7 +2,6 @@ package inbox
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -262,8 +261,3 @@ func formatStatus(host string, open map[store.IncidentKey]store.Incident, silenc
 	}
 	return sb.String()
 }
-
-// errNoIncident is a sentinel used when the dispatcher must not panic
-// on a missing lookup. Currently unused; kept for symmetry with future
-// commands.
-var _ = sql.ErrNoRows

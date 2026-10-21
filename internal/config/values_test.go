@@ -340,6 +340,14 @@ func variableCases() map[string]valueCase {
 			value: "10m",
 			check: wantDuration(func(c *Config) time.Duration { return c.Rules.ResolveAfter }, 10*time.Minute),
 		},
+		"RAEDAR_CRASH_LOOP_WINDOW": {
+			value: "15m",
+			check: wantDuration(func(c *Config) time.Duration { return c.Rules.CrashLoopWindow }, 15*time.Minute),
+		},
+		"RAEDAR_CRASH_LOOP_CRASHES": {
+			value: "5",
+			check: wantInt(func(c *Config) int { return c.Rules.CrashLoopCrashes }, 5),
+		},
 
 		// Notifications
 		"RAEDAR_NOTIFY_WARNING": {
@@ -595,6 +603,8 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_CERT_WARN",
 		"RAEDAR_CERT_CRIT",
 		"RAEDAR_RESOLVE_AFTER",
+		"RAEDAR_CRASH_LOOP_WINDOW",
+		"RAEDAR_CRASH_LOOP_CRASHES",
 		"RAEDAR_NOTIFY_WARNING",
 		"RAEDAR_NOTIFY_CRITICAL",
 		"RAEDAR_DIGEST_AT",

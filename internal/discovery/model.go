@@ -141,6 +141,10 @@ type Route struct {
 	Origin string
 	// Entrypoints are the router's Traefik entrypoints, for display.
 	Entrypoints []string
+	// Ignored reports whether the container label raedar.ignore=true was
+	// set on the router, which keeps it out of the rules while still
+	// showing it in the UI.
+	Ignored bool
 	// Service is the router's Traefik service, for display.
 	Service string
 }

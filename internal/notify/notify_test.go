@@ -514,10 +514,10 @@ func (s *fakeStore) Events(ctx context.Context, kind store.EventKind, from, to t
 	return s.events[kind], nil
 }
 
-func (s *fakeStore) FindActiveSilence(ctx context.Context, rule, subject string, now time.Time) (*store.Silence, error) {
+func (s *fakeStore) FindActiveSilence(ctx context.Context, rule, subject string, appID *int64, now time.Time) (*store.Silence, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return matchSilenceLocal(s.silences, rule, subject), nil
+	return matchSilenceLocal(s.silences, rule, subject, appID), nil
 }
 
 func (s *fakeStore) IncidentByID(ctx context.Context, id int64) (*store.Incident, error) {

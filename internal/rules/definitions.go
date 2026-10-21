@@ -34,11 +34,9 @@ const (
 	unhealthyOpenAfter = 2 * time.Minute
 	memoryOpenAfter    = 10 * time.Minute
 
-	// crashLoopWindow, crashLoopCrashes and crashLoopResolveAfter:
-	// container.restarting fires on this many crashes within the window and
-	// stays open until it has been quiet for the resolve time.
-	crashLoopWindow       = 10 * time.Minute
-	crashLoopCrashes      = 3
+	// crashLoopResolveAfter is how long container.restarting stays open
+	// after the crashes stop. The window and count thresholds are
+	// configurable through RAEDAR_CRASH_LOOP_WINDOW / _CRASHES.
 	crashLoopResolveAfter = 10 * time.Minute
 
 	// crashLookback is how far back crashes count for container.stopped, which

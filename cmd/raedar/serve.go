@@ -118,6 +118,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	}
 	connector := docker.NewConnector(cfg.Docker.Host)
 	discoverer := discovery.New(cfg.Docker.Host, cfg.Docker.TraefikContainer, self, st, logger, clock.System())
+	discoverer.SetDeploySilence(cfg.Notify.Silent.DeploySilence)
 	if err := discoverer.Load(ctx); err != nil {
 		return err
 	}

@@ -104,6 +104,8 @@ func TestLoadDefaults(t *testing.T) {
 			CertWarn:               14 * 24 * time.Hour,
 			CertCrit:               3 * 24 * time.Hour,
 			ResolveAfter:           5 * time.Minute,
+			CrashLoopWindow:        10 * time.Minute,
+			CrashLoopCrashes:       3,
 		},
 		Notify: NotifyConfig{
 			WarningChannels: []string{"telegram", "webhook"},

@@ -101,16 +101,29 @@ func proxyTarget(kind Kind) string {
 	return ""
 }
 
+// chatSend is the outcome of posting one message to one chat. A channel
+// that fans out returns one of these per recipient so the pager can mark
+// each delivery row independently and retry only the chats that failed.
+type chatSend struct {
+	chatID    string
+	messageID int64
+	err       error
+}
+
+// fanOut is implemented by channels that post to several recipients and
+// can report each result. Telegram is the only one. chats names the
+// recipients for this attempt, so a retry can target only the chats that
+// failed.
+type fanOut interface {
+	SendEach(ctx context.Context, message Message, chats []string) []chatSend
+}
+
 // telegramChannel sends messages through the Telegram Bot API.
 type telegramChannel struct {
 	apiURL  string
 	token   string
 	chatIDs []string
 	client  *http.Client
-	// record is called per chat_id after each Telegram POST so the notifier
-	// can attach the returned message_id to the matching delivery row. It
-	// is installed via SetTelegramRecorder to avoid an import cycle.
-	record func(chatID string, messageID int64)
 }
 
 // Kind returns the channel kind.
@@ -155,10 +168,15 @@ type sendMessageResponse struct {
 	} `json:"result"`
 }
 
-// Send posts the message to every chat with HTML formatting and link previews
-// disabled.
-func (c *telegramChannel) Send(ctx context.Context, message Message) error {
-	for _, chatID := range c.chatIDs {
+// SendEach posts the message to each requested chat. Every chat is
+// attempted even when an earlier one fails, so one dead chat cannot block
+// the others and a retry only repeats the chats that actually failed.
+func (c *telegramChannel) SendEach(ctx context.Context, message Message, chats []string) []chatSend {
+	if len(chats) == 0 {
+		chats = c.chatIDs
+	}
+	results := make([]chatSend, 0, len(chats))
+	for _, chatID := range chats {
 		form := url.Values{
 			"chat_id":                  {chatID},
 			"text":                     {message.Text},
@@ -168,21 +186,35 @@ func (c *telegramChannel) Send(ctx context.Context, message Message) error {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			c.apiURL+"/bot"+c.token+"/sendMessage", strings.NewReader(form.Encode()))
 		if err != nil {
-			return fmt.Errorf("build Telegram request: %w", err)
+			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("build Telegram request: %w", err)})
+			continue
 		}
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		var response sendMessageResponse
 		if err := sendJSON(c.client, request, &response); err != nil {
-			return fmt.Errorf("send Telegram message: %w", safeError(err))
+			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("send Telegram message: %w", safeError(err))})
+			continue
 		}
 		if !response.Ok {
-			return fmt.Errorf("Telegram sendMessage returned ok=false")
+			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("Telegram sendMessage returned ok=false")})
+			continue
 		}
-		if response.Result.MessageID != 0 && c.record != nil {
-			c.record(chatID, response.Result.MessageID)
+		results = append(results, chatSend{chatID: chatID, messageID: response.Result.MessageID})
+	}
+	return results
+}
+
+// Send posts the message to every chat and returns the first error, if any.
+// The notifier uses SendEach directly; Send exists for the generic Channel
+// interface used by the notify-test command.
+func (c *telegramChannel) Send(ctx context.Context, message Message) error {
+	var errs []error
+	for _, result := range c.SendEach(ctx, message, nil) {
+		if result.err != nil {
+			errs = append(errs, result.err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // newSMSChannel returns the configured SMS provider. The shape is a single
