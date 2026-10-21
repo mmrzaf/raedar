@@ -532,6 +532,46 @@ func (s *fakeStore) IncidentByID(ctx context.Context, id int64) (*store.Incident
 	return nil, nil
 }
 
+func (s *fakeStore) LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.deliveries {
+		if d.Status != "sent" {
+			continue
+		}
+		// We need to know the incident's (rule, subject) for matching.
+		// Use a closed form: deliveries don't store rule/subject
+		// directly, but the fakeStore has the incidents list.
+		var inc *store.Incident
+		if d.IncidentID != nil {
+			for i, c := range s.incidents {
+				if c.ID == *d.IncidentID {
+					inc = &s.incidents[i]
+					break
+				}
+			}
+		}
+		if inc == nil || inc.Rule != rule || inc.Subject != subject {
+			continue
+		}
+		copy := d
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeStore) OpenIncidentCount(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, inc := range s.incidents {
+		if inc.ResolvedAt == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // byChannel returns the deliveries of one channel.
 func (s *fakeStore) byChannel(channel Kind) []store.Delivery {
 	s.mu.Lock()

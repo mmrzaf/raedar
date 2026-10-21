@@ -72,9 +72,13 @@ type Gate struct {
 	Logger *slog.Logger
 
 	// Cooldown, when non-zero, is the minimum time between two pages for the
-	// same (rule, subject). The gate keeps a separate cooldown row in
-	// silences; phase 3 wires the configuration.
+	// same (rule, subject). The gate looks at the most recent sent
+	// delivery for the (rule, subject) and decides based on that.
 	Cooldown time.Duration
+	// CooldownByRule overrides Cooldown for specific rules. Use this to
+	// silence route-level pages quickly (15m) while letting host-level
+	// pages breathe (1h).
+	CooldownByRule map[string]time.Duration
 
 	// PageCritical, when true, lets critical incidents bypass quiet hours.
 	// Critical bypass is the default.
@@ -92,6 +96,10 @@ type Gate struct {
 	// "all quiet for N h" message may go out. The pager tracks the
 	// last-sent-at per host in memory.
 	StandDownAfter time.Duration
+	// lastPagedAt is the time the last incident was paged successfully
+	// on this host. Updated by the gate whenever a Decision returns
+	// GateRecorded. Stand-down uses it to decide whether to post.
+	lastPagedAt time.Time
 }
 
 // GateStore is the slice of Store the gate uses.
@@ -102,6 +110,14 @@ type GateStore interface {
 	// Acked returns the incident with its ack metadata; the gate reads
 	// ack_at to decide whether to suppress an incident entirely.
 	IncidentByID(ctx context.Context, id int64) (*store.Incident, error)
+	// LastSent returns the most recent sent delivery for the (rule,
+	// subject) pair, or nil when no row exists. Used by the cooldown
+	// branch.
+	LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error)
+	// OpenIncidentCount returns the number of currently open incidents.
+	// Used by the stand-down branch to avoid posting the "all quiet"
+	// message while a problem is still live.
+	OpenIncidentCount(ctx context.Context) (int, error)
 }
 
 // Evaluate reports the disposition of inputs. The pager calls Evaluate for
@@ -115,8 +131,6 @@ type GateStore interface {
 //  5. stand_down      stand-down window absorbs the page
 //  6. recorded        send the message (or — for held/cooldown/stand_down —
 //     deliver the deferred message at the boundary)
-//
-// Phase 2 wires (1) and (2). Phases 3 and 4 add the rest.
 func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs, message Message) Decision {
 	// 1. acked
 	if inputs.Incident.Acked() && g.Store != nil {
@@ -131,8 +145,48 @@ func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs, message Mess
 			return Decision{Status: GateSilenced, Channel: inputs.Channel, Reason: silence.Reason}
 		}
 	}
-	// 6. default
+	// 3. held: quiet hours hold the page. Critical incidents bypass the
+	// hold when PageCritical is true (the default).
+	if g.inQuietWindow(inputs.Now) {
+		bypass := g.PageCritical && inputs.Incident.Severity == store.SeverityCritical
+		if !bypass {
+			return Decision{Status: GateHeld, Channel: inputs.Channel, Reason: "quiet hours"}
+		}
+	}
+	// 4. cooldown: the most recent sent delivery for the same (rule,
+	// subject) is younger than the configured cooldown.
+	if g.cooldownFor(inputs.Incident.Rule) > 0 && g.Store != nil {
+		if last, err := g.Store.LastSent(ctx, inputs.Incident.Rule, inputs.Incident.Subject); err == nil && last != nil && last.SentAt != nil {
+			if inputs.Now.Sub(*last.SentAt) < g.cooldownFor(inputs.Incident.Rule) {
+				return Decision{Status: GateCooldown, Channel: inputs.Channel, Reason: "pager cooldown"}
+			}
+		}
+	}
+	// 5. stand-down: the host has been all-quiet for StandDownAfter and
+	// the queue is otherwise empty. Critical incidents bypass this so a
+	// flapping host cannot stay silent while it hurts.
+	if g.StandDownAfter > 0 && g.Store != nil {
+		if g.PageCritical && inputs.Incident.Severity == store.SeverityCritical {
+			// critical bypasses stand-down
+		} else if !g.lastPagedAt.IsZero() && inputs.Now.Sub(g.lastPagedAt) > g.StandDownAfter {
+			if count, err := g.Store.OpenIncidentCount(ctx); err == nil && count <= 0 {
+				return Decision{Status: GateStandDown, Channel: inputs.Channel, Reason: "stand-down"}
+			}
+		}
+	}
+	// 6. default: record + send. Update lastPagedAt so the next
+	// stand-down check is anchored to the most recent page.
+	g.lastPagedAt = inputs.Now
 	return Decision{Status: GateRecorded, Channel: inputs.Channel, Message: &message, Reason: ""}
+}
+
+// cooldownFor returns the cooldown that applies to a given rule, with the
+// per-rule override taking precedence over the global default.
+func (g *Gate) cooldownFor(rule string) time.Duration {
+	if override, ok := g.CooldownByRule[rule]; ok {
+		return override
+	}
+	return g.Cooldown
 }
 
 // inQuietWindow reports whether at now falls inside the configured quiet

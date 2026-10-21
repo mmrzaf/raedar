@@ -203,6 +203,32 @@ func parseList(s string) []string {
 	return items
 }
 
+// parseCooldownByRule parses the value of
+// RAEDAR_PAGER_COOLDOWN_BY_RULE. The format is `rule=duration,rule=duration`,
+// for example `route.down=15m,host.disk=1h`. The duration uses Go's
+// time.ParseDuration syntax.
+func parseCooldownByRule(s string) (map[string]time.Duration, error) {
+	items := parseList(s)
+	out := make(map[string]time.Duration, len(items))
+	for _, item := range items {
+		name, value, ok := strings.Cut(item, "=")
+		if !ok {
+			return nil, fmt.Errorf("expected rule=duration, got %q", item)
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			return nil, fmt.Errorf("expected rule=duration, got %q", item)
+		}
+		d, err := time.ParseDuration(value)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("duration %q: %v", value, err)
+		}
+		out[name] = d
+	}
+	return out, nil
+}
+
 // parseListChecked returns a parser for a comma-separated list whose items are
 // checked.
 func parseListChecked(check func(string) error) func(string) ([]string, error) {

@@ -81,6 +81,7 @@ func variables() []variable {
 		{name: "RAEDAR_QUIET_TZ", apply: parseVar(func(c *Config) **time.Location { return &c.Notify.Silent.QuietZone }, parseLocation)},
 		{name: "RAEDAR_QUIET_PAGE_CRITICAL", apply: parseVar(func(c *Config) *bool { return &c.Notify.Silent.QuietPageCritical }, parseBool)},
 		{name: "RAEDAR_PAGER_COOLDOWN", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.PagerCooldown }, parseDuration)},
+		{name: "RAEDAR_PAGER_COOLDOWN_BY_RULE", apply: parseVar(func(c *Config) *map[string]time.Duration { return &c.Notify.Silent.PagerCooldownByRule }, parseCooldownByRule)},
 		{name: "RAEDAR_STAND_DOWN_AFTER", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.StandDownAfter }, parseDuration)},
 		{name: "RAEDAR_DEPLOY_SILENCE", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.DeploySilence }, parseDuration)},
 

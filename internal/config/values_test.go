@@ -150,6 +150,23 @@ func wantBoolField(get func(*Config) bool, want bool) func(*testing.T, *Config) 
 	}
 }
 
+// wantCooldownByRule checks the parsed per-rule pager cooldown map.
+func wantCooldownByRule(get func(*Config) map[string]time.Duration, want map[string]time.Duration) func(*testing.T, *Config) {
+	return func(t *testing.T, cfg *Config) {
+		t.Helper()
+		got := get(cfg)
+		if len(got) != len(want) {
+			t.Errorf("len = %d, want %d (%v)", len(got), len(want), got)
+			return
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("%s = %v, want %v", k, got[k], v)
+			}
+		}
+	}
+}
+
 // wantLocation checks the time zone by name.
 func wantLocation(want string) func(*testing.T, *Config) {
 	return func(t *testing.T, cfg *Config) {
@@ -469,6 +486,12 @@ func variableCases() map[string]valueCase {
 			value: "30m",
 			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.PagerCooldown }, 30*time.Minute),
 		},
+		"RAEDAR_PAGER_COOLDOWN_BY_RULE": {
+			value: "route.down=15m,host.disk=1h",
+			check: wantCooldownByRule(func(c *Config) map[string]time.Duration {
+				return c.Notify.Silent.PagerCooldownByRule
+			}, map[string]time.Duration{"route.down": 15 * time.Minute, "host.disk": time.Hour}),
+		},
 		"RAEDAR_STAND_DOWN_AFTER": {
 			value: "24h",
 			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.StandDownAfter }, 24*time.Hour),
@@ -603,6 +626,7 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_QUIET_TZ",
 		"RAEDAR_QUIET_PAGE_CRITICAL",
 		"RAEDAR_PAGER_COOLDOWN",
+		"RAEDAR_PAGER_COOLDOWN_BY_RULE",
 		"RAEDAR_STAND_DOWN_AFTER",
 		"RAEDAR_DEPLOY_SILENCE",
 		"RAEDAR_RETENTION_MINUTE",

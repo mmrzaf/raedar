@@ -40,6 +40,12 @@ type Store interface {
 	FindActiveSilence(ctx context.Context, rule, subject string, now time.Time) (*store.Silence, error)
 	// IncidentByID returns one incident, including its ack metadata.
 	IncidentByID(ctx context.Context, id int64) (*store.Incident, error)
+	// LastSent returns the most recent sent delivery for a (rule, subject)
+	// pair, used by the gate to implement pager cooldown.
+	LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error)
+	// OpenIncidentCount returns the number of currently open incidents,
+	// used by the gate to decide whether to honour stand-down.
+	OpenIncidentCount(ctx context.Context) (int, error)
 }
 
 // Model provides the app names in messages.
@@ -160,6 +166,7 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 		Store:          st,
 		Logger:         logger,
 		Cooldown:       cfg.Notify.Silent.PagerCooldown,
+		CooldownByRule: cfg.Notify.Silent.PagerCooldownByRule,
 		PageCritical:   cfg.Notify.Silent.QuietPageCritical,
 		QuietFrom:      silentFrom(cfg.Notify.Silent.QuietFrom),
 		QuietTo:        silentFrom(cfg.Notify.Silent.QuietTo),

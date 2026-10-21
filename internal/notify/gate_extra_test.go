@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,8 +14,10 @@ import (
 // It honours the precedence rules by reusing the production matcher so
 // the tests can never drift from the runtime behaviour.
 type silenceStore struct {
-	silences  []store.Silence
-	incidents map[int64]store.Incident
+	mu         sync.Mutex
+	silences   []store.Silence
+	incidents  map[int64]store.Incident
+	deliveries []store.Delivery
 }
 
 func newSilenceStore() *silenceStore {
@@ -32,6 +35,176 @@ func (s *silenceStore) IncidentByID(ctx context.Context, id int64) (*store.Incid
 	}
 	return nil, nil
 }
+
+func (s *silenceStore) LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.deliveries {
+		if d.Status != "sent" {
+			continue
+		}
+		if d.IncidentID == nil {
+			continue
+		}
+		inc, ok := s.incidents[*d.IncidentID]
+		if !ok || inc.Rule != rule || inc.Subject != subject {
+			continue
+		}
+		copy := d
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *silenceStore) OpenIncidentCount(ctx context.Context) (int, error) {
+	return 0, nil
+}
+
+// TestGateCooldownSuppresses verifies that a delivery within the cooldown
+// window after a previous one is suppressed with status cooldown.
+func TestGateCooldownSuppresses(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := &silenceStore{
+		incidents: map[int64]store.Incident{
+			1: {ID: 1, Rule: "route.down", Subject: "fallback@file", Severity: store.SeverityCritical, OpenedAt: now},
+		},
+	}
+	gate := &Gate{
+		Store:        db,
+		Cooldown:     15 * time.Minute,
+		PageCritical: true,
+	}
+	// First call: no prior delivery, page goes through.
+	first := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident:   db.incidents[1],
+		ChangeKind: store.DeliveryOpened,
+		Channel:    KindTelegram,
+		Now:        now,
+	}, Message{Text: "first"})
+	if first.Status != GateRecorded {
+		t.Fatalf("first: status = %q, want recorded", first.Status)
+	}
+	// Second call 5 minutes later, within the 15-minute cooldown.
+	// LastSent is nil in the fake, so the gate would record it. We need
+	// the test to simulate the "already sent" state.
+	dbLastSent := &silenceStore{
+		incidents: db.incidents,
+		deliveries: []store.Delivery{
+			{ID: 1, IncidentID: ptrInt64(1), Status: "sent", SentAt: ptrTime(now.Add(-5 * time.Minute))},
+		},
+	}
+	gate.Store = dbLastSent
+	second := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident:   dbLastSent.incidents[1],
+		ChangeKind: store.DeliveryOpened,
+		Channel:    KindTelegram,
+		Now:        now,
+	}, Message{Text: "second"})
+	if second.Status != GateCooldown {
+		t.Fatalf("second: status = %q, want cooldown", second.Status)
+	}
+	// Third call 16 minutes after the first (just past the cooldown).
+	third := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident:   dbLastSent.incidents[1],
+		ChangeKind: store.DeliveryOpened,
+		Channel:    KindTelegram,
+		Now:        now.Add(11 * time.Minute),
+	}, Message{Text: "third"})
+	if third.Status != GateRecorded {
+		t.Fatalf("third: status = %q, want recorded (cooldown expired)", third.Status)
+	}
+}
+
+// TestGateQuietHoursHoldAndCriticalBypasses verifies that quiet hours
+// hold a warning and that critical incidents bypass when the setting
+// is enabled.
+func TestGateQuietHoursHoldAndCriticalBypasses(t *testing.T) {
+	from := time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC)
+	to := time.Date(0, 1, 1, 7, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC) // inside the window
+	gate := &Gate{
+		Store:        &silenceStore{},
+		QuietFrom:    &from,
+		QuietTo:      &to,
+		QuietZone:    time.UTC,
+		PageCritical: true,
+	}
+	dec := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident:   store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning},
+		ChangeKind: store.DeliveryOpened,
+		Channel:    KindTelegram,
+		Now:        now,
+	}, Message{Text: "warning"})
+	if dec.Status != GateHeld {
+		t.Fatalf("warning during quiet: status = %q, want held", dec.Status)
+	}
+	decCritical := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident:   store.Incident{ID: 2, Rule: "route.down", Subject: "x", Severity: store.SeverityCritical},
+		ChangeKind: store.DeliveryOpened,
+		Channel:    KindTelegram,
+		Now:        now,
+	}, Message{Text: "critical"})
+	if decCritical.Status != GateRecorded {
+		t.Fatalf("critical during quiet: status = %q, want recorded (PageCritical bypasses)", decCritical.Status)
+	}
+}
+
+// TestGateStandDownPostsAllQuiet confirms that, when the host has been
+// quiet long enough and no incidents are open, a new warning is
+// absorbed by stand-down. Critical still bypasses.
+func TestGateStandDownPostsAllQuiet(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	openStore := &silenceStore{} // OpenIncidentCount returns 0
+	closedStore := &openStoreHelper{openCount: 0}
+	gate := &Gate{
+		Store:          closedStore,
+		StandDownAfter: 6 * time.Hour,
+		PageCritical:   true,
+		lastPagedAt:    now.Add(-7 * time.Hour),
+	}
+	dec := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident:   store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning},
+		ChangeKind: store.DeliveryOpened,
+		Channel:    KindTelegram,
+		Now:        now,
+	}, Message{Text: "warning"})
+	if dec.Status != GateStandDown {
+		t.Fatalf("warning under stand-down: status = %q, want stand_down", dec.Status)
+	}
+	decCritical := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident:   store.Incident{ID: 2, Rule: "route.down", Subject: "x", Severity: store.SeverityCritical},
+		ChangeKind: store.DeliveryOpened,
+		Channel:    KindTelegram,
+		Now:        now,
+	}, Message{Text: "critical"})
+	if decCritical.Status != GateRecorded {
+		t.Fatalf("critical under stand-down: status = %q, want recorded (critical bypasses)", decCritical.Status)
+	}
+	_ = openStore
+}
+
+// openStoreHelper is a small wrapper that returns a specific open count
+// for the stand-down test.
+type openStoreHelper struct {
+	silenceStore
+	openCount int
+}
+
+func (h *openStoreHelper) FindActiveSilence(ctx context.Context, rule, subject string, now time.Time) (*store.Silence, error) {
+	return h.silenceStore.FindActiveSilence(ctx, rule, subject, now)
+}
+func (h *openStoreHelper) IncidentByID(ctx context.Context, id int64) (*store.Incident, error) {
+	return h.silenceStore.IncidentByID(ctx, id)
+}
+func (h *openStoreHelper) LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error) {
+	return h.silenceStore.LastSent(ctx, rule, subject)
+}
+func (h *openStoreHelper) OpenIncidentCount(ctx context.Context) (int, error) {
+	return h.openCount, nil
+}
+
+func ptrInt64(v int64) *int64        { return &v }
+func ptrTime(t time.Time) *time.Time { return &t }
 
 // silenceStrLocal mirrors store-package stringptr without the import cycle.
 func silenceStrLocal(s string) *string { return &s }
