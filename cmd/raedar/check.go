@@ -196,9 +196,9 @@ func checkChannels(cfg *config.Config, result *report) {
 		configured++
 		result.add(statusOK, "telegram", "configured, "+route(config.ProxyTargetTelegram))
 	}
-	if cfg.Notify.SMS.Provider != "" && len(cfg.Notify.SMS.To) > 0 {
+	if cfg.Notify.SMS.HTTP.URL != "" && len(cfg.Notify.SMS.To) > 0 {
 		configured++
-		result.add(statusOK, "sms", "configured through "+cfg.Notify.SMS.Provider+", "+route(config.ProxyTargetSMS))
+		result.add(statusOK, "sms", "configured (generic HTTP), "+route(config.ProxyTargetSMS))
 	}
 	if cfg.Notify.Webhook.URL != "" {
 		configured++

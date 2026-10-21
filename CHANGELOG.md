@@ -4,6 +4,141 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-21
+
+### Added
+
+- **Silences.** A silence stops pages for a scope until it expires while
+  every incident change is still recorded. Maintenance windows come from the
+  new Silences page, one-shot mutes from Telegram, and auto-deploy silences
+  from Raedar itself; quiet hours are a recurring window. Precedence is
+  (rule, subject) > rule > subject > app > everything.
+- **Telegram inbound.** Raedar long-polls `getUpdates` while it runs, so the
+  operator can reply `ack <id>`, `mute 2h` (on a paged message),
+  `mute <rule> <subject> <duration>`, `unmute <id>`, `status` and `help`
+  without opening a port or configuring a webhook. Processed updates are
+  deduplicated in `telegram_inbox`.
+- **Quiet hours.** `RAEDAR_QUIET_FROM/TO/TZ` hold warnings and deliver them
+  as one message when the window closes. Critical incidents page through
+  unless `RAEDAR_QUIET_PAGE_CRITICAL=false`.
+- **Pager cooldown.** `RAEDAR_PAGER_COOLDOWN` (with per-rule overrides in
+  `RAEDAR_PAGER_COOLDOWN_BY_RULE`) keeps the same (rule, subject) from
+  paging repeatedly; the held page goes out once when the cooldown expires.
+- **Stand-down.** `RAEDAR_STAND_DOWN_AFTER` sends one "all quiet for N h"
+  message after that much silence, so an idle host still proves the
+  pipeline works.
+- **Auto-deploy silence.** With `RAEDAR_DEPLOY_SILENCE` set, each deploy
+  silences the app for that long, deduplicated per image, so a restart does
+  not page.
+- **Subject names.** `RAEDAR_SUBJECT_NAMES` renames subjects in messages,
+  the digest and the UI; a trailing `*` is a prefix pattern.
+- **Route ignore.** `raedar.ignore=true` on a Traefik router keeps it out of
+  the route rules while leaving it visible.
+- **Silences and Deliveries pages.** The UI lists, creates and removes
+  silences (maintenance windows) and shows every delivery with its status:
+  `sent`, `failed`, `silenced`, `cooldown` or `held`.
+- **Ack metadata.** `incidents.acked_at` and `acked_by` persist an ack, and
+  the incident page shows who acknowledged it and when.
+- **Patterns default.** The patterns page opens on the host (CPU and
+  memory) instead of the first app.
+
+### Changed
+
+- **SMS is one generic HTTP shape.** The provider-specific path is gone; any
+  provider is described with `RAEDAR_SMS_HTTP_URL` and
+  `RAEDAR_SMS_HTTP_BODY`, with `{{to}}`, `{{message}}`, `{{from}}` and
+  `{{api_key}}` placeholders (the key comes from
+  `RAEDAR_SMS_HTTP_API_KEY`). `RAEDAR_SMS_PROVIDER` and the Kavenegar
+  variables were removed.
+- One delivery row is recorded per (incident × chat) instead of per
+  incident, and a retry contacts only the chats that failed, so a dead chat
+  can no longer duplicate pages to the working ones.
+- `container.restarting` thresholds are configurable with
+  `RAEDAR_CRASH_LOOP_WINDOW` and `RAEDAR_CRASH_LOOP_CRASHES`.
+
+### Fixed
+
+- A page withheld by the rate limit no longer leaves pending delivery rows
+  behind.
+- A held or cooled-down page is checked by the gate again before it is
+  sent. An incident acked, silenced or resolved while waiting no longer
+  produces a catch-up message, and a cooldown that ends inside quiet hours
+  no longer pages during them.
+- An ack now belongs to one episode: an incident that resolves and reopens
+  pages again instead of staying silent.
+- The pager cooldown only delays opening pages. Escalations and resolutions
+  go out at once, and a resolution is sent only to channels that actually
+  announced the incident.
+- SMS to several numbers is attempted per number. One failing number no
+  longer stops the others, and a retry no longer texts the numbers that
+  already got the message.
+- Telegram replies are valid HTML, so usage and error answers reach the
+  operator instead of being rejected by Telegram.
+- `mute` by reply resolves the page by chat and message id and refuses a
+  message that announced several incidents, instead of muting an arbitrary
+  one. Message ids are only unique per chat.
+- `ack` reports an already acked or resolved incident correctly, and `mute`
+  is capped at 30 days like the Silences page.
+- `RAEDAR_QUIET_TZ` defaults to `RAEDAR_TZ` as documented (it was UTC), and
+  `RAEDAR_PAGER_COOLDOWN`, `RAEDAR_STAND_DOWN_AFTER`, `RAEDAR_DEPLOY_SILENCE`
+  and the per-rule cooldowns accept `0` to turn them off.
+- The daily digest no longer counts as a page for the stand-down notice.
+- The notification rate limiter is safe for concurrent use, and a failing
+  held-summary send backs off instead of retrying every second.
+- SMS placeholders are substituted in one pass, so a message that contains
+  `{{api_key}}` cannot pull the key into the request.
+- The Silences page refuses a silence without a rule or a subject.
+- A deploy silence re-armed for the same image now extends instead of
+  keeping its expired end time.
+
+### Upgrading
+
+- Migrations `0005` and `0006` are applied on start and are forward-only.
+  `0005` adds `deliveries.telegram_chat_id` and `telegram_message_id`; `0006`
+  adds `silences.app_id`. A database that ran an earlier build of `0005` from
+  `develop` must be recreated.
+- Removed variables: `RAEDAR_SMS_PROVIDER`, `RAEDAR_KAVENEGAR_API_KEY`,
+  `RAEDAR_KAVENEGAR_SENDER`. Configure SMS through the generic HTTP shape.
+- `RAEDAR_SMS_FROM` is new and optional.
+
+## [0.2.2] - 2026-10-20
+
+### Added
+
+- A `silences` table backs every kind of "do not page this now" —
+  maintenance windows, one-shot mutes, quiet hours, pager cooldowns and
+  auto-deploy silences. Rule and subject are nullable so wildcards work;
+  the partial `(kind, dedup_key)` unique index makes idempotent inserts
+  possible (for example, a deploy that re-arms the same silence).
+- `incidents.acked_at` and `incidents.acked_by` columns so an operator's
+  ack is durable. Every query that reads an incident now exposes them.
+- A paging `Gate` in `internal/notify` that every delivery must pass
+  through. Today `Evaluate` returns `GateSilenced` when an active
+  silence covers the (rule, subject) and `GateAcked` when the incident
+  has been acked. The `held` and `cooldown` statuses are wired into the
+  deliveries status check but unused until 0.3.0 turns them on.
+- `telegram_inbox` table for inbound command dedup (later phase).
+- New env vars registered and validated, but with their default behaviour
+  unchanged: `RAEDAR_QUIET_FROM`, `RAEDAR_QUIET_TO`, `RAEDAR_QUIET_TZ`,
+  `RAEDAR_QUIET_PAGE_CRITICAL`, `RAEDAR_PAGER_COOLDOWN`,
+  `RAEDAR_STAND_DOWN_AFTER`, `RAEDAR_DEPLOY_SILENCE`.
+
+### Fixed
+
+- `Docker disk usage is unavailable` no longer logs at WARN every 15
+  minutes. The 403 from a read-only socket-proxy is the well-known
+  expected answer for `/system/df`; Raedar detects it and demotes the
+  log line to Debug. `raedar check` still surfaces it in the
+  docker-source line so the operator sees "Docker disk usage stays
+  empty" by design.
+
+### Upgrading
+
+- Existing deployments need no changes. Migrating from 0.2.1 brings two
+  forward-only migrations (0003_silences, 0004_inbox_ack). The
+  deliveries.status check widens; the rows already in production are
+  unaffected.
+
 ## [0.2.1] - 2026-10-20
 
 ### Fixed

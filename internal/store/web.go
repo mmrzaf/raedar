@@ -2,11 +2,8 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // Ping checks that the database answers.
@@ -63,23 +60,6 @@ func (s *Store) LatestEvents(ctx context.Context, limit int) ([]Event, error) {
 		return nil, fmt.Errorf("read latest events: %w", err)
 	}
 	return events, nil
-}
-
-// IncidentByID returns one incident, or nil when it does not exist.
-func (s *Store) IncidentByID(ctx context.Context, id int64) (*Incident, error) {
-	var incident Incident
-	err := s.pool.QueryRow(ctx, `
-		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at, one_shot, summary, details
-		from incidents where id = $1`, id).Scan(&incident.ID, &incident.Rule, &incident.Subject, &incident.AppID,
-		&incident.SlotID, &incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt,
-		&incident.OneShot, &incident.Summary, &incident.Details)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read incident %d: %w", id, err)
-	}
-	return &incident, nil
 }
 
 // TableSize is the disk usage of one table.

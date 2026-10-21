@@ -7,7 +7,8 @@ Raedar runs as one container next to your apps. It finds your apps from Docker C
 ## What it does
 
 - **Alerts that say something useful.** Error rate up, responses slower than usual for this hour, a route with no backend, a container crashing or restart-looping, a disk filling up, a failed backup job, a certificate about to expire. One message when a problem starts, one when it ends, with context: the deploy that preceded it, the endpoint behind it.
-- **Telegram, SMS and webhooks.** SMS through Kavenegar or any provider with an HTTP API. Critical incidents can go to SMS while everything else goes to Telegram.
+- **Telegram, SMS and webhooks.** SMS through a generic HTTP shape that handles every provider; critical incidents can go to SMS while everything else goes to Telegram.
+- **Silences and quiet hours.** Maintenance windows, mutes, pager cooldowns, auto-deploy silences and quiet hours stop the noise without losing the incident history. Acknowledge, mute or unmute from the Telegram chat.
 - **Nothing to configure per app.** New apps, routes and domains appear on their own. Error and latency alerts compare each route with its own normal behavior.
 - **History you can read.** Requests, errors, latency, CPU and memory per app on one time axis, with deploys and crashes marked on it. Click any moment to see the container logs from then.
 - **Patterns.** Week heatmaps, daily profiles and long-term trends show when things tend to happen.

@@ -104,6 +104,8 @@ func TestLoadDefaults(t *testing.T) {
 			CertWarn:               14 * 24 * time.Hour,
 			CertCrit:               3 * 24 * time.Hour,
 			ResolveAfter:           5 * time.Minute,
+			CrashLoopWindow:        10 * time.Minute,
+			CrashLoopCrashes:       3,
 		},
 		Notify: NotifyConfig{
 			WarningChannels: []string{"telegram", "webhook"},
@@ -114,6 +116,13 @@ func TestLoadDefaults(t *testing.T) {
 			Telegram:        TelegramConfig{APIURL: "https://api.telegram.org"},
 			SMS: SMSConfig{
 				HTTP: SMSHTTPConfig{Method: "POST", Encoding: "json"},
+			},
+			Silent: SilentConfig{
+				QuietZone:         time.UTC,
+				QuietPageCritical: true,
+				PagerCooldown:     30 * time.Minute,
+				StandDownAfter:    24 * time.Hour,
+				DeploySilence:     5 * time.Minute,
 			},
 		},
 		Heartbeat: HeartbeatConfig{
@@ -318,9 +327,9 @@ func TestLoadFileValue(t *testing.T) {
 
 func TestLoadFileMissing(t *testing.T) {
 	env := databaseEnv()
-	env["RAEDAR_KAVENEGAR_API_KEY_FILE"] = filepath.Join(t.TempDir(), "missing")
+	env["RAEDAR_TELEGRAM_TOKEN_FILE"] = filepath.Join(t.TempDir(), "missing")
 	_, err := Load(lookupFrom(env))
-	assertErrorContains(t, err, "RAEDAR_KAVENEGAR_API_KEY_FILE")
+	assertErrorContains(t, err, "RAEDAR_TELEGRAM_TOKEN_FILE")
 }
 
 func TestLoadFileEmptyValue(t *testing.T) {
@@ -427,7 +436,6 @@ func TestLoadInvalidValueNamesVariable(t *testing.T) {
 		{name: "RAEDAR_OUTBOUND_PROXY", value: "ftp://proxy.example.com"},
 		{name: "RAEDAR_TELEGRAM_CHAT_IDS", value: "abc", extra: map[string]string{"RAEDAR_TELEGRAM_TOKEN": "123456:abcdef"}},
 		{name: "RAEDAR_TELEGRAM_API_URL", value: "telegram.example.com"},
-		{name: "RAEDAR_SMS_PROVIDER", value: "twilio"},
 		{name: "RAEDAR_SMS_TO", value: "12 34"},
 		{name: "RAEDAR_SMS_HTTP_URL", value: "sms.example.com"},
 		{name: "RAEDAR_SMS_HTTP_METHOD", value: "PUT"},

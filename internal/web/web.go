@@ -60,7 +60,7 @@ type Server struct {
 
 // New returns the web server.
 func New(st *store.Store, cfg *config.Config, connector *docker.Connector, model Model, logger *slog.Logger, clock clock.Clock, options Options) (*Server, error) {
-	templates, err := template.New("").Funcs(templateFuncs(cfg.Location, clock)).ParseFS(embedded, "templates/*.html")
+	templates, err := template.New("").Funcs(templateFuncs(cfg.Location, clock, cfg.SubjectNames.Display)).ParseFS(embedded, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
@@ -93,6 +93,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /host", s.hostPage)
 	mux.HandleFunc("GET /patterns", s.patternsPage)
 	mux.HandleFunc("GET /events", s.eventsPage)
+	mux.HandleFunc("GET /silences", s.silencesPage)
+	mux.HandleFunc("POST /silences", s.createSilence)
+	mux.HandleFunc("POST /silences/{id}/delete", s.deleteSilence)
+	mux.HandleFunc("GET /deliveries", s.deliveriesPage)
 	mux.HandleFunc("GET /incidents/{id}", s.incidentPage)
 	mux.HandleFunc("GET /about", s.aboutPage)
 	mux.HandleFunc("GET /api/overview", s.overviewAPI)
@@ -175,7 +179,7 @@ func (s *Server) healthz(w http.ResponseWriter, request *http.Request) {
 }
 
 // templateFuncs returns the helpers the templates use.
-func templateFuncs(location *time.Location, clock clock.Clock) template.FuncMap {
+func templateFuncs(location *time.Location, clock clock.Clock, names func(string) string) template.FuncMap {
 	return template.FuncMap{
 		"time": func(at time.Time) string {
 			return at.In(location).Format("15:04")
@@ -195,6 +199,7 @@ func templateFuncs(location *time.Location, clock clock.Clock) template.FuncMap 
 		"plural":   plural,
 		"level":    meterLevel,
 		"latency":  latencyText,
+		"subject":  func(subject string) string { return names(subject) },
 		"mulf": func(value, factor float64) float64 {
 			return value * factor
 		},

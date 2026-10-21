@@ -60,7 +60,7 @@ func (s *Server) eventsAPI(w http.ResponseWriter, request *http.Request) {
 			continue
 		}
 		item := eventJSON{ID: event.ID, TS: event.TS, Kind: event.Kind, Severity: event.Severity,
-			Subject: event.Subject, Title: event.Title}
+			Subject: s.cfg.SubjectNames.Display(event.Subject), Title: event.Title}
 		if event.AppID != nil {
 			item.App = s.appName(model, *event.AppID)
 		}
@@ -90,7 +90,7 @@ func (s *Server) eventsAPI(w http.ResponseWriter, request *http.Request) {
 			continue
 		}
 		incidentItems = append(incidentItems, incidentJSON{ID: incident.ID, Rule: incident.Rule,
-			Subject: incident.Subject, Severity: incident.Severity, OpenedAt: incident.OpenedAt,
+			Subject: s.cfg.SubjectNames.Display(incident.Subject), Severity: incident.Severity, OpenedAt: incident.OpenedAt,
 			ResolvedAt: incident.ResolvedAt, Summary: incident.Summary, App: incidentApp(incident)})
 	}
 	writeJSON(w, map[string]any{"events": items, "incidents": incidentItems})
@@ -158,7 +158,7 @@ func (s *Server) eventsForApp(request *http.Request, appID int64, timeRange rang
 		if appID != 0 && (event.AppID == nil || *event.AppID != appID) {
 			continue
 		}
-		view := eventView{TS: event.TS, Kind: event.Kind, Severity: event.Severity, Title: event.Title, Subject: event.Subject}
+		view := eventView{TS: event.TS, Kind: event.Kind, Severity: event.Severity, Title: event.Title, Subject: s.cfg.SubjectNames.Display(event.Subject)}
 		if event.AppID != nil {
 			view.App = s.appName(model, *event.AppID)
 		}

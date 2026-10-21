@@ -106,8 +106,26 @@ type formatter struct {
 	location *time.Location
 	// deploys holds the deploy context of an app.
 	deploys map[int64]deployContext
+	// names renames an incident subject for display.
+	names func(string) string
 	// now is the time the message is built at.
 	now time.Time
+}
+
+// subjectName returns the display name of an incident: the app name when
+// the incident has one, otherwise the configured subject name or the
+// subject itself.
+func (f formatter) subjectName(incident store.Incident) string {
+	if name := incidentApp(incident); name != "" {
+		return name
+	}
+	subject := incident.Subject
+	if f.names != nil {
+		if name := f.names(subject); name != "" {
+			return name
+		}
+	}
+	return subject
 }
 
 // deployContext describes the deploy that preceded an incident.
@@ -136,7 +154,7 @@ func (f formatter) text(g group) string {
 
 // block returns one incident's Telegram block.
 func (f formatter) block(incident store.Incident, kind store.DeliveryKind, reopened bool) string {
-	header := incidentHeader(f.host, incident, kind)
+	header := f.incidentHeader(incident, kind)
 	if kind == store.DeliveryResolved {
 		return header + " resolved after " + durationText(incidentDuration(incident))
 	}
@@ -159,7 +177,7 @@ func (f formatter) block(incident store.Incident, kind store.DeliveryKind, reope
 }
 
 // incidentHeader returns the first line of an incident's message.
-func incidentHeader(host string, incident store.Incident, kind store.DeliveryKind) string {
+func (f formatter) incidentHeader(incident store.Incident, kind store.DeliveryKind) string {
 	emoji := emojiWarning
 	if incident.Severity == store.SeverityCritical {
 		emoji = emojiCritical
@@ -167,11 +185,7 @@ func incidentHeader(host string, incident store.Incident, kind store.DeliveryKin
 	if kind == store.DeliveryResolved {
 		emoji = emojiResolved
 	}
-	name := incidentApp(incident)
-	if name == "" {
-		name = incident.Subject
-	}
-	return fmt.Sprintf("%s %s · %s — %s", emoji, host, name, incident.Summary)
+	return fmt.Sprintf("%s %s · %s — %s", emoji, f.host, f.subjectName(incident), incident.Summary)
 }
 
 // clock returns a time of day in the configured zone.
@@ -354,10 +368,7 @@ func (f formatter) smsText(g group) string {
 	case 1:
 		incident := incidents[0]
 		severity := strings.ToUpper(string(incident.Severity))
-		name := incidentApp(incident)
-		if name == "" {
-			name = incident.Subject
-		}
+		name := f.subjectName(incident)
 		summary := smsSummary(incident)
 		if g.kind == store.DeliveryResolved {
 			minutes := int(incidentDuration(incident).Round(time.Minute) / time.Minute)
@@ -379,11 +390,7 @@ func (f formatter) smsText(g group) string {
 			limit = 2
 		}
 		for _, incident := range incidents[:limit] {
-			name := incidentApp(incident)
-			if name == "" {
-				name = incident.Subject
-			}
-			names = append(names, name+" "+shortRule(incident.Rule))
+			names = append(names, f.subjectName(incident)+" "+shortRule(incident.Rule))
 		}
 		if remaining := len(incidents) - limit; remaining > 0 {
 			names = append(names, fmt.Sprintf("+%d", remaining))

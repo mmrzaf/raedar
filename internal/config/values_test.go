@@ -114,6 +114,59 @@ func wantTimeOfDay(want TimeOfDay) func(*testing.T, *Config) {
 	}
 }
 
+// wantQuietTimeOfDay checks the quiet-hours time-of-day pointer.
+func wantQuietTimeOfDay(get func(*Config) *TimeOfDay, want TimeOfDay) func(*testing.T, *Config) {
+	return func(t *testing.T, cfg *Config) {
+		t.Helper()
+		value := get(cfg)
+		if value == nil || *value != want {
+			t.Errorf("got %v, want %v", value, want)
+		}
+	}
+}
+
+// wantQuietLocation checks the quiet-hours location.
+func wantQuietLocation(wantName string) func(*testing.T, *Config) {
+	return func(t *testing.T, cfg *Config) {
+		t.Helper()
+		zone := cfg.Notify.Silent.QuietZone
+		if zone == nil {
+			t.Errorf("QuietZone = nil, want %q", wantName)
+			return
+		}
+		if zone.String() != wantName {
+			t.Errorf("QuietZone = %q, want %q", zone.String(), wantName)
+		}
+	}
+}
+
+// wantBoolField checks a bool config field.
+func wantBoolField(get func(*Config) bool, want bool) func(*testing.T, *Config) {
+	return func(t *testing.T, cfg *Config) {
+		t.Helper()
+		if got := get(cfg); got != want {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// wantCooldownByRule checks the parsed per-rule pager cooldown map.
+func wantCooldownByRule(get func(*Config) map[string]time.Duration, want map[string]time.Duration) func(*testing.T, *Config) {
+	return func(t *testing.T, cfg *Config) {
+		t.Helper()
+		got := get(cfg)
+		if len(got) != len(want) {
+			t.Errorf("len = %d, want %d (%v)", len(got), len(want), got)
+			return
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("%s = %v, want %v", k, got[k], v)
+			}
+		}
+	}
+}
+
 // wantLocation checks the time zone by name.
 func wantLocation(want string) func(*testing.T, *Config) {
 	return func(t *testing.T, cfg *Config) {
@@ -287,6 +340,14 @@ func variableCases() map[string]valueCase {
 			value: "10m",
 			check: wantDuration(func(c *Config) time.Duration { return c.Rules.ResolveAfter }, 10*time.Minute),
 		},
+		"RAEDAR_CRASH_LOOP_WINDOW": {
+			value: "15m",
+			check: wantDuration(func(c *Config) time.Duration { return c.Rules.CrashLoopWindow }, 15*time.Minute),
+		},
+		"RAEDAR_CRASH_LOOP_CRASHES": {
+			value: "5",
+			check: wantInt(func(c *Config) int { return c.Rules.CrashLoopCrashes }, 5),
+		},
 
 		// Notifications
 		"RAEDAR_NOTIFY_WARNING": {
@@ -336,38 +397,17 @@ func variableCases() map[string]valueCase {
 			value: "https://telegram.example.com/",
 			check: wantString(func(c *Config) string { return c.Notify.Telegram.APIURL }, "https://telegram.example.com"),
 		},
-		"RAEDAR_SMS_PROVIDER": {
-			value: "Kavenegar",
-			extra: map[string]string{
-				"RAEDAR_SMS_TO":            "+989120000000",
-				"RAEDAR_KAVENEGAR_API_KEY": "key-1",
-			},
-			check: wantString(func(c *Config) string { return c.Notify.SMS.Provider }, "kavenegar"),
-		},
 		"RAEDAR_SMS_TO": {
 			value: "+989120000000, 00989120000001",
 			extra: map[string]string{
-				"RAEDAR_SMS_PROVIDER":      "kavenegar",
-				"RAEDAR_KAVENEGAR_API_KEY": "key-1",
+				"RAEDAR_SMS_HTTP_URL": "https://sms.example.com/send",
 			},
 			check: wantStrings(func(c *Config) []string { return c.Notify.SMS.To }, "+989120000000", "00989120000001"),
 		},
-		"RAEDAR_KAVENEGAR_API_KEY": {
-			value: "key-1",
-			extra: map[string]string{
-				"RAEDAR_SMS_PROVIDER": "kavenegar",
-				"RAEDAR_SMS_TO":       "+989120000000",
-			},
-			check: wantString(func(c *Config) string { return c.Notify.SMS.KavenegarAPIKey }, "key-1"),
-		},
-		"RAEDAR_KAVENEGAR_SENDER": {
+		"RAEDAR_SMS_FROM": {
 			value: "10004346",
-			extra: map[string]string{
-				"RAEDAR_SMS_PROVIDER":      "kavenegar",
-				"RAEDAR_SMS_TO":            "+989120000000",
-				"RAEDAR_KAVENEGAR_API_KEY": "key-1",
-			},
-			check: wantString(func(c *Config) string { return c.Notify.SMS.KavenegarSender }, "10004346"),
+			extra: smsHTTPEnv(),
+			check: wantString(func(c *Config) string { return c.Notify.SMS.From }, "10004346"),
 		},
 		"RAEDAR_SMS_HTTP_URL": {
 			value: "https://sms.example.com/send?to={{to}}&text={{message}}",
@@ -394,6 +434,11 @@ func variableCases() map[string]valueCase {
 			extra: smsHTTPEnv(),
 			check: wantString(func(c *Config) string { return c.Notify.SMS.HTTP.Encoding }, "form"),
 		},
+		"RAEDAR_SMS_HTTP_API_KEY": {
+			value: "abc123",
+			extra: smsHTTPEnv(),
+			check: wantString(func(c *Config) string { return c.Notify.SMS.HTTP.APIKey }, "abc123"),
+		},
 		"RAEDAR_WEBHOOK_URL": {
 			value: "https://hooks.example.com/raedar",
 			check: wantString(func(c *Config) string { return c.Notify.Webhook.URL }, "https://hooks.example.com/raedar"),
@@ -402,6 +447,23 @@ func variableCases() map[string]valueCase {
 			value: "s3cret",
 			extra: map[string]string{"RAEDAR_WEBHOOK_URL": "https://hooks.example.com/raedar"},
 			check: wantString(func(c *Config) string { return c.Notify.Webhook.Secret }, "s3cret"),
+		},
+
+		// Presentation
+		"RAEDAR_SUBJECT_NAMES": {
+			value: "fallback@file=Unrouted traffic, certbot.*=Certificates",
+			check: func(t *testing.T, c *Config) {
+				t.Helper()
+				if got := c.SubjectNames.Display("fallback@file"); got != "Unrouted traffic" {
+					t.Errorf("Display(fallback@file) = %q", got)
+				}
+				if got := c.SubjectNames.Display("certbot.service"); got != "Certificates" {
+					t.Errorf("Display(certbot.service) = %q", got)
+				}
+				if got := c.SubjectNames.Display("host.disk"); got != "host.disk" {
+					t.Errorf("Display(host.disk) = %q, want unchanged", got)
+				}
+			},
 		},
 
 		// Heartbeats
@@ -433,6 +495,44 @@ func variableCases() map[string]valueCase {
 			check: wantDuration(func(c *Config) time.Duration { return c.Heartbeat.Timeout }, 5*time.Minute),
 		},
 
+		// Silencing (quiet hours, pager cooldown, stand-down, deploy silence).
+		"RAEDAR_QUIET_FROM": {
+			value: "22:00",
+			extra: map[string]string{"RAEDAR_QUIET_TO": "07:00"},
+			check: wantQuietTimeOfDay(func(c *Config) *TimeOfDay { return c.Notify.Silent.QuietFrom }, TimeOfDay{Hour: 22}),
+		},
+		"RAEDAR_QUIET_TO": {
+			value: "07:00",
+			extra: map[string]string{"RAEDAR_QUIET_FROM": "22:00"},
+			check: wantQuietTimeOfDay(func(c *Config) *TimeOfDay { return c.Notify.Silent.QuietTo }, TimeOfDay{Hour: 7}),
+		},
+		"RAEDAR_QUIET_TZ": {
+			value: "Asia/Tehran",
+			check: wantQuietLocation("Asia/Tehran"),
+		},
+		"RAEDAR_QUIET_PAGE_CRITICAL": {
+			value: "false",
+			check: wantBoolField(func(c *Config) bool { return c.Notify.Silent.QuietPageCritical }, false),
+		},
+		"RAEDAR_PAGER_COOLDOWN": {
+			value: "30m",
+			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.PagerCooldown }, 30*time.Minute),
+		},
+		"RAEDAR_PAGER_COOLDOWN_BY_RULE": {
+			value: "route.down=15m,host.disk=1h",
+			check: wantCooldownByRule(func(c *Config) map[string]time.Duration {
+				return c.Notify.Silent.PagerCooldownByRule
+			}, map[string]time.Duration{"route.down": 15 * time.Minute, "host.disk": time.Hour}),
+		},
+		"RAEDAR_STAND_DOWN_AFTER": {
+			value: "24h",
+			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.StandDownAfter }, 24*time.Hour),
+		},
+		"RAEDAR_DEPLOY_SILENCE": {
+			value: "5m",
+			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.DeploySilence }, 5*time.Minute),
+		},
+
 		// Retention
 		"RAEDAR_RETENTION_MINUTE": {
 			value: "30d",
@@ -456,7 +556,6 @@ func variableCases() map[string]valueCase {
 // smsHTTPEnv returns the environment of a complete generic HTTP SMS provider.
 func smsHTTPEnv() map[string]string {
 	return map[string]string{
-		"RAEDAR_SMS_PROVIDER": "http",
 		"RAEDAR_SMS_TO":       "+989120000000",
 		"RAEDAR_SMS_HTTP_URL": "https://sms.example.com/send",
 	}
@@ -528,6 +627,8 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_CERT_WARN",
 		"RAEDAR_CERT_CRIT",
 		"RAEDAR_RESOLVE_AFTER",
+		"RAEDAR_CRASH_LOOP_WINDOW",
+		"RAEDAR_CRASH_LOOP_CRASHES",
 		"RAEDAR_NOTIFY_WARNING",
 		"RAEDAR_NOTIFY_CRITICAL",
 		"RAEDAR_DIGEST_AT",
@@ -539,23 +640,31 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_TELEGRAM_TOKEN",
 		"RAEDAR_TELEGRAM_CHAT_IDS",
 		"RAEDAR_TELEGRAM_API_URL",
-		"RAEDAR_SMS_PROVIDER",
 		"RAEDAR_SMS_TO",
-		"RAEDAR_KAVENEGAR_API_KEY",
-		"RAEDAR_KAVENEGAR_SENDER",
+		"RAEDAR_SMS_FROM",
 		"RAEDAR_SMS_HTTP_URL",
 		"RAEDAR_SMS_HTTP_METHOD",
 		"RAEDAR_SMS_HTTP_HEADERS",
 		"RAEDAR_SMS_HTTP_BODY",
 		"RAEDAR_SMS_HTTP_ENCODING",
+		"RAEDAR_SMS_HTTP_API_KEY",
 		"RAEDAR_WEBHOOK_URL",
 		"RAEDAR_WEBHOOK_SECRET",
+		"RAEDAR_SUBJECT_NAMES",
 		"RAEDAR_HEARTBEAT_URL",
 		"RAEDAR_HEARTBEAT_HEADER",
 		"RAEDAR_HEARTBEAT_INTERVAL",
 		"RAEDAR_HEARTBEAT_PEERS",
 		"RAEDAR_HEARTBEAT_RECEIVE_TOKEN",
 		"RAEDAR_HEARTBEAT_TIMEOUT",
+		"RAEDAR_QUIET_FROM",
+		"RAEDAR_QUIET_TO",
+		"RAEDAR_QUIET_TZ",
+		"RAEDAR_QUIET_PAGE_CRITICAL",
+		"RAEDAR_PAGER_COOLDOWN",
+		"RAEDAR_PAGER_COOLDOWN_BY_RULE",
+		"RAEDAR_STAND_DOWN_AFTER",
+		"RAEDAR_DEPLOY_SILENCE",
 		"RAEDAR_RETENTION_MINUTE",
 		"RAEDAR_RETENTION_PATHS",
 		"RAEDAR_RETENTION_HOUR",

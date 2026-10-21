@@ -56,6 +56,8 @@ func routesFromLabels(labels map[string]string) []Route {
 			route.TLS = true
 		case "tls.passthrough":
 			route.Passthrough = !isFalse(labels[key])
+		case "raedar.ignore":
+			route.Ignored = !isFalse(labels[key])
 		}
 	}
 	var routes []Route
@@ -71,7 +73,7 @@ func routesFromLabels(labels map[string]string) []Route {
 // splitRouterLabel separates the router name from the field in a router
 // label. It reports false for fields Raedar does not read.
 func splitRouterLabel(remainder string) (name, field string, ok bool) {
-	for _, field := range []string{"tls.certresolver", "tls.passthrough", "entrypoints", "service", "rule", "tls"} {
+	for _, field := range []string{"tls.certresolver", "tls.passthrough", "raedar.ignore", "entrypoints", "service", "rule", "tls"} {
 		if suffix := "." + field; strings.HasSuffix(remainder, suffix) {
 			return strings.TrimSuffix(remainder, suffix), field, true
 		}

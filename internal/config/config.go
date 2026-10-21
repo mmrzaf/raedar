@@ -5,6 +5,7 @@ package config
 import (
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -35,6 +36,8 @@ type Config struct {
 	Notify NotifyConfig
 	// Heartbeat holds the heartbeat sender and receiver settings.
 	Heartbeat HeartbeatConfig
+	// SubjectNames renames subjects in messages and the UI.
+	SubjectNames SubjectNames
 	// Retention holds how long history is kept.
 	Retention RetentionConfig
 }
@@ -107,6 +110,10 @@ type RulesConfig struct {
 	// ResolveAfter is the time a condition must be false before an incident
 	// resolves, for rules that do not define their own resolution.
 	ResolveAfter time.Duration
+	// CrashLoopWindow and CrashLoopCrashes define when container.restarting
+	// fires: at least CrashLoopCrashes crashes inside CrashLoopWindow.
+	CrashLoopWindow  time.Duration
+	CrashLoopCrashes int
 }
 
 // NotifyConfig holds the notification and digest settings.
@@ -137,6 +144,9 @@ type NotifyConfig struct {
 	SMS SMSConfig
 	// Webhook holds the webhook channel settings.
 	Webhook WebhookConfig
+	// Silent holds the silencing settings: quiet hours, ack persistence,
+	// pager cooldown and stand-down.
+	Silent SilentConfig
 }
 
 // TelegramConfig holds the Telegram channel settings.
@@ -151,32 +161,40 @@ type TelegramConfig struct {
 
 // SMSConfig holds the SMS channel settings.
 type SMSConfig struct {
-	// Provider is "kavenegar" or "http", empty when SMS is not configured.
-	Provider string
 	// To are the recipient numbers.
 	To []string
-	// KavenegarAPIKey is the Kavenegar API key.
-	KavenegarAPIKey string
-	// KavenegarSender is the Kavenegar sender line, empty for Kavenegar's
-	// default line.
-	KavenegarSender string
+	// From is the sender line the SMS provider accepts (some providers
+	// take a registered number, some take a string). Empty when the
+	// provider does not need one.
+	From string
 	// HTTP holds the generic HTTP provider settings.
 	HTTP SMSHTTPConfig
 }
 
 // SMSHTTPConfig holds the generic HTTP SMS provider settings.
+//
+// URL and Body templates support the placeholders {{to}}, {{message}},
+// {{from}} and {{api_key}}. Providers that put the API key in the URL
+// path can use {{api_key}} in the URL template and skip an Authorization
+// header. Encoding applies to every placeholder in Body.
 type SMSHTTPConfig struct {
-	// URL is the request URL; it may contain {{to}} and {{message}}.
+	// URL is the request URL; it may contain {{to}}, {{message}}, {{from}}
+	// and {{api_key}}.
 	URL string
 	// Method is "GET" or "POST".
 	Method string
 	// Headers are extra request headers.
 	Headers []Header
-	// Body is the request body template.
+	// Body is the request body template; placeholders {{to}}, {{message}},
+	// {{from}} and {{api_key}} are substituted before send.
 	Body string
 	// Encoding is how placeholder values are escaped in the body: "json",
 	// "form" or "raw".
 	Encoding string
+	// APIKey is substituted for {{api_key}} in the URL and the body. It is
+	// the generic way to authenticate providers that put the key in the
+	// URL path.
+	APIKey string
 }
 
 // WebhookConfig holds the webhook channel settings.
@@ -205,6 +223,63 @@ type HeartbeatConfig struct {
 	ReceiveToken string
 	// Timeout is the silence after which a peer is reported.
 	Timeout time.Duration
+}
+
+// SilentConfig holds the silencing settings shared by the gate and the UI.
+//
+// QuietFrom and QuietTo form an optional [from, to) window in QuietZone,
+// which defaults to the configured time zone. Overnight windows
+// (QuietFrom > QuietTo) span midnight. Both are set together or neither.
+//
+// PagerCooldown is the minimum time between two pages for the same
+// (rule, subject); 0 disables it. Per-rule overrides are set by
+// PagerCooldownByRule.
+//
+// StandDownAfter is the idle duration after which Raedar emits a single
+// 'all quiet' message; 0 disables it. DeploySilence is how long an app is
+// silenced after a deploy; 0 disables it.
+type SilentConfig struct {
+	QuietFrom           *TimeOfDay
+	QuietTo             *TimeOfDay
+	QuietZone           *time.Location
+	QuietPageCritical   bool
+	PagerCooldown       time.Duration
+	PagerCooldownByRule map[string]time.Duration
+	StandDownAfter      time.Duration
+	DeploySilence       time.Duration
+}
+
+// SubjectNames maps an incident subject to a display name. The value in
+// the environment is a comma-separated list of subject=name entries; a
+// subject ending in * is a prefix pattern. Exact matches win over
+// patterns. An unmapped subject is shown unchanged.
+type SubjectNames struct {
+	exact    map[string]string
+	patterns []subjectPattern
+}
+
+// subjectPattern is one prefix pattern and its replacement.
+type subjectPattern struct {
+	prefix string
+	name   string
+}
+
+// Display returns the display name for a subject.
+func (s SubjectNames) Display(subject string) string {
+	if name, ok := s.exact[subject]; ok {
+		return name
+	}
+	for _, pattern := range s.patterns {
+		if strings.HasPrefix(subject, pattern.prefix) {
+			return pattern.name
+		}
+	}
+	return subject
+}
+
+// Empty reports whether no names are configured.
+func (s SubjectNames) Empty() bool {
+	return len(s.exact) == 0 && len(s.patterns) == 0
 }
 
 // RetentionConfig holds how long history is kept.

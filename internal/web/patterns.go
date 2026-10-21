@@ -221,7 +221,7 @@ func patternPoints(points []seriesPoint) []patternBin {
 // patternsPage renders the patterns page.
 func (s *Server) patternsPage(w http.ResponseWriter, request *http.Request) {
 	subjects := s.patternSubjects()
-	selected := subjects[0]
+	selected := defaultPatternSubject(subjects)
 	for _, subject := range subjects {
 		if subject.Value() == request.URL.Query().Get("subject") {
 			selected = subject
@@ -243,6 +243,18 @@ func (s *Server) patternsPage(w http.ResponseWriter, request *http.Request) {
 		"Subjects": subjects, "Metrics": metrics, "Subject": selected.Value(), "Metric": metric,
 		"Weeks": weeks, "Series": ref.String(),
 	})
+}
+
+// defaultPatternSubject returns the subject the patterns page shows when
+// the request does not name one. The host is the useful default for an
+// operator: CPU and memory tell the server story first.
+func defaultPatternSubject(subjects []patternSubject) patternSubject {
+	for _, subject := range subjects {
+		if subject.Kind == subjectHost {
+			return subject
+		}
+	}
+	return subjects[0]
 }
 
 // patternSubject is one choice in the patterns picker.

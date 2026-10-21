@@ -58,6 +58,16 @@ type Discoverer struct {
 	accessRoutes map[string]*Route
 
 	classifier *classifier
+
+	// deploySilence, when > 0, creates an app-scoped silence after every
+	// deploy so a restart does not page. Set through SetDeploySilence.
+	deploySilence time.Duration
+}
+
+// SetDeploySilence configures the auto-deploy silence window. Zero
+// disables it.
+func (d *Discoverer) SetDeploySilence(window time.Duration) {
+	d.deploySilence = window
 }
 
 // New returns a discoverer for the Docker API at host, which is a unix:// or
@@ -517,8 +527,40 @@ func (d *Discoverer) recordDeploy(ctx context.Context, app *App, slot *Slot, old
 	}
 	d.logger.Info("deploy", slog.String("app", app.Name), slog.String("slot", slot.Key),
 		slog.String("image", container.ImageRef))
+	d.silenceDeploy(ctx, app.ID, app.Name, container.ImageRef, at)
 	return nil
 }
+
+// silenceDeploy writes an app-scoped silence for the deploy just
+// recorded. It is idempotent per (app, image): re-recording the same
+// deploy does not extend or duplicate the silence.
+func (d *Discoverer) silenceDeploy(ctx context.Context, appID int64, appName, image string, at time.Time) {
+	if d.deploySilence <= 0 || appID <= 0 {
+		return
+	}
+	id := appID
+	endsAt := at.Add(d.deploySilence)
+	now := d.clock.Now()
+	if endsAt.Before(now) {
+		endsAt = now.Add(d.deploySilence)
+	}
+	key := fmt.Sprintf("deploy:%d:%s", appID, image)
+	reason := fmt.Sprintf("deploy %s", image)
+	if _, err := d.store.CreateSilence(ctx, store.Silence{
+		Kind:      store.SilenceAutoDeploy,
+		AppID:     &id,
+		Reason:    reason,
+		StartsAt:  now,
+		EndsAt:    endsAt,
+		CreatedBy: strPtr("auto:deploy"),
+		DedupKey:  &key,
+	}); err != nil {
+		d.logger.Warn("record auto-deploy silence", slog.String("app", appName), slog.String("error", err.Error()))
+	}
+}
+
+// strPtr returns a pointer to s.
+func strPtr(s string) *string { return &s }
 
 // updateEvent replaces the title and payload of an event.
 func (d *Discoverer) updateEvent(ctx context.Context, id int64, title string, payload any) error {

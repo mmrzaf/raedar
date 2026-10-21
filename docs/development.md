@@ -30,7 +30,7 @@ internal/source/
 internal/aggregate/      minute buckets, latency histograms, path normalization
 internal/store/          PostgreSQL access, embedded migrations, rollups, baselines, retention
 internal/rules/          rule evaluation and incident lifecycle
-internal/notify/         channels (telegram, kavenegar, httpsms, webhook), grouping, retries, rate limits
+internal/notify/         channels (telegram, httpsms, webhook), grouping, retries, rate limits
 internal/digest/         daily digest
 internal/heartbeat/      sender and receiver
 internal/web/            handlers, JSON API, templates, static files

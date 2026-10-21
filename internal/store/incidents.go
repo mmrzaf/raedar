@@ -35,13 +35,23 @@ type Incident struct {
 	Summary string
 	// Details is the incident's payload as JSON.
 	Details []byte
+	// AckedAt is when an operator first acked the incident; nil when open
+	// and unacked.
+	AckedAt *time.Time
+	// AckedBy identifies who acked the incident; "" together with a nil
+	// AckedAt means no one has acked it.
+	AckedBy *string
 }
+
+// Acked reports whether the incident has been acked.
+func (i Incident) Acked() bool { return i.AckedAt != nil }
 
 // OpenIncidents returns the incidents that are not resolved, keyed by rule and
 // subject.
 func (s *Store) OpenIncidents(ctx context.Context) (map[IncidentKey]Incident, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at, one_shot, summary, details
+		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at,
+		       one_shot, summary, details, acked_at, acked_by
 		from incidents where resolved_at is null`)
 	if err != nil {
 		return nil, fmt.Errorf("read open incidents: %w", err)
@@ -52,7 +62,7 @@ func (s *Store) OpenIncidents(ctx context.Context) (map[IncidentKey]Incident, er
 		var incident Incident
 		if err := rows.Scan(&incident.ID, &incident.Rule, &incident.Subject, &incident.AppID, &incident.SlotID,
 			&incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt, &incident.OneShot,
-			&incident.Summary, &incident.Details); err != nil {
+			&incident.Summary, &incident.Details, &incident.AckedAt, &incident.AckedBy); err != nil {
 			return nil, fmt.Errorf("scan open incident: %w", err)
 		}
 		incidents[IncidentKey{Rule: incident.Rule, Subject: incident.Subject}] = incident
@@ -110,10 +120,12 @@ func (s *Store) UpdateIncident(ctx context.Context, incident Incident) error {
 }
 
 // ReopenIncident starts a new episode of a resolved incident, keeping its ID.
+// The ack belongs to the earlier episode, so it is cleared: the new episode
+// pages again.
 func (s *Store) ReopenIncident(ctx context.Context, incident Incident) error {
 	_, err := s.pool.Exec(ctx, `
 		update incidents
-		set resolved_at = null, opened_at = $2, severity = $3, summary = $4, details = $5
+		set resolved_at = null, acked_at = null, acked_by = null, opened_at = $2, severity = $3, summary = $4, details = $5
 		where id = $1`, incident.ID, incident.OpenedAt, incident.Severity, incident.Summary, incident.Details)
 	if err != nil {
 		return fmt.Errorf("reopen incident %d: %w", incident.ID, err)
@@ -126,12 +138,14 @@ func (s *Store) ReopenIncident(ctx context.Context, incident Incident) error {
 func (s *Store) RecentResolvedIncident(ctx context.Context, rule, subject string, since time.Time) (*Incident, error) {
 	var incident Incident
 	err := s.pool.QueryRow(ctx, `
-		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at, one_shot, summary, details
+		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at,
+		       one_shot, summary, details, acked_at, acked_by
 		from incidents
 		where rule = $1 and subject = $2 and resolved_at is not null and resolved_at >= $3
-		order by resolved_at desc limit 1`, rule, subject, since).Scan(&incident.ID, &incident.Rule,
-		&incident.Subject, &incident.AppID, &incident.SlotID, &incident.RouteID, &incident.Severity,
-		&incident.OpenedAt, &incident.ResolvedAt, &incident.OneShot, &incident.Summary, &incident.Details)
+		order by resolved_at desc limit 1`, rule, subject, since).
+		Scan(&incident.ID, &incident.Rule, &incident.Subject, &incident.AppID, &incident.SlotID,
+			&incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt,
+			&incident.OneShot, &incident.Summary, &incident.Details, &incident.AckedAt, &incident.AckedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -144,7 +158,8 @@ func (s *Store) RecentResolvedIncident(ctx context.Context, rule, subject string
 // Incidents returns the incidents that overlap a time range, newest first.
 func (s *Store) Incidents(ctx context.Context, from, to time.Time) ([]Incident, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at, one_shot, summary, details
+		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at,
+		       one_shot, summary, details, acked_at, acked_by
 		from incidents
 		where opened_at < $2 and (resolved_at is null or resolved_at > $1)
 		order by opened_at desc`, from, to)
@@ -156,8 +171,8 @@ func (s *Store) Incidents(ctx context.Context, from, to time.Time) ([]Incident, 
 	for rows.Next() {
 		var incident Incident
 		if err := rows.Scan(&incident.ID, &incident.Rule, &incident.Subject, &incident.AppID, &incident.SlotID,
-			&incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt, &incident.OneShot,
-			&incident.Summary, &incident.Details); err != nil {
+			&incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt,
+			&incident.OneShot, &incident.Summary, &incident.Details, &incident.AckedAt, &incident.AckedBy); err != nil {
 			return nil, fmt.Errorf("scan incident: %w", err)
 		}
 		incidents = append(incidents, incident)
@@ -166,4 +181,38 @@ func (s *Store) Incidents(ctx context.Context, from, to time.Time) ([]Incident, 
 		return nil, fmt.Errorf("read incidents: %w", err)
 	}
 	return incidents, nil
+}
+
+// AckIncident records an ack on an open incident and reports whether this
+// call set it. The first ack wins: an already acked or resolved incident is
+// left alone and reports false, so the duration in the resolved footer is
+// anchored to the first ack.
+func (s *Store) AckIncident(ctx context.Context, id int64, at time.Time, by string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		update incidents set acked_at = $2, acked_by = $3
+		where id = $1 and acked_at is null and resolved_at is null`, id, at, by)
+	if err != nil {
+		return false, fmt.Errorf("ack incident %d: %w", id, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// IncidentByID returns one incident by id, including its ack metadata.
+// Returns (nil, nil) when no row matches.
+func (s *Store) IncidentByID(ctx context.Context, id int64) (*Incident, error) {
+	var incident Incident
+	err := s.pool.QueryRow(ctx, `
+		select id, rule, subject, app_id, slot_id, route_id, severity, opened_at, resolved_at,
+		       one_shot, summary, details, acked_at, acked_by
+		from incidents where id = $1`, id).
+		Scan(&incident.ID, &incident.Rule, &incident.Subject, &incident.AppID, &incident.SlotID,
+			&incident.RouteID, &incident.Severity, &incident.OpenedAt, &incident.ResolvedAt,
+			&incident.OneShot, &incident.Summary, &incident.Details, &incident.AckedAt, &incident.AckedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read incident %d: %w", id, err)
+	}
+	return &incident, nil
 }

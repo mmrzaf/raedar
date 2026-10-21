@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -46,6 +47,10 @@ type Message struct {
 type Channel interface {
 	// Kind returns the channel kind.
 	Kind() Kind
+	// ChatIDs returns the per-recipient list when the channel fans out
+	// (Telegram chats, SMS numbers). Other channels return an empty slice,
+	// which the pager treats as "one delivery row per incident".
+	ChatIDs() []string
 	// Send delivers the message.
 	Send(ctx context.Context, message Message) error
 }
@@ -70,7 +75,7 @@ func newChannels(cfg *config.Config, proxied, direct *http.Client, clock clock.C
 			client:  clientFor(KindTelegram),
 		}
 	}
-	if cfg.Notify.SMS.Provider != "" && len(cfg.Notify.SMS.To) > 0 {
+	if cfg.Notify.SMS.HTTP.URL != "" && len(cfg.Notify.SMS.To) > 0 {
 		channels[KindSMS] = newSMSChannel(cfg, clientFor(KindSMS))
 	}
 	if cfg.Notify.Webhook.URL != "" {
@@ -97,6 +102,22 @@ func proxyTarget(kind Kind) string {
 	return ""
 }
 
+// chatSend is the outcome of posting one message to one chat. A channel
+// that fans out returns one of these per recipient so the pager can mark
+// each delivery row independently and retry only the chats that failed.
+type chatSend struct {
+	chatID    string
+	messageID int64
+	err       error
+}
+
+// fanOut is implemented by channels that post to several recipients and
+// can report each result: Telegram and SMS. chats names the recipients for
+// this attempt, so a retry can target only the recipients that failed.
+type fanOut interface {
+	SendEach(ctx context.Context, message Message, chats []string) []chatSend
+}
+
 // telegramChannel sends messages through the Telegram Bot API.
 type telegramChannel struct {
 	apiURL  string
@@ -108,10 +129,54 @@ type telegramChannel struct {
 // Kind returns the channel kind.
 func (c *telegramChannel) Kind() Kind { return KindTelegram }
 
-// Send posts the message to every chat with HTML formatting and link previews
-// disabled.
-func (c *telegramChannel) Send(ctx context.Context, message Message) error {
-	for _, chatID := range c.chatIDs {
+// ChatIDs returns the configured chat_ids for this Telegram channel.
+func (c *telegramChannel) ChatIDs() []string { return c.chatIDs }
+
+// SendReply posts a single message to the given chat_id from this Telegram
+// channel. The reply goroutine in internal/inbox calls this to acknowledge
+// an operator command; it is independent from the notifier's incident
+// pager.
+func (c *telegramChannel) SendReply(ctx context.Context, chatID, text string) error {
+	form := url.Values{
+		"chat_id":                  {chatID},
+		"text":                     {text},
+		"parse_mode":               {"HTML"},
+		"disable_web_page_preview": {"true"},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.apiURL+"/bot"+c.token+"/sendMessage", strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("build Telegram reply: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	var response sendMessageResponse
+	if err := sendJSON(c.client, request, &response); err != nil {
+		return fmt.Errorf("send Telegram reply: %w", safeError(err))
+	}
+	if !response.Ok {
+		return fmt.Errorf("telegram sendMessage returned ok=false")
+	}
+	return nil
+}
+
+// sendMessageResponse is the part of the Telegram sendMessage response we
+// read: the assigned message_id, used to look up replies later.
+type sendMessageResponse struct {
+	Ok     bool `json:"ok"`
+	Result struct {
+		MessageID int64 `json:"message_id"`
+	} `json:"result"`
+}
+
+// SendEach posts the message to each requested chat. Every chat is
+// attempted even when an earlier one fails, so one dead chat cannot block
+// the others and a retry only repeats the chats that actually failed.
+func (c *telegramChannel) SendEach(ctx context.Context, message Message, chats []string) []chatSend {
+	if len(chats) == 0 {
+		chats = c.chatIDs
+	}
+	results := make([]chatSend, 0, len(chats))
+	for _, chatID := range chats {
 		form := url.Values{
 			"chat_id":                  {chatID},
 			"text":                     {message.Text},
@@ -121,94 +186,67 @@ func (c *telegramChannel) Send(ctx context.Context, message Message) error {
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			c.apiURL+"/bot"+c.token+"/sendMessage", strings.NewReader(form.Encode()))
 		if err != nil {
-			return fmt.Errorf("build Telegram request: %w", err)
+			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("build Telegram request: %w", err)})
+			continue
 		}
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if err := send(c.client, request); err != nil {
-			return fmt.Errorf("send Telegram message: %w", safeError(err))
+		var response sendMessageResponse
+		if err := sendJSON(c.client, request, &response); err != nil {
+			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("send Telegram message: %w", safeError(err))})
+			continue
 		}
+		if !response.Ok {
+			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("telegram sendMessage returned ok=false")})
+			continue
+		}
+		results = append(results, chatSend{chatID: chatID, messageID: response.Result.MessageID})
 	}
-	return nil
+	return results
 }
 
-// newSMSChannel returns the configured SMS provider.
+// Send posts the message to every chat and returns the first error, if any.
+// The notifier uses SendEach directly; Send exists for the generic Channel
+// interface used by the notify-test command.
+func (c *telegramChannel) Send(ctx context.Context, message Message) error {
+	var errs []error
+	for _, result := range c.SendEach(ctx, message, nil) {
+		if result.err != nil {
+			errs = append(errs, result.err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// newSMSChannel returns the configured SMS provider: a single generic HTTP
+// client. Providers that put the API key in the URL path use the {{api_key}}
+// placeholder, and providers that take a from line use {{from}}.
 func newSMSChannel(cfg *config.Config, client *http.Client) Channel {
 	sms := cfg.Notify.SMS
-	if sms.Provider == "http" {
-		return &httpSMSChannel{
-			url:      sms.HTTP.URL,
-			method:   sms.HTTP.Method,
-			headers:  sms.HTTP.Headers,
-			body:     sms.HTTP.Body,
-			encoding: sms.HTTP.Encoding,
-			to:       sms.To,
-			client:   client,
-		}
+	return &httpSMSChannel{
+		url:      sms.HTTP.URL,
+		method:   sms.HTTP.Method,
+		headers:  sms.HTTP.Headers,
+		body:     sms.HTTP.Body,
+		encoding: sms.HTTP.Encoding,
+		apiKey:   sms.HTTP.APIKey,
+		from:     sms.From,
+		to:       sms.To,
+		client:   client,
 	}
-	return &kavenegarChannel{
-		apiKey:  sms.KavenegarAPIKey,
-		sender:  sms.KavenegarSender,
-		to:      sms.To,
-		client:  client,
-		baseURL: "https://api.kavenegar.com",
-	}
-}
-
-// kavenegarChannel sends messages through Kavenegar.
-type kavenegarChannel struct {
-	apiKey  string
-	sender  string
-	to      []string
-	client  *http.Client
-	baseURL string
-}
-
-// Kind returns the channel kind.
-func (c *kavenegarChannel) Kind() Kind { return KindSMS }
-
-// Send makes one request for all recipients. The API key is part of the URL,
-// so errors never contain it.
-func (c *kavenegarChannel) Send(ctx context.Context, message Message) error {
-	form := url.Values{
-		"receptor": {strings.Join(c.to, ",")},
-		"message":  {message.SMS},
-	}
-	if c.sender != "" {
-		form.Set("sender", c.sender)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/"+c.apiKey+"/sms/send.json", strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("build Kavenegar request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := c.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("send Kavenegar message: %w", safeError(err))
-	}
-	defer response.Body.Close()
-	var body struct {
-		Return struct {
-			Status  int    `json:"status"`
-			Message string `json:"message"`
-		} `json:"return"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&body); err != nil {
-		return fmt.Errorf("send Kavenegar message: read the response: %w", err)
-	}
-	if body.Return.Status != 200 {
-		return fmt.Errorf("send Kavenegar message: status %d: %s", body.Return.Status, body.Return.Message)
-	}
-	return nil
 }
 
 // httpSMSChannel sends one request per recipient through a generic HTTP API.
+// Both URL and Body templates support the placeholders {{to}}, {{message}},
+// {{from}} and {{api_key}}; they are substituted in one pass, so a value
+// that contains a placeholder is never expanded again.
 type httpSMSChannel struct {
 	url      string
 	method   string
 	headers  []config.Header
 	body     string
 	encoding string
+	apiKey   string
+	from     string
 	to       []string
 	client   *http.Client
 }
@@ -216,44 +254,73 @@ type httpSMSChannel struct {
 // Kind returns the channel kind.
 func (c *httpSMSChannel) Kind() Kind { return KindSMS }
 
-// Send makes one request per recipient.
+// ChatIDs returns the configured recipient numbers.
+func (c *httpSMSChannel) ChatIDs() []string { return slices.Clone(c.to) }
+
+// SendEach makes one request per requested recipient. Every recipient is
+// attempted even when an earlier one fails, so a retry only repeats the
+// numbers that actually failed.
+func (c *httpSMSChannel) SendEach(ctx context.Context, message Message, recipients []string) []chatSend {
+	if len(recipients) == 0 {
+		recipients = c.to
+	}
+	results := make([]chatSend, 0, len(recipients))
+	for _, recipient := range recipients {
+		results = append(results, chatSend{chatID: recipient, err: c.sendOne(ctx, recipient, message.SMS)})
+	}
+	return results
+}
+
+// Send delivers the message to every recipient and returns the joined errors.
 func (c *httpSMSChannel) Send(ctx context.Context, message Message) error {
-	for _, recipient := range c.to {
-		endpoint := strings.ReplaceAll(c.url, "{{to}}", url.QueryEscape(recipient))
-		endpoint = strings.ReplaceAll(endpoint, "{{message}}", url.QueryEscape(message.SMS))
-		body, contentType := c.encode(recipient, message.SMS)
-		request, err := http.NewRequestWithContext(ctx, c.method, endpoint, strings.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("build SMS request: %w", err)
+	var errs []error
+	for _, result := range c.SendEach(ctx, message, nil) {
+		if result.err != nil {
+			errs = append(errs, result.err)
 		}
-		for _, header := range c.headers {
-			request.Header.Set(header.Name, header.Value)
-		}
-		if contentType != "" && request.Header.Get("Content-Type") == "" {
-			request.Header.Set("Content-Type", contentType)
-		}
-		if err := send(c.client, request); err != nil {
-			return fmt.Errorf("send SMS: %w", safeError(err))
-		}
+	}
+	return errors.Join(errs...)
+}
+
+// sendOne makes the request for one recipient.
+func (c *httpSMSChannel) sendOne(ctx context.Context, recipient, text string) error {
+	endpoint := c.expand(c.url, url.QueryEscape, recipient, text)
+	body, contentType := c.encode(recipient, text)
+	request, err := http.NewRequestWithContext(ctx, c.method, endpoint, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build SMS request: %w", err)
+	}
+	for _, header := range c.headers {
+		request.Header.Set(header.Name, header.Value)
+	}
+	if contentType != "" && request.Header.Get("Content-Type") == "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	if err := send(c.client, request); err != nil {
+		return fmt.Errorf("send SMS: %w", safeError(err))
 	}
 	return nil
 }
 
+// expand fills a template, passing every value through escape.
+func (c *httpSMSChannel) expand(template string, escape func(string) string, recipient, text string) string {
+	return strings.NewReplacer(
+		"{{to}}", escape(recipient),
+		"{{message}}", escape(text),
+		"{{from}}", escape(c.from),
+		"{{api_key}}", escape(c.apiKey),
+	).Replace(template)
+}
+
 // encode fills the body template and returns the content type.
-func (c *httpSMSChannel) encode(recipient, message string) (string, string) {
+func (c *httpSMSChannel) encode(recipient, text string) (string, string) {
 	switch c.encoding {
 	case "form":
-		body := strings.ReplaceAll(c.body, "{{to}}", url.QueryEscape(recipient))
-		body = strings.ReplaceAll(body, "{{message}}", url.QueryEscape(message))
-		return body, "application/x-www-form-urlencoded"
+		return c.expand(c.body, url.QueryEscape, recipient, text), "application/x-www-form-urlencoded"
 	case "raw":
-		body := strings.ReplaceAll(c.body, "{{to}}", recipient)
-		body = strings.ReplaceAll(body, "{{message}}", message)
-		return body, ""
+		return c.expand(c.body, func(value string) string { return value }, recipient, text), ""
 	default:
-		body := strings.ReplaceAll(c.body, "{{to}}", escapeJSON(recipient))
-		body = strings.ReplaceAll(body, "{{message}}", escapeJSON(message))
-		return body, "application/json"
+		return c.expand(c.body, escapeJSON, recipient, text), "application/json"
 	}
 }
 
@@ -276,6 +343,9 @@ type webhookChannel struct {
 
 // Kind returns the channel kind.
 func (c *webhookChannel) Kind() Kind { return KindWebhook }
+
+// ChatIDs returns an empty slice; webhooks do not fan out per recipient.
+func (c *webhookChannel) ChatIDs() []string { return nil }
 
 // Send posts the JSON body, signed when a secret is configured.
 func (c *webhookChannel) Send(ctx context.Context, message Message) error {
@@ -309,6 +379,37 @@ func send(client *http.Client, request *http.Request) error {
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return fmt.Errorf("the server answered %s", response.Status)
+	}
+	return nil
+}
+
+// sendJSON performs one request, accepts a 2xx response and decodes the
+// body into out. The body is read with a 64 KiB cap so a misbehaving
+// server cannot exhaust memory. An empty body decodes successfully only
+// when out is itself a pointer-to-nil kind; most callers pass a typed
+// value, so we substitute a permissive empty envelope for the known
+// response shapes the package expects.
+func sendJSON(client *http.Client, request *http.Request, out any) error {
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<16))
+	if err != nil {
+		return fmt.Errorf("read the response: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return fmt.Errorf("the server answered %s: %s", response.Status, string(data))
+	}
+	// Empty body: substitute permissive envelope so JSON decoding succeeds
+	// without misleading the rest of the package.
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		trimmed = []byte(`{"ok":true,"result":{"message_id":0}}`)
+	}
+	if err := json.Unmarshal(trimmed, out); err != nil {
+		return fmt.Errorf("decode the response: %w", err)
 	}
 	return nil
 }

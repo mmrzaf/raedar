@@ -92,6 +92,15 @@ func parseDuration(s string) (time.Duration, error) {
 	return total, nil
 }
 
+// parseDurationOrZero parses a duration like parseDuration but also accepts a
+// bare 0, for settings where zero turns the feature off.
+func parseDurationOrZero(s string) (time.Duration, error) {
+	if s == "0" {
+		return 0, nil
+	}
+	return parseDuration(s)
+}
+
 // parseDecimalPrefix consumes a decimal number at the start of s and returns
 // it together with the rest of the string.
 func parseDecimalPrefix(s string) (float64, string, error) {
@@ -167,6 +176,53 @@ func parseTimeOfDay(s string) (TimeOfDay, error) {
 	return TimeOfDay{Hour: hour, Minute: minute}, nil
 }
 
+// parseOptionalTimeOfDay parses RAEDAR_QUIET_FROM/TO. An empty value keeps
+// the side disabled; a valid HH:MM value returns a TimeOfDay pointer.
+func parseOptionalTimeOfDay(s string) (*TimeOfDay, error) {
+	if s == "" {
+		return nil, nil
+	}
+	at, err := parseTimeOfDay(s)
+	if err != nil {
+		return nil, err
+	}
+	return &at, nil
+}
+
+// parseBool parses a boolean in the usual "true/false/1/0/yes/no" forms.
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "y", "on":
+		return true, nil
+	case "false", "0", "no", "n", "off":
+		return false, nil
+	}
+	return false, errors.New(`must be one of "true", "false", "1", "0", "yes", "no", "on", "off"`)
+}
+
+// parseSubjectNames parses RAEDAR_SUBJECT_NAMES: comma-separated
+// subject=name entries. A subject ending in * is a prefix pattern.
+func parseSubjectNames(s string) (SubjectNames, error) {
+	names := SubjectNames{exact: make(map[string]string)}
+	for _, item := range parseList(s) {
+		subject, name, ok := strings.Cut(item, "=")
+		subject = strings.TrimSpace(subject)
+		name = strings.TrimSpace(name)
+		if !ok || subject == "" || name == "" {
+			return SubjectNames{}, fmt.Errorf("must be subject=name entries, got %q", item)
+		}
+		if strings.HasSuffix(subject, "*") {
+			names.patterns = append(names.patterns, subjectPattern{
+				prefix: strings.TrimSuffix(subject, "*"),
+				name:   name,
+			})
+			continue
+		}
+		names.exact[subject] = name
+	}
+	return names, nil
+}
+
 // parseList splits a comma-separated list, trimming spaces around items and
 // dropping empty items.
 func parseList(s string) []string {
@@ -177,6 +233,32 @@ func parseList(s string) []string {
 		}
 	}
 	return items
+}
+
+// parseCooldownByRule parses the value of
+// RAEDAR_PAGER_COOLDOWN_BY_RULE. The format is `rule=duration,rule=duration`,
+// for example `route.down=15m,host.disk=1h`. The duration uses Go's
+// parseDurationOrZero syntax, where 0 disables the cooldown of that rule.
+func parseCooldownByRule(s string) (map[string]time.Duration, error) {
+	items := parseList(s)
+	out := make(map[string]time.Duration, len(items))
+	for _, item := range items {
+		name, value, ok := strings.Cut(item, "=")
+		if !ok {
+			return nil, fmt.Errorf("expected rule=duration, got %q", item)
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			return nil, fmt.Errorf("expected rule=duration, got %q", item)
+		}
+		d, err := parseDurationOrZero(value)
+		if err != nil {
+			return nil, fmt.Errorf("duration %q: %w", value, err)
+		}
+		out[name] = d
+	}
+	return out, nil
 }
 
 // parseListChecked returns a parser for a comma-separated list whose items are

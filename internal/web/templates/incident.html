@@ -6,9 +6,12 @@
       <h1>Incident {{.Incident.ID}}</h1>
       <span class="badge badge-{{.Incident.Severity}}">{{.Incident.Severity}}</span>
     </div>
-    <p class="sub"><strong>{{.Incident.Rule}}</strong> · {{.Incident.Subject}}{{if .App}} · <a href="{{.Link}}">{{.App}}</a>{{end}}</p>
+    <p class="sub"><strong>{{.Incident.Rule}}</strong> · {{subject .Incident.Subject}}{{if .App}} · <a href="{{.Link}}">{{.App}}</a>{{end}}</p>
   </div>
 </div>
+{{if .Incident.AckedAt}}
+<p class="flash">Acknowledged{{if .Incident.AckedBy}} by {{.Incident.AckedBy}}{{end}} at {{datetime .Incident.AckedAt}}. No further pages for this incident.</p>
+{{end}}
 <div class="tiles">
   <div class="card tile"><div class="tile-label">Summary</div><div class="tile-value">{{.Incident.Summary}}</div></div>
   <div class="card tile"><div class="tile-label">Opened</div><div class="tile-value">{{datetime .Incident.OpenedAt}}</div></div>

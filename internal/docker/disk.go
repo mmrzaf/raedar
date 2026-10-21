@@ -1,6 +1,9 @@
 package docker
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // DiskUsage is Docker's own disk usage.
 type DiskUsage struct {
@@ -55,4 +58,20 @@ func (c *Client) DiskUsage(ctx context.Context) (DiskUsage, error) {
 		usage.ContainersBytes += container.SizeRw
 	}
 	return usage, nil
+}
+
+// IsDiskUsageForbidden reports whether err is the well-known case of a
+// socket-proxy that does not allow GET /system/df. Callers demote the log
+// level for this case so the host source does not spam every 15 minutes
+// when /system/df is intentionally restricted. The check is string-based
+// because the daemon answer shape varies; the path is the stable identifier.
+func IsDiskUsageForbidden(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "/system/df") {
+		return false
+	}
+	return strings.Contains(msg, "403") || strings.Contains(msg, "404") || strings.Contains(msg, "405")
 }

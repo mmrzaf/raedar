@@ -96,6 +96,8 @@ func defaults() *Config {
 			CertWarn:               14 * 24 * time.Hour,
 			CertCrit:               3 * 24 * time.Hour,
 			ResolveAfter:           5 * time.Minute,
+			CrashLoopWindow:        10 * time.Minute,
+			CrashLoopCrashes:       3,
 		},
 		Notify: NotifyConfig{
 			WarningChannels: []string{"telegram", "webhook"},
@@ -111,6 +113,12 @@ func defaults() *Config {
 					Method:   "POST",
 					Encoding: "json",
 				},
+			},
+			Silent: SilentConfig{
+				QuietPageCritical: true,
+				PagerCooldown:     30 * time.Minute,
+				StandDownAfter:    24 * time.Hour,
+				DeploySilence:     5 * time.Minute,
 			},
 		},
 		Heartbeat: HeartbeatConfig{
@@ -138,6 +146,9 @@ func (c *Config) finalize() error {
 	}
 	if len(c.Host.Disks) == 0 {
 		c.Host.Disks = []Disk{{Name: "/", Path: c.Host.Root}}
+	}
+	if c.Notify.Silent.QuietZone == nil {
+		c.Notify.Silent.QuietZone = c.Location
 	}
 	return nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/docker"
 	"github.com/mmrzaf/raedar/internal/heartbeat"
+	"github.com/mmrzaf/raedar/internal/inbox"
 	"github.com/mmrzaf/raedar/internal/memlimit"
 	"github.com/mmrzaf/raedar/internal/notify"
 	"github.com/mmrzaf/raedar/internal/rules"
@@ -117,6 +118,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	}
 	connector := docker.NewConnector(cfg.Docker.Host)
 	discoverer := discovery.New(cfg.Docker.Host, cfg.Docker.TraefikContainer, self, st, logger, clock.System())
+	discoverer.SetDeploySilence(cfg.Notify.Silent.DeploySilence)
 	if err := discoverer.Load(ctx); err != nil {
 		return err
 	}
@@ -177,6 +179,37 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		defer cancel()
 		return httpServer.Shutdown(shutdownCtx)
 	})
+	if cfg.Notify.Telegram.Token != "" && len(cfg.Notify.Telegram.ChatIDs) > 0 {
+		dispatcher := &inbox.Dispatcher{
+			Store:    st,
+			Notifier: notification,
+			Logger:   logger,
+			Host:     cfg.HostName,
+			Location: cfg.Location,
+		}
+		source := inbox.NewSource(cfg, logger, clock.System(),
+			func(ctx context.Context, updateID int64) (bool, error) {
+				return st.ClaimUpdate(ctx, updateID)
+			}, dispatcher)
+		start(source.Run)
+		// Prune the claimed update ids once an hour. Telegram redelivers
+		// unconfirmed updates after a restart, so the ids of the last two days
+		// are kept to recognise them.
+		start(func(ctx context.Context) error {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					if _, err := st.PruneProcessedUpdates(ctx, 48*time.Hour); err != nil {
+						logger.Warn("prune inbox", slog.String("error", err.Error()))
+					}
+				}
+			}
+		})
+	}
 	start(discoverer.Run)
 	start(aggregator.Run)
 	start(notification.Run)

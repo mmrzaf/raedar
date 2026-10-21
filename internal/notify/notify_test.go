@@ -131,45 +131,29 @@ func TestTelegramChannel(t *testing.T) {
 	}
 }
 
-func TestKavenegarChannel(t *testing.T) {
-	srv := newServer(t, http.StatusOK, `{"return":{"status":200,"message":"ok"}}`)
-	channel := &kavenegarChannel{
-		apiKey: "api-key",
-		sender: "1000",
-		to:     []string{"+989120000000", "+989120000001"},
-		client: srv.Client(),
+func TestHTTPSMSChannelShape(t *testing.T) {
+	srv := newServer(t, http.StatusOK, "")
+	defer srv.Close()
+	channel := &httpSMSChannel{
+		url:      srv.URL + "/v1/{{api_key}}/sms/send.json?receptor={{to}}&message={{message}}",
+		method:   http.MethodPost,
+		encoding: "form",
+		from:     "1000",
+		body:     "to={{to}}&from={{from}}&text={{message}}",
+		to:       []string{"+989120000000", "+989120000001"},
+		client:   srv.Client(),
 	}
-	channel.baseURL = srv.URL
 	if err := channel.Send(context.Background(), Message{SMS: "hello"}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
 	requests := srv.received()
-	if len(requests) != 1 {
-		t.Fatalf("requests = %d, want one for all recipients", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want one per recipient (2)", len(requests))
 	}
-	if requests[0].path != "/v1/api-key/sms/send.json" {
-		t.Errorf("path = %q, want the send endpoint", requests[0].path)
-	}
-	form, err := url.ParseQuery(requests[0].body)
-	if err != nil {
-		t.Fatalf("parse form: %v", err)
-	}
-	if form.Get("receptor") != "+989120000000,+989120000001" {
-		t.Errorf("receptor = %q, want both recipients", form.Get("receptor"))
-	}
-	if form.Get("message") != "hello" || form.Get("sender") != "1000" {
-		t.Errorf("form = %v, want the message and sender", form)
-	}
-	// A provider status other than 200 is a failure, and the error never
-	// contains the API key.
-	srv.status = http.StatusOK
-	srv.body = `{"return":{"status":411,"message":"invalid receptor"}}`
-	err = channel.Send(context.Background(), Message{SMS: "hello"})
-	if err == nil || !strings.Contains(err.Error(), "411") {
-		t.Fatalf("Send() error = %v, want the provider status", err)
-	}
-	if strings.Contains(err.Error(), "api-key") {
-		t.Errorf("error = %q, want the API key redacted", err.Error())
+	for i, request := range requests {
+		if got := request.path; got != "/v1//sms/send.json" {
+			t.Errorf("request %d path = %q, want the send endpoint", i, got)
+		}
 	}
 }
 
@@ -437,6 +421,9 @@ type fakeChannel struct {
 
 func (c *fakeChannel) Kind() Kind { return c.kind }
 
+// ChatIDs returns an empty slice; the test channel does not fan out.
+func (c *fakeChannel) ChatIDs() []string { return nil }
+
 func (c *fakeChannel) Send(ctx context.Context, message Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -469,6 +456,8 @@ type fakeStore struct {
 	deliveries map[int64]store.Delivery
 	nextID     int64
 	events     map[store.EventKind][]store.Event
+	silences   []store.Silence
+	incidents  []store.Incident
 }
 
 func (s *fakeStore) AddDelivery(ctx context.Context, delivery store.Delivery) (int64, error) {
@@ -513,6 +502,64 @@ func (s *fakeStore) Events(ctx context.Context, kind store.EventKind, from, to t
 	return s.events[kind], nil
 }
 
+func (s *fakeStore) FindActiveSilence(ctx context.Context, rule, subject string, appID *int64, now time.Time) (*store.Silence, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return matchSilenceLocal(s.silences, rule, subject, appID), nil
+}
+
+func (s *fakeStore) IncidentByID(ctx context.Context, id int64) (*store.Incident, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, incident := range s.incidents {
+		if incident.ID == id {
+			copy := incident
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *fakeStore) LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.deliveries {
+		if d.Status != "sent" {
+			continue
+		}
+		// We need to know the incident's (rule, subject) for matching.
+		// Use a closed form: deliveries don't store rule/subject
+		// directly, but the fakeStore has the incidents list.
+		var inc *store.Incident
+		if d.IncidentID != nil {
+			for i, c := range s.incidents {
+				if c.ID == *d.IncidentID {
+					inc = &s.incidents[i]
+					break
+				}
+			}
+		}
+		if inc == nil || inc.Rule != rule || inc.Subject != subject {
+			continue
+		}
+		copy := d
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeStore) OpenIncidentCount(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, inc := range s.incidents {
+		if inc.ResolvedAt == nil {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // byChannel returns the deliveries of one channel.
 func (s *fakeStore) byChannel(channel Kind) []store.Delivery {
 	s.mu.Lock()
@@ -535,14 +582,17 @@ func newTestNotifier(t *testing.T, channels ...Channel) (*Notifier, *fakeStore, 
 	clock := &testClock{now: time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC)}
 	st := &fakeStore{events: map[store.EventKind][]store.Event{}}
 	notifier := &Notifier{
-		cfg:       cfg,
-		store:     st,
-		logger:    discardLogger(),
-		clock:     clock,
-		channels:  map[Kind]Channel{},
-		limiters:  map[Kind]*limiter{},
-		held:      map[Kind]int{},
-		formatter: formatter{host: cfg.HostName, publicURL: cfg.PublicURL, location: time.UTC, now: clock.now},
+		cfg:         cfg,
+		store:       st,
+		logger:      discardLogger(),
+		clock:       clock,
+		channels:    map[Kind]Channel{},
+		limiters:    map[Kind]*limiter{},
+		gate:        &Gate{Store: st, Logger: discardLogger()},
+		held:        map[Kind]int{},
+		heldRetryAt: map[Kind]time.Time{},
+		deferred:    map[string]*deferredPage{},
+		formatter:   formatter{host: cfg.HostName, publicURL: cfg.PublicURL, location: time.UTC, now: clock.now},
 	}
 	for _, channel := range channels {
 		notifier.channels[channel.Kind()] = channel
@@ -746,10 +796,9 @@ func TestProxyScopePerChannel(t *testing.T) {
 		cfg.Notify.Telegram.Token = "123:token"
 		cfg.Notify.Telegram.ChatIDs = []string{"42"}
 		cfg.Notify.Telegram.APIURL = "http://telegram.invalid"
-		cfg.Notify.SMS.Provider = "http"
-		cfg.Notify.SMS.To = []string{"+989120000000"}
 		cfg.Notify.SMS.HTTP.URL = sms.URL + "/send"
 		cfg.Notify.SMS.HTTP.Method = http.MethodPost
+		cfg.Notify.SMS.To = []string{"+989120000000"}
 		cfg.Notify.SMS.HTTP.Encoding = "json"
 		cfg.Notify.SMS.HTTP.Body = `{"to":"{{to}}","text":"{{message}}"}`
 		return cfg
@@ -829,5 +878,304 @@ func TestEscalationIsRecordedAsItsOwnDeliveryKind(t *testing.T) {
 	deliveries := st.byChannel(KindTelegram)
 	if len(deliveries) != 1 || deliveries[0].Kind != store.DeliveryEscalated {
 		t.Errorf("deliveries = %+v, want one escalated delivery", deliveries)
+	}
+}
+
+// TestDeliverDeferredSendsCatchUp verifies that pages held by the gate are
+// delivered as one catch-up message once their ready time passes.
+func TestDeliverDeferredSendsCatchUp(t *testing.T) {
+	notifier, st, cl := newTestNotifier(t, &fakeChannel{kind: KindTelegram})
+	notifier.cfg.Notify.Silent.StandDownAfter = 0
+	incident := incident(1, store.SeverityWarning)
+	incident.Rule = "host.disk"
+	incident.Subject = "/"
+	st.incidents = append(st.incidents, incident)
+	channel := notifier.channels[KindTelegram].(*fakeChannel)
+
+	notifier.deferIncident(channel, store.DeliveryOpened, incident, Decision{
+		Status: GateHeld, ReadyAt: cl.Now().Add(-time.Second),
+	})
+	notifier.deliverDeferred(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages = %d, want one catch-up message", got)
+	}
+	if text := channel.messages()[0].Text; !strings.Contains(text, "held while quiet") {
+		t.Fatalf("message = %q, want the quiet-hours header", text)
+	}
+	// A second call has nothing left to send.
+	notifier.deliverDeferred(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages after second call = %d, want still 1", got)
+	}
+}
+
+// TestMaybeStandDownSendsOnce verifies the all-quiet notice is sent once
+// per quiet period and never while an incident is open.
+func TestMaybeStandDownSendsOnce(t *testing.T) {
+	notifier, _, cl := newTestNotifier(t, &fakeChannel{kind: KindTelegram})
+	notifier.cfg.Notify.Silent.StandDownAfter = time.Hour
+	notifier.cfg.Notify.DigestChannels = []string{"telegram"}
+	channel := notifier.channels[KindTelegram].(*fakeChannel)
+
+	notifier.mu.Lock()
+	notifier.lastPageAt = cl.Now().Add(-2 * time.Hour)
+	notifier.mu.Unlock()
+
+	notifier.maybeStandDown(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages = %d, want one all-quiet notice", got)
+	}
+	if text := channel.messages()[0].Text; !strings.Contains(text, "all quiet") {
+		t.Fatalf("message = %q, want the all-quiet text", text)
+	}
+	notifier.maybeStandDown(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages after second call = %d, want still 1", got)
+	}
+}
+
+// TestHTTPSMSAPIKeyPlaceholder verifies {{api_key}} is substituted in the
+// URL and the body and is never left in the request.
+func TestHTTPSMSAPIKeyPlaceholder(t *testing.T) {
+	srv := newServer(t, http.StatusOK, "ok")
+	channel := &httpSMSChannel{
+		url:      srv.URL + "/v1/{{api_key}}/sms?to={{to}}",
+		method:   http.MethodPost,
+		body:     `{"key":"{{api_key}}","text":"{{message}}"}`,
+		encoding: "json",
+		apiKey:   "secret-key",
+		to:       []string{"+989120000000"},
+		client:   srv.Client(),
+	}
+	if err := channel.Send(context.Background(), Message{SMS: "hello"}); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	request := srv.received()[0]
+	if request.path != "/v1/secret-key/sms" {
+		t.Fatalf("path = %q, want the key substituted", request.path)
+	}
+	if !strings.Contains(request.body, `"key":"secret-key"`) {
+		t.Fatalf("body = %q, want the key substituted", request.body)
+	}
+}
+
+// TestSubjectNamesInMessages verifies the configured display name replaces
+// the raw subject in Telegram text.
+func TestSubjectNamesInMessages(t *testing.T) {
+	notifier, _, _ := newTestNotifier(t, &fakeChannel{kind: KindTelegram})
+	notifier.formatter.names = func(subject string) string {
+		if subject == "fallback@file" {
+			return "Unrouted traffic"
+		}
+		return subject
+	}
+	incident := incident(1, store.SeverityWarning)
+	incident.Rule = "route.down"
+	incident.Subject = "fallback@file"
+	incident.Details = []byte(`{}`)
+	g := group{kind: store.DeliveryOpened, incidents: []store.Incident{incident}, reopened: map[int64]bool{}}
+	if text := notifier.formatter.text(g); !strings.Contains(text, "Unrouted traffic") {
+		t.Fatalf("text = %q, want the configured display name", text)
+	}
+}
+
+// TestDeliverDeferredRechecksTheGate verifies that a held page is judged again
+// when it comes due: an incident that was acked, silenced or resolved while
+// waiting must not produce a catch-up message.
+func TestDeliverDeferredRechecksTheGate(t *testing.T) {
+	ackedAt := time.Date(2026, 10, 18, 15, 0, 0, 0, time.UTC)
+	resolvedAt := ackedAt
+	cases := map[string]struct {
+		change   func(*store.Incident)
+		silence  bool
+		wantSent bool
+		wantRows string
+	}{
+		"still failing": {change: func(*store.Incident) {}, wantSent: true},
+		"acked":         {change: func(i *store.Incident) { i.AckedAt = &ackedAt }, wantRows: "acked"},
+		"resolved":      {change: func(i *store.Incident) { i.ResolvedAt = &resolvedAt }},
+		"silenced":      {change: func(*store.Incident) {}, silence: true, wantRows: "silenced"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			channel := &fakeChannel{kind: KindTelegram}
+			notifier, st, cl := newTestNotifier(t, channel)
+			queued := incident(1, store.SeverityWarning)
+			current := queued
+			tc.change(&current)
+			st.incidents = append(st.incidents, current)
+			if tc.silence {
+				st.silences = append(st.silences, store.Silence{
+					Kind: store.SilenceOneShotMute, Rule: &queued.Rule, Subject: &queued.Subject,
+					Reason: "noise", StartsAt: cl.Now().Add(-time.Hour), EndsAt: cl.Now().Add(time.Hour),
+				})
+			}
+			notifier.deferIncident(channel, store.DeliveryOpened, queued, Decision{
+				Status: GateHeld, ReadyAt: cl.Now().Add(-time.Second),
+			})
+			notifier.deliverDeferred(context.Background())
+			if got := len(channel.messages()) == 1; got != tc.wantSent {
+				t.Fatalf("catch-up sent = %v, want %v", got, tc.wantSent)
+			}
+			if tc.wantRows != "" {
+				var found bool
+				for _, d := range st.byChannel(KindTelegram) {
+					found = found || d.Status == tc.wantRows
+				}
+				if !found {
+					t.Fatalf("no %q delivery row recorded", tc.wantRows)
+				}
+			}
+		})
+	}
+}
+
+// TestDeliverDeferredHoldsWhileQuietHoursLast verifies that a cooldown that
+// expires inside the quiet window does not page: the page stays deferred.
+func TestDeliverDeferredHoldsWhileQuietHoursLast(t *testing.T) {
+	channel := &fakeChannel{kind: KindTelegram}
+	notifier, st, cl := newTestNotifier(t, channel)
+	from := time.Date(0, 1, 1, 14, 0, 0, 0, time.UTC)
+	to := time.Date(0, 1, 1, 16, 0, 0, 0, time.UTC)
+	notifier.gate.QuietFrom, notifier.gate.QuietTo, notifier.gate.QuietZone = &from, &to, time.UTC
+	queued := incident(1, store.SeverityWarning)
+	st.incidents = append(st.incidents, queued)
+	notifier.deferIncident(channel, store.DeliveryOpened, queued, Decision{
+		Status: GateCooldown, ReadyAt: cl.Now().Add(-time.Second),
+	})
+	notifier.deliverDeferred(context.Background())
+	if got := len(channel.messages()); got != 0 {
+		t.Fatalf("messages = %d, want none during the quiet window", got)
+	}
+	cl.now = time.Date(2026, 10, 18, 16, 1, 0, 0, time.UTC)
+	notifier.deliverDeferred(context.Background())
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages after the window = %d, want the catch-up", got)
+	}
+}
+
+// TestResolutionSkipsPagesThatNeverWentOut verifies that an incident whose
+// opening page was held announced nothing, so its resolution is not sent.
+func TestResolutionSkipsPagesThatNeverWentOut(t *testing.T) {
+	channel := &fakeChannel{kind: KindTelegram}
+	notifier, st, _ := newTestNotifier(t, channel)
+	id := int64(7)
+	if _, err := st.AddDelivery(context.Background(), store.Delivery{
+		IncidentID: &id, Kind: store.DeliveryOpened, Channel: "telegram", Status: "held",
+	}); err != nil {
+		t.Fatalf("AddDelivery: %v", err)
+	}
+	resolved := incident(7, store.SeverityWarning)
+	now := time.Now()
+	resolved.ResolvedAt = &now
+	notifier.IncidentsChanged(context.Background(), []rules.Change{{Incident: resolved, Kind: rules.ChangeResolved}})
+	if got := len(channel.messages()); got != 0 {
+		t.Fatalf("messages = %d, want none for a resolution of an unannounced incident", got)
+	}
+}
+
+// TestDigestDoesNotResetStandDown verifies that only incident pages count as
+// activity for the stand-down notice.
+func TestDigestDoesNotResetStandDown(t *testing.T) {
+	notifier, _, cl := newTestNotifier(t, &fakeChannel{kind: KindTelegram})
+	notifier.cfg.Notify.DigestChannels = []string{"telegram"}
+	before := cl.Now().Add(-5 * time.Hour)
+	notifier.mu.Lock()
+	notifier.lastPageAt = before
+	notifier.mu.Unlock()
+	notifier.SendDigest(context.Background(), "daily digest")
+	notifier.mu.Lock()
+	got := notifier.lastPageAt
+	notifier.mu.Unlock()
+	if !got.Equal(before) {
+		t.Fatalf("lastPageAt = %v after a digest, want it unchanged (%v)", got, before)
+	}
+	notifier.IncidentsChanged(context.Background(), []rules.Change{{Incident: incident(1, store.SeverityCritical), Kind: rules.ChangeOpened}})
+	notifier.mu.Lock()
+	got = notifier.lastPageAt
+	notifier.mu.Unlock()
+	if !got.Equal(cl.Now()) {
+		t.Fatalf("lastPageAt = %v after a page, want %v", got, cl.Now())
+	}
+}
+
+func TestQuietSpan(t *testing.T) {
+	for window, want := range map[time.Duration]string{
+		24 * time.Hour: "24 h", 90 * time.Minute: "90 min", 30 * time.Minute: "30 min", time.Hour: "1 h",
+	} {
+		if got := quietSpan(window); got != want {
+			t.Errorf("quietSpan(%v) = %q, want %q", window, got, want)
+		}
+	}
+}
+
+// TestLimiterIsSafeForConcurrentUse is meant to run under -race: pages and the
+// background loop share one limiter per channel.
+func TestLimiterIsSafeForConcurrentUse(t *testing.T) {
+	l := &limiter{limit: 1000, window: time.Hour}
+	now := time.Now()
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				if l.allow(now) {
+					l.undo()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestHTTPSMSRetriesOnlyFailedRecipients verifies that one failing number is
+// reported on its own and does not stop the others.
+func TestHTTPSMSRetriesOnlyFailedRecipients(t *testing.T) {
+	var mu sync.Mutex
+	calls := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		to := r.URL.Query().Get("to")
+		mu.Lock()
+		calls[to]++
+		mu.Unlock()
+		if to == "+2" {
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	}))
+	defer srv.Close()
+	channel := &httpSMSChannel{
+		url: srv.URL + "?to={{to}}", method: http.MethodGet, encoding: "raw",
+		to: []string{"+1", "+2", "+3"}, client: srv.Client(),
+	}
+	results := channel.SendEach(context.Background(), Message{SMS: "hello"}, nil)
+	failed := map[string]bool{}
+	for _, result := range results {
+		failed[result.chatID] = result.err != nil
+	}
+	if len(results) != 3 || failed["+1"] || !failed["+2"] || failed["+3"] {
+		t.Fatalf("results = %+v, want only +2 failed and +3 still attempted", results)
+	}
+	retry := channel.SendEach(context.Background(), Message{SMS: "hello"}, []string{"+2"})
+	if len(retry) != 1 || calls["+1"] != 1 || calls["+3"] != 1 || calls["+2"] != 2 {
+		t.Fatalf("calls = %v, retry = %+v; want only +2 repeated", calls, retry)
+	}
+}
+
+// TestHTTPSMSPlaceholdersAreSubstitutedOnce verifies that a message which
+// itself contains a placeholder cannot pull the API key into the request.
+func TestHTTPSMSPlaceholdersAreSubstitutedOnce(t *testing.T) {
+	srv := newServer(t, http.StatusOK, "ok")
+	channel := &httpSMSChannel{
+		url: srv.URL + "/send", method: http.MethodPost, encoding: "json",
+		body: `{"text":"{{message}}","key":"{{api_key}}"}`, apiKey: "secret-key",
+		to: []string{"+1"}, client: srv.Client(),
+	}
+	if err := channel.Send(context.Background(), Message{SMS: "GET /{{api_key}}"}); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	body := srv.received()[0].body
+	if !strings.Contains(body, `"text":"GET /{{api_key}}"`) || !strings.Contains(body, `"key":"secret-key"`) {
+		t.Fatalf("body = %q, want the message kept literal and the key in its own field", body)
 	}
 }

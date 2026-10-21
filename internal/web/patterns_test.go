@@ -97,3 +97,20 @@ func TestAggregatePatternsWithoutData(t *testing.T) {
 		t.Errorf("aggregatePatterns(nil) = %+v, want an empty trend and a full empty heatmap", got)
 	}
 }
+
+func TestDefaultPatternSubjectPrefersHost(t *testing.T) {
+	subjects := []patternSubject{
+		{Label: "app: shop", Kind: subjectApp, Subject: "shop"},
+		{Label: "route: shop@docker", Kind: subjectRoute, Subject: "shop@docker"},
+		{Label: "host: h", Kind: subjectHost},
+	}
+	got := defaultPatternSubject(subjects)
+	if got.Kind != subjectHost {
+		t.Fatalf("default subject kind = %q, want host", got.Kind)
+	}
+	// Without a host the first subject is still a sane fallback.
+	got = defaultPatternSubject(subjects[:2])
+	if got.Kind != subjectApp {
+		t.Fatalf("fallback kind = %q, want app", got.Kind)
+	}
+}
