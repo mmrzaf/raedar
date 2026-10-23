@@ -3,6 +3,7 @@ package rules
 import (
 	"context"
 	"encoding/json"
+	"path"
 	"sort"
 	"time"
 
@@ -269,13 +270,17 @@ func (e *Engine) readings(now time.Time, s *snapshot) []reading {
 func (e *Engine) routeReadings(now time.Time, s *snapshot) []reading {
 	var readings []reading
 	routeIDs := make([]int64, 0, len(s.routes))
-	for routeID := range s.routes {
+	for routeID, info := range s.routes {
+		if e.routeIgnored(info.route.Name) {
+			continue
+		}
 		routeIDs = append(routeIDs, routeID)
 	}
 	sort.Slice(routeIDs, func(i, j int) bool { return routeIDs[i] < routeIDs[j] })
 	// A route that is down stays quiet for the error and latency rules.
 	down := make(map[int64]bool)
-	for routeID, info := range s.routes {
+	for _, routeID := range routeIDs {
+		info := s.routes[routeID]
 		window := s.windows[routeDownWindow][routeID]
 		firing := window != nil && window.Requests >= routeDownMinRequests && window.NoBackend*2 >= window.Requests
 		if firing {
@@ -289,8 +294,8 @@ func (e *Engine) routeReadings(now time.Time, s *snapshot) []reading {
 			severity:     store.SeverityCritical,
 			firing:       firing,
 			alerts:       alertsOf(info.app),
-			summary:      "no backend for requests",
-			details:      windowDetails(window, nil),
+			summary:      "no healthy backend",
+			details:      windowDetails(window, map[string]any{"domains": info.route.Domains}),
 			resolveAfter: e.cfg.Rules.ResolveAfter,
 		})
 	}
@@ -351,6 +356,7 @@ func (e *Engine) routeErrorReading(info *routeInfo, s *snapshot, minRate config.
 		"baseline": baseline,
 		"factor":   e.cfg.Rules.ErrorsFactor,
 		"min_rate": float64(minRate),
+		"domains":  info.route.Domains,
 	}
 	if top, ok := s.pathErrors[info.routeID]; ok && top.s5xx > 0 {
 		reading.details["path"] = top.pattern
@@ -384,15 +390,27 @@ func (e *Engine) routeSlowReading(info *routeInfo, s *snapshot, minP95 time.Dura
 		baseline = *computed.P95MS
 		baselineOK = p95 >= e.cfg.Rules.SlowFactor*baseline
 	}
-	reading.firing = window.Latency.Count() >= int64(e.cfg.Rules.SlowMinRequests) &&
-		p95 >= float64(minP95)/float64(time.Millisecond) && baselineOK
+	total := window.Latency.Count()
+	long := window.Latency.CountAbove(float64(e.cfg.Rules.LongRequest) / float64(time.Millisecond))
+	longShare := 0.0
+	if total > 0 {
+		longShare = float64(long) / float64(total) * 100
+	}
+	longLived := e.cfg.Rules.LongRequest > 0 && e.cfg.Rules.LongRequestShare > 0 &&
+		total > 0 && longShare >= float64(e.cfg.Rules.LongRequestShare)
+	reading.firing = total >= int64(e.cfg.Rules.SlowMinRequests) &&
+		p95 >= float64(minP95)/float64(time.Millisecond) && baselineOK && !longLived
 	reading.details = map[string]any{
-		"requests":    window.Latency.Count(),
-		"p95_ms":      p95,
-		"over_60s":    over,
-		"baseline_ms": baseline,
-		"factor":      e.cfg.Rules.SlowFactor,
-		"min_p95_ms":  float64(minP95) / float64(time.Millisecond),
+		"requests":        total,
+		"p95_ms":          p95,
+		"over_60s":        over,
+		"baseline_ms":     baseline,
+		"factor":          e.cfg.Rules.SlowFactor,
+		"min_p95_ms":      float64(minP95) / float64(time.Millisecond),
+		"domains":         info.route.Domains,
+		"long_lived":      longLived,
+		"long_share":      longShare,
+		"long_request_ms": float64(e.cfg.Rules.LongRequest) / float64(time.Millisecond),
 	}
 	if top, ok := s.pathSlow[info.routeID]; ok {
 		reading.details["path"] = top.pattern
@@ -544,6 +562,21 @@ func windowDetails(window *store.RouteWindow, extra map[string]any) map[string]a
 		details[key] = value
 	}
 	return details
+}
+
+// routeIgnored reports whether a route is the catch-all, the synthetic
+// unrouted route, or matches RAEDAR_ROUTE_IGNORE. Their traffic is recorded
+// and visible in the UI but never creates a page.
+func (e *Engine) routeIgnored(name string) bool {
+	if discovery.IsCatchAllRoute(name) {
+		return true
+	}
+	for _, pattern := range e.cfg.Rules.RouteIgnore {
+		if ok, err := path.Match(pattern, name); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // appIDOf returns the app ID of an app, nil when it is unknown.

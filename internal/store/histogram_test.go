@@ -35,6 +35,26 @@ func TestHistogramAdd(t *testing.T) {
 	}
 }
 
+func TestHistogramCountAbove(t *testing.T) {
+	var histogram Histogram
+	for _, value := range []float64{5000, 10000, 10001, 30000, 60000, 120000} {
+		histogram.Add(value)
+	}
+	tests := map[float64]int64{
+		0:      6,
+		5000:   5,
+		10000:  4,
+		30000:  2,
+		60000:  1,
+		120000: 0,
+	}
+	for threshold, want := range tests {
+		if got := histogram.CountAbove(threshold); got != want {
+			t.Errorf("CountAbove(%v) = %d, want %d", threshold, got, want)
+		}
+	}
+}
+
 func TestHistogramMerge(t *testing.T) {
 	var first Histogram
 	first.Add(3)

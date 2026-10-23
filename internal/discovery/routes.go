@@ -45,10 +45,15 @@ func (d *Discoverer) LookupRoute(ctx context.Context, routerName string) (RouteL
 	d.mu.Unlock()
 
 	var app *App
-	if matched, ok := defaultRouterApp(containers, name); ok {
-		app = matched
-	} else if traefik != nil {
-		app = traefik.Container.App
+	// The catch-all and the synthetic unrouted route are not an app's
+	// traffic. Keeping them out of the Traefik app also keeps their 4xx/5xx
+	// out of that app's numbers and alerts.
+	if !IsCatchAllRoute(name) {
+		if matched, ok := defaultRouterApp(containers, name); ok {
+			app = matched
+		} else if traefik != nil {
+			app = traefik.Container.App
+		}
 	}
 	route := &Route{Name: name, App: app, Kind: "http", Origin: "accesslog"}
 	id, err := d.store.UpsertRoute(ctx, store.Route{

@@ -52,6 +52,21 @@ func (h *Histogram) Count() int64 {
 	return total
 }
 
+// CountAbove returns the number of observations longer than milliseconds.
+func (h *Histogram) CountAbove(milliseconds float64) int64 {
+	var total int64
+	for i, count := range h {
+		lower := 0.0
+		if i > 0 {
+			lower = bucketBounds[min(i-1, len(bucketBounds)-1)]
+		}
+		if lower >= milliseconds {
+			total += count
+		}
+	}
+	return total
+}
+
 // Percentile returns the interpolated percentile in milliseconds and whether
 // it falls in the open-ended last bucket. Values in that bucket are returned
 // as HistogramBound and are displayed as "over 60 s". p is clamped to 0-100.
