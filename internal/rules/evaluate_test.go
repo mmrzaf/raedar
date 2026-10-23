@@ -103,6 +103,11 @@ func TestCertReadingsSkipRemovedRoutes(t *testing.T) {
 		t.Fatalf("removed route produced %d certificate readings", len(readings))
 	}
 
+	s.routes[routeID] = &routeInfo{route: testRoute(routeID, "old@docker", "new.example.com"), routeID: routeID}
+	if readings := engine.certReadings(time.Now(), s); len(readings) != 0 {
+		t.Fatalf("domain removed from route produced %d certificate readings", len(readings))
+	}
+
 	s.routes[routeID] = &routeInfo{route: testRoute(routeID, "old@docker", "old.example.com"), routeID: routeID}
 	if readings := engine.certReadings(time.Now(), s); len(readings) != 2 {
 		t.Fatalf("live route produced %d certificate readings, want 2", len(readings))
