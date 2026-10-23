@@ -121,6 +121,14 @@ func durationText(d time.Duration) string {
 	if minutes < 60 {
 		return fmt.Sprintf("%d min", minutes)
 	}
+	if minutes >= 24*60 {
+		days := minutes / (24 * 60)
+		hours := (minutes - days*24*60) / 60
+		if hours == 0 {
+			return fmt.Sprintf("%d d", days)
+		}
+		return fmt.Sprintf("%d d %d h", days, hours)
+	}
 	hours := minutes / 60
 	minutes -= hours * 60
 	if minutes == 0 {
