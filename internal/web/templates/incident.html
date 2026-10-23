@@ -36,7 +36,7 @@
   {{if .Deliveries}}
   <div class="table-wrap"><table>
     <thead><tr><th>Channel</th><th>Kind</th><th>Created</th><th>Sent</th><th class="num">Attempts</th><th>Status</th><th>Error</th></tr></thead>
-    <tbody>{{range .Deliveries}}<tr><td>{{.Channel}}</td><td>{{.Kind}}</td><td>{{datetime .CreatedAt}}</td><td>{{if .SentAt}}{{datetime .SentAt}}{{else}}<span class="muted">—</span>{{end}}</td><td class="num">{{.Attempts}}</td><td><span class="badge badge-{{if eq .Status "sent"}}ok{{else if eq .Status "failed"}}critical{{else}}warning{{end}}">{{.Status}}</span></td><td>{{if .Error}}{{.Error}}{{else}}<span class="muted">—</span>{{end}}</td></tr>{{end}}</tbody>
+    <tbody>{{range .Deliveries}}<tr><td>{{.Channel}}</td><td>{{.Kind}}</td><td>{{datetime .CreatedAt}}</td><td>{{if .SentAt}}{{datetime .SentAt}}{{else}}<span class="muted">—</span>{{end}}</td><td class="num">{{.Attempts}}</td><td><span class="badge badge-{{if eq .Status "sent"}}ok{{else if eq .Status "failed"}}critical{{else}}warning{{end}}">{{.Status}}</span></td><td class="wrap error-cell">{{if .Error}}{{.Error}}{{else}}<span class="muted">—</span>{{end}}</td></tr>{{end}}</tbody>
   </table></div>
   {{else}}<div class="card-pad empty">No deliveries recorded for this incident. Apps labeled raedar.alerts=false are recorded but not sent.</div>{{end}}
   </div>
