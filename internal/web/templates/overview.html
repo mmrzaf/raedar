@@ -113,7 +113,7 @@
     <div class="card">
     {{$attention := false}}{{range .Certs}}{{if .Attention}}{{$attention = true}}{{end}}{{end}}
     {{if $attention}}
-    <ul class="plain">{{range .Certs}}{{if .Attention}}<li><strong>{{.Domain}}</strong> <span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span>{{if .NotAfter}}<span class="muted">expires in {{forecast .DaysLeft}}</span>{{end}}{{if .Error}}<span class="muted">{{.Error}}</span>{{end}}</li>{{end}}{{end}}</ul>
+    <ul class="plain">{{range .Certs}}{{if .Attention}}<li><strong>{{.Domain}}</strong> <span class="badge badge-{{if or (eq .Status "ok") (eq .Status "private")}}ok{{else if eq .Status "expiring"}}warning{{else}}critical{{end}}">{{.Status}}</span>{{if .NotAfter}}<span class="muted">expires in {{forecast .DaysLeft}}</span>{{end}}{{if .Error}}<span class="muted">{{.Error}}</span>{{end}}</li>{{end}}{{end}}</ul>
     {{else}}<div class="ok-line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>All certificates are fine</div>{{end}}
     </div>
   </section>

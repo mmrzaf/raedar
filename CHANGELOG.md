@@ -4,6 +4,14 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-10-24
+
+### Fixed
+
+- A `private` certificate (a valid Cloudflare Origin CA certificate used by a
+  proxied origin) is no longer shown as a critical badge on the Host and app
+  pages. It is a valid origin certificate, not an invalid one.
+
 ## [0.4.1] - 2026-10-23
 
 ### Fixed
