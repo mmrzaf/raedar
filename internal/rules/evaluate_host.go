@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -201,7 +202,7 @@ func (e *Engine) certReadings(now time.Time, s *snapshot) []reading {
 		// still checked.
 		if cert.RouteID != nil {
 			info, ok := s.routes[*cert.RouteID]
-			if !ok || e.routeIgnored(info.route.Name) {
+			if !ok || e.routeIgnored(info.route.Name) || !slices.Contains(info.route.Domains, cert.Domain) {
 				continue
 			}
 		}
