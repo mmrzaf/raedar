@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -121,11 +122,11 @@ func (f formatter) subjectName(incident store.Incident) string {
 	}
 	subject := incident.Subject
 	if f.names != nil {
-		if name := f.names(subject); name != "" {
+		if name := f.names(subject); name != "" && name != subject {
 			return name
 		}
 	}
-	return subject
+	return discovery.DisplaySubject(subject)
 }
 
 // deployContext describes the deploy that preceded an incident.
@@ -155,6 +156,9 @@ func (f formatter) text(g group) string {
 // block returns one incident's Telegram block.
 func (f formatter) block(incident store.Incident, kind store.DeliveryKind, reopened bool) string {
 	header := f.incidentHeader(incident, kind)
+	if reopened && kind != store.DeliveryResolved {
+		header += " (again)"
+	}
 	if kind == store.DeliveryResolved {
 		return header + " resolved after " + durationText(incidentDuration(incident))
 	}
@@ -169,10 +173,12 @@ func (f formatter) block(incident store.Incident, kind store.DeliveryKind, reope
 	}
 	lines = append(lines, since)
 	lines = append(lines, contextLines(incident)...)
+	if action := actionLine(incident); action != "" {
+		lines = append(lines, "action: "+action)
+	}
 	if f.publicURL != "" && incident.ID != 0 {
 		lines = append(lines, fmt.Sprintf("%s/incidents/%d", f.publicURL, incident.ID))
 	}
-	_ = reopened
 	return strings.Join(lines, "\n")
 }
 
@@ -207,6 +213,14 @@ func durationText(d time.Duration) string {
 		return "less than a minute"
 	}
 	minutes := int(d.Round(time.Minute) / time.Minute)
+	if minutes >= 24*60 {
+		days := minutes / (24 * 60)
+		hours := (minutes - days*24*60) / 60
+		if hours == 0 {
+			return fmt.Sprintf("%d d", days)
+		}
+		return fmt.Sprintf("%d d %d h", days, hours)
+	}
 	hours := minutes / 60
 	minutes -= hours * 60
 	switch {
@@ -251,10 +265,14 @@ func incidentSummary(incident store.Incident) string {
 	case "route.down":
 		requests, _ := number(details["requests"])
 		noBackend, _ := number(details["no_backend"])
+		line := "requests reached no backend"
 		if requests > 0 {
-			return fmt.Sprintf("no backend for %s of requests", percent(noBackend/requests, 0))
+			line = fmt.Sprintf("no backend for %s of requests", percent(noBackend/requests, 0))
 		}
-		return "requests reached no backend"
+		if domains := stringListDetail(incident, "domains"); len(domains) > 0 {
+			return strings.Join(domains, ", ") + ": " + line
+		}
+		return line
 	case "container.crashed":
 		return exitText(details)
 	case "container.restarting":
@@ -295,9 +313,9 @@ func incidentSummary(incident store.Incident) string {
 		return "expiring"
 	case "cert.invalid":
 		if stringDetail(incident, "status") == "default" {
-			return "Traefik serves its default certificate"
+			return "If this host is behind a proxy, this may be expected."
 		}
-		return "the certificate does not cover the domain"
+		return "The certificate served does not cover this domain."
 	case "peer.silent":
 		return "no heartbeat received"
 	case "raedar.source":
@@ -311,13 +329,23 @@ func contextLines(incident store.Incident) []string {
 	details := decodeDetails(incident)
 	switch incident.Rule {
 	case "route.errors":
-		if path, ok := details["path"].(string); ok && path != "" {
-			return []string{"most errors: " + path}
+		var lines []string
+		if domains := stringListDetail(incident, "domains"); len(domains) > 0 {
+			lines = append(lines, "host: "+strings.Join(domains, ", "))
 		}
+		if path, ok := details["path"].(string); ok && path != "" {
+			lines = append(lines, "most errors: "+path)
+		}
+		return lines
 	case "route.slow":
-		if path, ok := details["path"].(string); ok && path != "" {
-			return []string{fmt.Sprintf("slowest: %s (%s)", path, milliseconds(details["path_p95_ms"]))}
+		var lines []string
+		if domains := stringListDetail(incident, "domains"); len(domains) > 0 {
+			lines = append(lines, "host: "+strings.Join(domains, ", "))
 		}
+		if path, ok := details["path"].(string); ok && path != "" {
+			lines = append(lines, fmt.Sprintf("slowest: %s (%s)", path, milliseconds(details["path_p95_ms"])))
+		}
+		return lines
 	case "container.crashed", "container.restarting", "container.stopped":
 		return []string{exitText(details)}
 	case "host.disk", "host.disk_forecast":
@@ -330,12 +358,12 @@ func contextLines(incident store.Incident) []string {
 		}
 		return lines
 	case "host.unit_failed":
-		if result := details["result"].(string); result != "" {
+		if result, ok := details["result"].(string); ok && result != "" {
 			return []string{"result: " + result}
 		}
 	case "cert.expiry", "cert.invalid":
 		var lines []string
-		if issuer := details["issuer"].(string); issuer != "" {
+		if issuer, ok := details["issuer"].(string); ok && issuer != "" {
 			lines = append(lines, "issuer: "+issuer)
 		}
 		if notAfter, ok := details["not_after"].(string); ok && notAfter != "" {
@@ -574,6 +602,65 @@ func stringDetail(incident store.Incident, key string) string {
 	details := decodeDetails(incident)
 	value, _ := details[key].(string)
 	return value
+}
+
+// stringListDetail returns one string-list detail of an incident.
+func stringListDetail(incident store.Incident, key string) []string {
+	value, ok := decodeDetails(incident)[key]
+	if !ok {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		values := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok && text != "" {
+				values = append(values, text)
+			}
+		}
+		return values
+	}
+	return nil
+}
+
+// actionLine returns one short instruction for an incident, or an empty
+// string when there is nothing useful to say.
+func actionLine(incident store.Incident) string {
+	details := decodeDetails(incident)
+	switch incident.Rule {
+	case "route.down":
+		return "check the container behind this route"
+	case "route.errors":
+		return "check the app logs for the most failing path"
+	case "route.slow":
+		return "check the slowest path, or exclude it with raedar.latency.ignore if it is long-lived"
+	case "container.crashed", "container.restarting", "container.stopped":
+		return "check the container logs (" + exitText(details) + ")"
+	case "container.unhealthy":
+		return "check the health check and the app logs"
+	case "container.memory":
+		return "raise the limit or reduce the app's memory"
+	case "host.disk", "host.disk_forecast", "host.inodes":
+		return "free space or grow the filesystem"
+	case "host.memory":
+		return "find the process using the memory"
+	case "host.unit_failed":
+		return "systemctl status " + incident.Subject
+	case "cert.expiry":
+		return "renew the certificate"
+	case "cert.invalid":
+		if stringDetail(incident, "status") == "default" {
+			return "add a certificate, or silence this domain if it is proxied"
+		}
+		return "serve a certificate that covers the domain"
+	case "peer.silent":
+		return "check the peer's Raedar instance"
+	case "raedar.source":
+		return "check Raedar's logs and the source"
+	}
+	return ""
 }
 
 // percent formats a fraction as a percentage.
