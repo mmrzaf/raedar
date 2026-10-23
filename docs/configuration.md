@@ -58,6 +58,9 @@ See [alerts.md](alerts.md) for what each rule does.
 | `RAEDAR_SLOW_MIN_P95` | `300ms` | `route.slow` (per app: label `raedar.slow.min_p95`) |
 | `RAEDAR_SLOW_FACTOR` | `2` | `route.slow` |
 | `RAEDAR_SLOW_MIN_REQUESTS` | `50` | `route.slow` |
+| `RAEDAR_LONG_REQUEST` | `10s` | `route.slow`: a request at least this long is long-lived |
+| `RAEDAR_LONG_REQUEST_SHARE` | `5%` | `route.slow`: routes with at least this share of long-lived requests do not page |
+| `RAEDAR_ROUTE_IGNORE` | — | Route name patterns that are not evaluated, with `*` wildcards, for example `fallback@*,custom@file` |
 | `RAEDAR_MEMORY_LIMIT_WARN` | `90%` | `container.memory` |
 | `RAEDAR_DISK_WARN` | `85%` | `host.disk`, `host.inodes` |
 | `RAEDAR_DISK_CRIT` | `95%` | `host.disk`, `host.inodes` |
@@ -75,7 +78,7 @@ See [notifications.md](notifications.md) for channel details.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RAEDAR_NOTIFY_WARNING` | `telegram,webhook` | Channels for warnings (unconfigured ones are skipped). |
+| `RAEDAR_NOTIFY_WARNING` | `none` | Channels for warning pages; `none` keeps warnings in the digest only. Unconfigured channels are skipped. |
 | `RAEDAR_NOTIFY_CRITICAL` | all configured | Channels for critical incidents. |
 | `RAEDAR_DIGEST_AT` | `09:00` | Time of the daily digest. Empty disables it. |
 | `RAEDAR_DIGEST_CHANNELS` | `telegram,webhook` | Channels for the digest. |
@@ -109,6 +112,8 @@ See [notifications.md](notifications.md#silences) for how the gate uses these.
 | `RAEDAR_QUIET_PAGE_CRITICAL` | `true` | Let critical incidents page during quiet hours. |
 | `RAEDAR_PAGER_COOLDOWN` | `30m` | Minimum time between two pages for the same (rule, subject). `0` disables it. |
 | `RAEDAR_PAGER_COOLDOWN_BY_RULE` | — | Per-rule overrides, `rule=duration,...` (for example `route.down=15m,host.disk=1h`). |
+| `RAEDAR_FLAP_WINDOW` | `1h` | Window in which a (rule, subject) may use its page budget. `0` disables flap suppression. |
+| `RAEDAR_FLAP_MAX_PAGES` | `1` | Opening pages allowed per window; later opens and their resolutions are recorded but dropped. |
 | `RAEDAR_STAND_DOWN_AFTER` | `24h` | After this much quiet with nothing open, send one "all quiet" message. `0` disables it. |
 | `RAEDAR_DEPLOY_SILENCE` | `5m` | Silence an app for this long after each deploy. `0` disables it. |
 

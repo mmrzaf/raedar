@@ -190,10 +190,17 @@ func New(cfg *config.Config, st Store, model Model, logger *slog.Logger, clock c
 		Logger:         logger,
 		Cooldown:       cfg.Notify.Silent.PagerCooldown,
 		CooldownByRule: cfg.Notify.Silent.PagerCooldownByRule,
+		FlapWindow:     cfg.Notify.Silent.FlapWindow,
+		FlapMaxPages:   cfg.Notify.Silent.FlapMaxPages,
 		PageCritical:   cfg.Notify.Silent.QuietPageCritical,
 		QuietFrom:      silentFrom(cfg.Notify.Silent.QuietFrom),
 		QuietTo:        silentFrom(cfg.Notify.Silent.QuietTo),
 		QuietZone:      cfg.Notify.Silent.QuietZone,
+	}
+	if counter, ok := st.(interface {
+		RecentOpenCount(context.Context, string, string, string, time.Time) (int, error)
+	}); ok {
+		notifier.gate.RecentOpenCount = counter.RecentOpenCount
 	}
 	for kind := range notifier.channels {
 		limit := cfg.Notify.RateLimit
@@ -280,7 +287,9 @@ func (n *Notifier) sendGroup(ctx context.Context, g *group) {
 				n.recordSuppressed(ctx, channel, g.kind, incident, decision.Status, now)
 			case GateHeld, GateCooldown:
 				n.recordSuppressed(ctx, channel, g.kind, incident, decision.Status, now)
-				n.deferIncident(channel, g.kind, incident, decision)
+				if !decision.Drop {
+					n.deferIncident(channel, g.kind, incident, decision)
+				}
 			}
 		}
 		if len(kept) == 0 {

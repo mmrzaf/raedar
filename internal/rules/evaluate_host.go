@@ -194,6 +194,17 @@ func (e *Engine) unitReadings(now time.Time, s *snapshot) []reading {
 func (e *Engine) certReadings(now time.Time, s *snapshot) []reading {
 	readings := make([]reading, 0, 2*len(s.certs))
 	for _, cert := range s.certs {
+		// A certificate belongs to a route while that route exists. When the
+		// route disappears, drop its readings so the incident can resolve
+		// instead of lingering until the certificate row is pruned after
+		// seven days. Certificates without a route (RAEDAR_TLS_DOMAINS) are
+		// still checked.
+		if cert.RouteID != nil {
+			info, ok := s.routes[*cert.RouteID]
+			if !ok || e.routeIgnored(info.route.Name) {
+				continue
+			}
+		}
 		severity := store.SeverityWarning
 		expiring := false
 		if cert.NotAfter != nil {
@@ -229,6 +240,13 @@ func (e *Engine) certReadings(now time.Time, s *snapshot) []reading {
 			details:      details,
 		})
 		invalid := cert.Status == tlscheck.StatusDefault || cert.Status == tlscheck.StatusMismatch
+		summary := "certificate does not match the domain"
+		switch cert.Status {
+		case tlscheck.StatusDefault:
+			summary = "Traefik serves its default certificate"
+		case tlscheck.StatusMismatch:
+			summary = "certificate does not cover the domain"
+		}
 		readings = append(readings, reading{
 			rule:         RuleCertInvalid,
 			subject:      cert.Domain,
@@ -237,7 +255,7 @@ func (e *Engine) certReadings(now time.Time, s *snapshot) []reading {
 			firing:       invalid,
 			alerts:       true,
 			resolveAfter: 0,
-			summary:      "certificate does not match the domain",
+			summary:      summary,
 			details:      details,
 		})
 	}

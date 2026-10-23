@@ -12,11 +12,17 @@ Raedar delivers incident messages and the daily digest through three kinds of ch
 
 | Variable | Default |
 |---|---|
-| `RAEDAR_NOTIFY_WARNING` | `telegram,webhook` (those that are configured) |
+| `RAEDAR_NOTIFY_WARNING` | `none` |
 | `RAEDAR_NOTIFY_CRITICAL` | every configured channel |
 | `RAEDAR_DIGEST_CHANNELS` | `telegram,webhook` (those that are configured) |
 
+Warnings are recorded and included in the daily digest but do not page by default. Set `RAEDAR_NOTIFY_WARNING` to channels when you want warning pages too. `none` is also accepted explicitly to disable a route's pages.
+
 A resolution goes to the same channels the incident's opening message went to. With the defaults, SMS is used only for critical incidents and never for the digest.
+
+## Flapping
+
+A subject that opens and resolves repeatedly can still flood a channel with resolution messages even when its opening pages are in the pager cooldown. `RAEDAR_FLAP_WINDOW` (1 hour) and `RAEDAR_FLAP_MAX_PAGES` (1) limit how many opening pages a (rule, subject) may produce in that window. Later opens are recorded as `cooldown` deliveries and dropped, and their resolutions are dropped too. Once the subject stays quiet for the window, the next page goes out normally. Set the window to `0` to disable flap suppression.
 
 ## Telegram
 

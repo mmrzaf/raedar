@@ -88,6 +88,8 @@ func defaults() *Config {
 			SlowMinP95:             300 * time.Millisecond,
 			SlowFactor:             2,
 			SlowMinRequests:        50,
+			LongRequest:            10 * time.Second,
+			LongRequestShare:       5,
 			MemoryLimitWarn:        90,
 			DiskWarn:               85,
 			DiskCrit:               95,
@@ -100,11 +102,10 @@ func defaults() *Config {
 			CrashLoopCrashes:       3,
 		},
 		Notify: NotifyConfig{
-			WarningChannels: []string{"telegram", "webhook"},
-			DigestAt:        &TimeOfDay{Hour: 9},
-			DigestChannels:  []string{"telegram", "webhook"},
-			RateLimit:       30,
-			SMSRateLimit:    10,
+			DigestAt:       &TimeOfDay{Hour: 9},
+			DigestChannels: []string{"telegram", "webhook"},
+			RateLimit:      30,
+			SMSRateLimit:   10,
 			Telegram: TelegramConfig{
 				APIURL: "https://api.telegram.org",
 			},
@@ -117,6 +118,8 @@ func defaults() *Config {
 			Silent: SilentConfig{
 				QuietPageCritical: true,
 				PagerCooldown:     30 * time.Minute,
+				FlapWindow:        time.Hour,
+				FlapMaxPages:      1,
 				StandDownAfter:    24 * time.Hour,
 				DeploySilence:     5 * time.Minute,
 			},

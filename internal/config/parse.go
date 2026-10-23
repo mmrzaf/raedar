@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -302,8 +303,11 @@ func parseProxyFor(s string) ([]string, error) {
 }
 
 // parseChannels parses a list of notification channels: telegram, sms or
-// webhook.
+// webhook. The value none means no channel at all.
 func parseChannels(s string) ([]string, error) {
+	if strings.EqualFold(strings.TrimSpace(s), "none") {
+		return nil, nil
+	}
 	items := parseList(s)
 	for i, item := range items {
 		channel, err := oneOfFold("telegram", "sms", "webhook")(item)
@@ -313,6 +317,17 @@ func parseChannels(s string) ([]string, error) {
 		items[i] = channel
 	}
 	return items, nil
+}
+
+// checkRoutePattern checks a route name pattern for RAEDAR_ROUTE_IGNORE.
+func checkRoutePattern(s string) error {
+	if strings.ContainsAny(s, " \t") {
+		return errors.New("must be a route name or pattern without spaces, for example fallback@*")
+	}
+	if _, err := path.Match(s, ""); err != nil {
+		return errors.New("must be a route name or pattern, for example fallback@*")
+	}
+	return nil
 }
 
 // parseHeaders parses one Name: value header per line.

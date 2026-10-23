@@ -111,3 +111,5 @@ All labels are optional.
 | `raedar.traefik=true` | the Traefik container | Marks Traefik when it cannot be detected by image name. |
 
 App-level labels are read from all containers of the app. If two containers disagree, the most recently created container wins.
+
+The catch-all file router (`fallback@*`) and the synthetic `(unrouted)` route are not attached to an app, even though they are defined by Traefik or seen in its access log. Their traffic is still recorded, but it does not count toward the Traefik app's request or error numbers and never pages.
