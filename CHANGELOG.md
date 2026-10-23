@@ -4,6 +4,14 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-10-23
+
+### Fixed
+
+- A certificate incident now resolves when its domain is removed from the
+  route that used to serve it, even if the route itself still exists. This
+  covers renamed hosts and domains moved to another router.
+
 ## [0.4.0] - 2026-10-23
 
 ### Changed
