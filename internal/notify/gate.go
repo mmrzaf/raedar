@@ -37,6 +37,9 @@ type Decision struct {
 	Channel Kind
 	Reason  string
 	ReadyAt time.Time
+	// Drop suppresses a held or cooldown page without queueing a catch-up.
+	// The gate sets it for a flapping incident that has used its page budget.
+	Drop bool
 }
 
 // DecisionInputs is the input for one gate evaluation.
@@ -66,9 +69,11 @@ type GateStore interface {
 //  1. acked      the operator already saw this incident
 //  2. silenced   a silence covers the incident
 //  3. held       the quiet window is open and the incident is not critical
-//  4. cooldown   an opening page for the same (rule, subject) went out within
+//  4. flap       the same (rule, subject) already used its page budget in the
+//     flap window; the page is recorded and dropped
+//  5. cooldown   an opening page for the same (rule, subject) went out within
 //     the cooldown; escalations and resolutions are never delayed by it
-//  5. recorded   send now
+//  6. recorded   send now
 //
 // A failing store lookup never blocks a page: the gate logs it and carries
 // on to the next check, because a missed page costs more than a duplicate.
@@ -80,6 +85,14 @@ type Gate struct {
 	// (rule, subject). CooldownByRule overrides it per rule.
 	Cooldown       time.Duration
 	CooldownByRule map[string]time.Duration
+
+	// FlapWindow and FlapMaxPages keep a flapping subject to at most
+	// FlapMaxPages opening pages per window. A resolution is also suppressed
+	// once the subject has flapped. Zero disables the check; RecentOpenCount
+	// is supplied by the store.
+	FlapWindow      time.Duration
+	FlapMaxPages    int
+	RecentOpenCount func(ctx context.Context, rule, subject, channel string, since time.Time) (int, error)
 
 	// PageCritical lets critical incidents bypass the quiet window.
 	PageCritical bool
@@ -125,7 +138,24 @@ func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs) Decision {
 		}
 	}
 
-	// 4. an opening page for the same (rule, subject) inside the cooldown is
+	// 4. a subject that has used its page budget in the flap window is
+	// recorded and dropped. Resolutions are dropped too once the subject has
+	// flapped, so a crash loop does not produce a resolution message for
+	// every cycle.
+	if g.FlapWindow > 0 && g.FlapMaxPages > 0 && g.RecentOpenCount != nil &&
+		(inputs.ChangeKind == store.DeliveryOpened || inputs.ChangeKind == store.DeliveryResolved) {
+		count, err := g.RecentOpenCount(ctx, inputs.Incident.Rule, inputs.Incident.Subject,
+			string(inputs.Channel), now.Add(-g.FlapWindow))
+		if err != nil {
+			g.warn("gate: count recent pages", err)
+		} else if inputs.ChangeKind == store.DeliveryOpened && count >= g.FlapMaxPages {
+			return Decision{Status: GateCooldown, Channel: inputs.Channel, Reason: "flapping", Drop: true}
+		} else if inputs.ChangeKind == store.DeliveryResolved && count > g.FlapMaxPages {
+			return Decision{Status: GateCooldown, Channel: inputs.Channel, Reason: "flapping", Drop: true}
+		}
+	}
+
+	// 5. an opening page for the same (rule, subject) inside the cooldown is
 	// deferred to the end of that cooldown.
 	if window := g.cooldownFor(inputs.Incident.Rule); window > 0 && g.Store != nil &&
 		inputs.ChangeKind == store.DeliveryOpened {
@@ -139,7 +169,7 @@ func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs) Decision {
 		}
 	}
 
-	// 5. send now.
+	// 6. send now.
 	return Decision{Status: GateRecorded, Channel: inputs.Channel}
 }
 

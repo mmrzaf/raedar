@@ -178,6 +178,23 @@ const (
 // UnroutedRoute is the synthetic route for requests that matched no router.
 const UnroutedRoute = "(unrouted)"
 
+// IsCatchAllRoute reports whether a route name is the catch-all file router or
+// the synthetic unrouted route. Their traffic is not an app's traffic and must
+// never page.
+func IsCatchAllRoute(name string) bool {
+	return name == UnroutedRoute || strings.HasPrefix(name, "fallback@")
+}
+
+// DisplaySubject returns the human-readable name of a route subject. The
+// catch-all and unrouted traffic have no app to name them, so they get a
+// stable label instead of an internal route name.
+func DisplaySubject(name string) string {
+	if IsCatchAllRoute(name) {
+		return "Unrouted traffic"
+	}
+	return name
+}
+
 // build assembles a model from inspected containers.
 func build(inspected []docker.ContainerInspect, traefikName, selfHostname string, logger *slog.Logger) *Model {
 	model := &Model{

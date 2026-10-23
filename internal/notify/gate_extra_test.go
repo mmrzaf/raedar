@@ -222,6 +222,46 @@ func TestGateCooldown(t *testing.T) {
 	}
 }
 
+func TestGateFlap(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	incident := store.Incident{
+		ID: 1, Rule: "host.unit_failed", Subject: "storage-budget-check.service",
+		Severity: store.SeverityWarning, OpenedAt: now.Add(-10 * time.Minute),
+	}
+	count := 0
+	gate := &Gate{
+		Store: newGateStore(), Logger: discardLogger(),
+		FlapWindow: time.Hour, FlapMaxPages: 1,
+		RecentOpenCount: func(context.Context, string, string, string, time.Time) (int, error) {
+			return count, nil
+		},
+	}
+	tests := []struct {
+		name   string
+		kind   store.DeliveryKind
+		count  int
+		status GateStatus
+		drop   bool
+	}{
+		{name: "first open records", kind: store.DeliveryOpened, count: 0, status: GateRecorded},
+		{name: "second open drops", kind: store.DeliveryOpened, count: 1, status: GateCooldown, drop: true},
+		{name: "first resolution records", kind: store.DeliveryResolved, count: 1, status: GateRecorded},
+		{name: "resolution after flapping drops", kind: store.DeliveryResolved, count: 2, status: GateCooldown, drop: true},
+		{name: "escalation always records", kind: store.DeliveryEscalated, count: 5, status: GateRecorded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			count = tt.count
+			got := gate.Evaluate(context.Background(), DecisionInputs{
+				Incident: incident, ChangeKind: tt.kind, Channel: KindTelegram, Now: now,
+			})
+			if got.Status != tt.status || got.Drop != tt.drop {
+				t.Fatalf("decision = %+v, want status %q drop %v", got, tt.status, tt.drop)
+			}
+		})
+	}
+}
+
 func TestGateCooldownByRule(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	db := newGateStore()

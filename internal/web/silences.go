@@ -69,12 +69,26 @@ func (s *Server) silenceView(silence store.Silence, now time.Time) silenceView {
 	}
 	return silenceView{
 		ID:        silence.ID,
-		Kind:      string(silence.Kind),
+		Kind:      silenceKindLabel(silence.Kind),
 		Scope:     scope,
 		Reason:    silence.Reason,
 		EndsAt:    silence.EndsAt,
 		Active:    silence.EndsAt.After(now),
 		Remaining: silence.EndsAt.Sub(now),
+	}
+}
+
+// silenceKindLabel returns the human-readable name of a silence kind.
+func silenceKindLabel(kind store.SilenceKind) string {
+	switch kind {
+	case store.SilenceMaintenanceWindow:
+		return "maintenance window"
+	case store.SilenceOneShotMute:
+		return "one-shot mute"
+	case store.SilenceAutoDeploy:
+		return "auto deploy"
+	default:
+		return strings.ReplaceAll(string(kind), "_", " ")
 	}
 }
 

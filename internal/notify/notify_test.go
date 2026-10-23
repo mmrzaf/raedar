@@ -347,11 +347,65 @@ func TestTelegramBlockFormat(t *testing.T) {
 			t.Errorf("text = %q, want it to contain %q", text, want)
 		}
 	}
+	text = f.text(group{kind: "opened", incidents: []store.Incident{incident}, reopened: map[int64]bool{812: true}})
+	if !strings.Contains(text, "5xx errors (again)") {
+		t.Errorf("reopened text = %q, want the again marker", text)
+	}
 	resolvedAt := incident.OpenedAt.Add(18 * time.Minute)
 	incident.ResolvedAt = &resolvedAt
 	text = f.text(group{kind: "resolved", incidents: []store.Incident{incident}, reopened: map[int64]bool{}})
 	if !strings.HasPrefix(text, "✅ host-1 · shop — 5xx errors resolved after 18 min") {
 		t.Errorf("resolved text = %q, want the resolved line", text)
+	}
+}
+
+func TestTelegramRouteDownFormat(t *testing.T) {
+	f := formatter{host: "host-1", location: time.UTC, now: time.Now()}
+	incident := store.Incident{
+		ID: 1, Rule: "route.down", Subject: "shop@docker", Severity: "critical",
+		OpenedAt: time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC), Summary: "no healthy backend",
+		Details: []byte(`{"requests":20,"no_backend":20,"domains":["shop.example.com"],"app":"shop"}`),
+	}
+	text := f.text(group{kind: "opened", incidents: []store.Incident{incident}, reopened: map[int64]bool{}})
+	for _, want := range []string{
+		"🔴 host-1 · shop — no healthy backend",
+		"shop.example.com: no backend for 100% of requests",
+		"action: check the container behind this route",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text = %q, want it to contain %q", text, want)
+		}
+	}
+}
+
+func TestTelegramCertInvalidGuidance(t *testing.T) {
+	f := formatter{host: "host-1", location: time.UTC, now: time.Now()}
+	incident := store.Incident{
+		ID: 1, Rule: "cert.invalid", Subject: "www.example.com", Severity: "warning",
+		OpenedAt: time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC),
+		Summary:  "Traefik serves its default certificate",
+		Details:  []byte(`{"status":"default"}`),
+	}
+	text := f.text(group{kind: "opened", incidents: []store.Incident{incident}, reopened: map[int64]bool{}})
+	for _, want := range []string{
+		"Traefik serves its default certificate",
+		"If this host is behind a proxy, this may be expected.",
+		"action: add a certificate, or silence this domain if it is proxied",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text = %q, want it to contain %q", text, want)
+		}
+	}
+}
+
+func TestDefaultSubjectName(t *testing.T) {
+	f := formatter{host: "host-1", location: time.UTC, now: time.Now()}
+	incident := store.Incident{
+		ID: 1, Rule: "route.down", Subject: "fallback@file", Severity: "warning",
+		OpenedAt: time.Now(), Summary: "no healthy backend",
+	}
+	if got := f.subjectName(incident); got != "Unrouted traffic" {
+		t.Errorf("subjectName() = %q, want %q", got, "Unrouted traffic")
 	}
 }
 

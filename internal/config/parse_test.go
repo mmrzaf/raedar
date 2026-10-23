@@ -149,6 +149,8 @@ func TestParseChannels(t *testing.T) {
 		{name: "lowercase", value: "telegram,webhook", want: []string{"telegram", "webhook"}},
 		{name: "mixed case becomes lowercase", value: "Telegram, WEBHOOK", want: []string{"telegram", "webhook"}},
 		{name: "sms", value: "sms", want: []string{"sms"}},
+		{name: "none", value: "none", want: nil},
+		{name: "none with spaces", value: " NONE ", want: nil},
 		{name: "unknown channel", value: "email", wantErr: "must be one of telegram, sms, webhook"},
 		{name: "empty", value: "", want: nil},
 	})

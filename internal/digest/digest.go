@@ -12,6 +12,7 @@ import (
 
 	"github.com/mmrzaf/raedar/internal/clock"
 	"github.com/mmrzaf/raedar/internal/config"
+	"github.com/mmrzaf/raedar/internal/discovery"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -314,10 +315,10 @@ func (c *Composer) subjectName(incident store.Incident) string {
 	if name, ok := details["app"].(string); ok && name != "" {
 		return name
 	}
-	if name := c.cfg.SubjectNames.Display(incident.Subject); name != "" {
+	if name := c.cfg.SubjectNames.Display(incident.Subject); name != "" && name != incident.Subject {
 		return name
 	}
-	return incident.Subject
+	return discovery.DisplaySubject(incident.Subject)
 }
 
 // sortedKeys returns the keys of a map in order.

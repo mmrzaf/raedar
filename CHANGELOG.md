@@ -4,6 +4,51 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-23
+
+### Changed
+
+- **Warnings go to the digest by default.** They are still recorded and listed
+  in the daily digest, but only critical incidents page. Set
+  `RAEDAR_NOTIFY_WARNING` to channels to page warnings again, or `none` to
+  disable pages explicitly.
+- Route messages now name the host, say what happened and include one action
+  line. Reopened incidents say "(again)". The webhook `context` array includes
+  the same action line.
+- The catch-all file router (`fallback@*`) and `(unrouted)` traffic are not
+  attached to an app and never page. Their requests are still recorded.
+- `route.slow` does not page for long-lived traffic: a route with at least
+  `RAEDAR_LONG_REQUEST_SHARE` of requests longer than `RAEDAR_LONG_REQUEST`
+  is treated as streaming. The `raedar.latency.ignore` label remains the
+  explicit per-path override.
+- A flapping (rule, subject) may use `RAEDAR_FLAP_MAX_PAGES` opening pages per
+  `RAEDAR_FLAP_WINDOW`; later opens and their resolutions are recorded but
+  dropped.
+
+### Added
+
+- `RAEDAR_ROUTE_IGNORE` for route name patterns that should not be evaluated.
+- `RAEDAR_LONG_REQUEST` and `RAEDAR_LONG_REQUEST_SHARE` for long-lived traffic.
+- `RAEDAR_FLAP_WINDOW` and `RAEDAR_FLAP_MAX_PAGES` for flap suppression.
+- Human-readable silence kinds and day/hour durations in the UI.
+
+### Fixed
+
+- `cert.invalid` resolves when the route that served the domain disappears,
+  instead of staying open until the certificate row is pruned after seven days.
+- The Silences and Deliveries tables scroll inside their card instead of
+  widening the page. Long reasons and delivery errors wrap, the form is a
+  responsive grid, delivery statuses are coloured, and the remove action is a
+  text link.
+- Message formatting no longer panics when a certificate or unit detail is
+  missing.
+
+### Upgrading
+
+- The default `RAEDAR_NOTIFY_WARNING` changed from `telegram,webhook` to
+  `none`. Set it explicitly if you want warning pages.
+- No database migration is needed.
+
 ## [0.3.3] - 2026-10-21
 
 ### Fixed

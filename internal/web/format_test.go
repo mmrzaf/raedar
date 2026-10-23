@@ -2,6 +2,7 @@ package web
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mmrzaf/raedar/internal/store"
 )
@@ -52,6 +53,37 @@ func TestCPUAndRateText(t *testing.T) {
 	for rate, want := range tests {
 		if got := rateText(rate); got != want {
 			t.Errorf("rateText(%v) = %q, want %q", rate, got, want)
+		}
+	}
+}
+
+func TestDurationText(t *testing.T) {
+	tests := map[time.Duration]string{
+		30 * time.Second:               "less than a minute",
+		5 * time.Minute:                "5 min",
+		2*time.Hour + 5*time.Minute:    "2 h 5 min",
+		3 * time.Hour:                  "3 h",
+		26 * time.Hour:                 "1 d 2 h",
+		48 * time.Hour:                 "2 d",
+		27*24*time.Hour + 19*time.Hour: "27 d 19 h",
+	}
+	for duration, want := range tests {
+		if got := durationText(duration); got != want {
+			t.Errorf("durationText(%s) = %q, want %q", duration, got, want)
+		}
+	}
+}
+
+func TestSilenceKindLabel(t *testing.T) {
+	tests := map[store.SilenceKind]string{
+		store.SilenceMaintenanceWindow: "maintenance window",
+		store.SilenceOneShotMute:       "one-shot mute",
+		store.SilenceAutoDeploy:        "auto deploy",
+		"custom_kind":                  "custom kind",
+	}
+	for kind, want := range tests {
+		if got := silenceKindLabel(kind); got != want {
+			t.Errorf("silenceKindLabel(%q) = %q, want %q", kind, got, want)
 		}
 	}
 }

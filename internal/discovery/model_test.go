@@ -30,6 +30,21 @@ func inspectFixture(id, name string, labels map[string]string) docker.ContainerI
 	}
 }
 
+func TestIsCatchAllRoute(t *testing.T) {
+	tests := map[string]bool{
+		UnroutedRoute:     true,
+		"fallback@file":   true,
+		"fallback@docker": true,
+		"shop@docker":     false,
+		"myfallback@file": false,
+	}
+	for name, want := range tests {
+		if got := IsCatchAllRoute(name); got != want {
+			t.Errorf("IsCatchAllRoute(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestAppNamePrecedence(t *testing.T) {
 	tests := []struct {
 		name   string
