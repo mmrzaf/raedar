@@ -96,6 +96,8 @@ func TestLoadDefaults(t *testing.T) {
 			SlowMinP95:             300 * time.Millisecond,
 			SlowFactor:             2,
 			SlowMinRequests:        50,
+			LongRequest:            10 * time.Second,
+			LongRequestShare:       5,
 			MemoryLimitWarn:        90,
 			DiskWarn:               85,
 			DiskCrit:               95,
@@ -108,12 +110,11 @@ func TestLoadDefaults(t *testing.T) {
 			CrashLoopCrashes:       3,
 		},
 		Notify: NotifyConfig{
-			WarningChannels: []string{"telegram", "webhook"},
-			DigestAt:        &TimeOfDay{Hour: 9},
-			DigestChannels:  []string{"telegram", "webhook"},
-			RateLimit:       30,
-			SMSRateLimit:    10,
-			Telegram:        TelegramConfig{APIURL: "https://api.telegram.org"},
+			DigestAt:       &TimeOfDay{Hour: 9},
+			DigestChannels: []string{"telegram", "webhook"},
+			RateLimit:      30,
+			SMSRateLimit:   10,
+			Telegram:       TelegramConfig{APIURL: "https://api.telegram.org"},
 			SMS: SMSConfig{
 				HTTP: SMSHTTPConfig{Method: "POST", Encoding: "json"},
 			},
@@ -121,6 +122,8 @@ func TestLoadDefaults(t *testing.T) {
 				QuietZone:         time.UTC,
 				QuietPageCritical: true,
 				PagerCooldown:     30 * time.Minute,
+				FlapWindow:        time.Hour,
+				FlapMaxPages:      1,
 				StandDownAfter:    24 * time.Hour,
 				DeploySilence:     5 * time.Minute,
 			},
@@ -221,8 +224,8 @@ func TestLoadEmptyValueKeepsDefault(t *testing.T) {
 	if cfg.Location != time.UTC {
 		t.Errorf("Location = %v, want UTC", cfg.Location)
 	}
-	if !reflect.DeepEqual(cfg.Notify.WarningChannels, []string{"telegram", "webhook"}) {
-		t.Errorf("WarningChannels = %v, want the default list", cfg.Notify.WarningChannels)
+	if cfg.Notify.WarningChannels != nil {
+		t.Errorf("WarningChannels = %v, want nil so warnings go to the digest", cfg.Notify.WarningChannels)
 	}
 }
 

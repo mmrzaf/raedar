@@ -92,6 +92,15 @@ type RulesConfig struct {
 	// SlowMinRequests is the minimum number of latency-counted requests for
 	// route.slow.
 	SlowMinRequests int
+	// LongRequest is the duration above which a request counts as long-lived
+	// for route.slow. Routes where at least LongRequestShare of requests are
+	// long-lived do not page for slow responses.
+	LongRequest time.Duration
+	// LongRequestShare is the share of long-lived requests above which
+	// route.slow stops paging for a route.
+	LongRequestShare Percent
+	// RouteIgnore are route name patterns that are not evaluated at all.
+	RouteIgnore []string
 	// MemoryLimitWarn is the share of the memory limit for container.memory.
 	MemoryLimitWarn Percent
 	// DiskWarn is the usage where host.disk and host.inodes warn.
@@ -245,6 +254,8 @@ type SilentConfig struct {
 	QuietPageCritical   bool
 	PagerCooldown       time.Duration
 	PagerCooldownByRule map[string]time.Duration
+	FlapWindow          time.Duration
+	FlapMaxPages        int
 	StandDownAfter      time.Duration
 	DeploySilence       time.Duration
 }

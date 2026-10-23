@@ -308,6 +308,18 @@ func variableCases() map[string]valueCase {
 			value: "200",
 			check: wantInt(func(c *Config) int { return c.Rules.SlowMinRequests }, 200),
 		},
+		"RAEDAR_LONG_REQUEST": {
+			value: "15s",
+			check: wantDuration(func(c *Config) time.Duration { return c.Rules.LongRequest }, 15*time.Second),
+		},
+		"RAEDAR_LONG_REQUEST_SHARE": {
+			value: "10%",
+			check: wantPercent(func(c *Config) Percent { return c.Rules.LongRequestShare }, 10),
+		},
+		"RAEDAR_ROUTE_IGNORE": {
+			value: "fallback@*, (unrouted)",
+			check: wantStrings(func(c *Config) []string { return c.Rules.RouteIgnore }, "fallback@*", "(unrouted)"),
+		},
 		"RAEDAR_MEMORY_LIMIT_WARN": {
 			value: "80",
 			check: wantPercent(func(c *Config) Percent { return c.Rules.MemoryLimitWarn }, 80),
@@ -524,6 +536,14 @@ func variableCases() map[string]valueCase {
 				return c.Notify.Silent.PagerCooldownByRule
 			}, map[string]time.Duration{"route.down": 15 * time.Minute, "host.disk": time.Hour}),
 		},
+		"RAEDAR_FLAP_WINDOW": {
+			value: "2h",
+			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.FlapWindow }, 2*time.Hour),
+		},
+		"RAEDAR_FLAP_MAX_PAGES": {
+			value: "2",
+			check: wantInt(func(c *Config) int { return c.Notify.Silent.FlapMaxPages }, 2),
+		},
 		"RAEDAR_STAND_DOWN_AFTER": {
 			value: "24h",
 			check: wantDuration(func(c *Config) time.Duration { return c.Notify.Silent.StandDownAfter }, 24*time.Hour),
@@ -619,6 +639,9 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_SLOW_MIN_P95",
 		"RAEDAR_SLOW_FACTOR",
 		"RAEDAR_SLOW_MIN_REQUESTS",
+		"RAEDAR_LONG_REQUEST",
+		"RAEDAR_LONG_REQUEST_SHARE",
+		"RAEDAR_ROUTE_IGNORE",
 		"RAEDAR_MEMORY_LIMIT_WARN",
 		"RAEDAR_DISK_WARN",
 		"RAEDAR_DISK_CRIT",
@@ -663,6 +686,8 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_QUIET_PAGE_CRITICAL",
 		"RAEDAR_PAGER_COOLDOWN",
 		"RAEDAR_PAGER_COOLDOWN_BY_RULE",
+		"RAEDAR_FLAP_WINDOW",
+		"RAEDAR_FLAP_MAX_PAGES",
 		"RAEDAR_STAND_DOWN_AFTER",
 		"RAEDAR_DEPLOY_SILENCE",
 		"RAEDAR_RETENTION_MINUTE",

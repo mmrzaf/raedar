@@ -43,6 +43,9 @@ func variables() []variable {
 		{name: "RAEDAR_SLOW_MIN_P95", apply: parseVar(func(c *Config) *time.Duration { return &c.Rules.SlowMinP95 }, parseDuration)},
 		{name: "RAEDAR_SLOW_FACTOR", apply: parseVar(func(c *Config) *float64 { return &c.Rules.SlowFactor }, parseFactor)},
 		{name: "RAEDAR_SLOW_MIN_REQUESTS", apply: parseVar(func(c *Config) *int { return &c.Rules.SlowMinRequests }, parseIntAtLeast(1))},
+		{name: "RAEDAR_LONG_REQUEST", apply: parseVar(func(c *Config) *time.Duration { return &c.Rules.LongRequest }, parseDuration)},
+		{name: "RAEDAR_LONG_REQUEST_SHARE", apply: parseVar(func(c *Config) *Percent { return &c.Rules.LongRequestShare }, parsePercent)},
+		{name: "RAEDAR_ROUTE_IGNORE", apply: parseVar(func(c *Config) *[]string { return &c.Rules.RouteIgnore }, parseListChecked(checkRoutePattern))},
 		{name: "RAEDAR_MEMORY_LIMIT_WARN", apply: parseVar(func(c *Config) *Percent { return &c.Rules.MemoryLimitWarn }, parsePercent)},
 		{name: "RAEDAR_DISK_WARN", apply: parseVar(func(c *Config) *Percent { return &c.Rules.DiskWarn }, parsePercent)},
 		{name: "RAEDAR_DISK_CRIT", apply: parseVar(func(c *Config) *Percent { return &c.Rules.DiskCrit }, parsePercent)},
@@ -85,6 +88,8 @@ func variables() []variable {
 		{name: "RAEDAR_QUIET_PAGE_CRITICAL", apply: parseVar(func(c *Config) *bool { return &c.Notify.Silent.QuietPageCritical }, parseBool)},
 		{name: "RAEDAR_PAGER_COOLDOWN", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.PagerCooldown }, parseDurationOrZero)},
 		{name: "RAEDAR_PAGER_COOLDOWN_BY_RULE", apply: parseVar(func(c *Config) *map[string]time.Duration { return &c.Notify.Silent.PagerCooldownByRule }, parseCooldownByRule)},
+		{name: "RAEDAR_FLAP_WINDOW", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.FlapWindow }, parseDurationOrZero)},
+		{name: "RAEDAR_FLAP_MAX_PAGES", apply: parseVar(func(c *Config) *int { return &c.Notify.Silent.FlapMaxPages }, parseIntAtLeast(1))},
 		{name: "RAEDAR_STAND_DOWN_AFTER", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.StandDownAfter }, parseDurationOrZero)},
 		{name: "RAEDAR_DEPLOY_SILENCE", apply: parseVar(func(c *Config) *time.Duration { return &c.Notify.Silent.DeploySilence }, parseDurationOrZero)},
 
