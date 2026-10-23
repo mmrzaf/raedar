@@ -40,10 +40,14 @@ Evaluation runs every 60 seconds over complete minutes.
 | Rule | Fires when | For | Severity |
 |---|---|---|---|
 | `route.errors` | Over the last 5 minutes: at least `RAEDAR_ERRORS_MIN_REQUESTS` (20) requests and at least 5 responses with a 5xx status, and the 5xx rate is at least `RAEDAR_ERRORS_MIN_RATE` (2 %) and at least `RAEDAR_ERRORS_FACTOR` (3) × the baseline. | 2 min | warning |
-| `route.slow` | Over the last 10 minutes: at least `RAEDAR_SLOW_MIN_REQUESTS` (50) requests counted for latency, and p95 latency is at least `RAEDAR_SLOW_MIN_P95` (300 ms) and at least `RAEDAR_SLOW_FACTOR` (2) × the baseline p95. | 5 min | warning |
+| `route.slow` | Over the last 10 minutes: at least `RAEDAR_SLOW_MIN_REQUESTS` (50) requests counted for latency, and p95 latency is at least `RAEDAR_SLOW_MIN_P95` (300 ms) and at least `RAEDAR_SLOW_FACTOR` (2) × the baseline p95. Routes where at least `RAEDAR_LONG_REQUEST_SHARE` (5 %) of requests are longer than `RAEDAR_LONG_REQUEST` (10 s) are long-lived and do not page. | 5 min | warning |
 | `route.down` | Over the last 2 minutes: at least 3 requests, and at least half of them answered by Traefik with 502/503/504 because no backend responded. | — | critical |
 
 While `route.down` is open for a route, `route.errors` and `route.slow` stay quiet for it. A route with no traffic cannot be judged from the access log; the container rules below cover that case.
+
+The catch-all file router (`fallback@*`) and the synthetic `(unrouted)` route are not an app's traffic. They are recorded and shown, but they never open an incident or page. Use `RAEDAR_ROUTE_IGNORE` with route name patterns to exclude other infrastructure routes. For a long-lived endpoint that is not detected automatically, add its path prefixes with the `raedar.latency.ignore` label.
+
+A warning that keeps resolving and reopening is subject to [flap suppression](notifications.md#flapping): it pages at most `RAEDAR_FLAP_MAX_PAGES` times per `RAEDAR_FLAP_WINDOW`, and the remaining cycles are recorded on the Deliveries page without messages.
 
 ### Containers
 
@@ -74,7 +78,7 @@ While `container.restarting` is open for a slot, `container.crashed` stays quiet
 | `cert.expiry` | The certificate served for a domain expires within `RAEDAR_CERT_WARN` (14 days); critical within `RAEDAR_CERT_CRIT` (3 days) or when expired. | warning / critical |
 | `cert.invalid` | Traefik serves its default certificate for the domain, or a certificate that does not cover it. | warning |
 
-Certificate incidents resolve when the next check is fine. Checks run every 6 hours, so a fixed certificate can take up to that long to resolve; the TLS page shows the time of the last check.
+Certificate incidents resolve when the next check is fine. Checks run every 6 hours, so a fixed certificate can take up to that long to resolve; the TLS page shows the time of the last check. When the route that served a domain disappears, its certificate readings stop and the incident resolves after `RAEDAR_RESOLVE_AFTER`; it no longer lingers until the certificate row is pruned.
 
 ### Raedar itself
 
