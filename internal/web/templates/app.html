@@ -6,7 +6,7 @@
       <h1>{{.App.Name}}</h1>
       <span class="badge badge-{{.App.Status}}">{{if eq .App.Status "ok"}}OK{{else}}{{.App.Status}}{{end}}</span>
     </div>
-    {{if .App.Domains}}<p class="sub">{{range $i, $d := .App.Domains}}{{if $i}} · {{end}}{{$d.Name}}{{if and $d.Status (ne $d.Status "ok")}} <span class="badge badge-{{if eq $d.Status "expiring"}}warning{{else}}critical{{end}}">{{$d.Status}}</span>{{end}}{{end}}</p>{{end}}
+    {{if .App.Domains}}<p class="sub">{{range $i, $d := .App.Domains}}{{if $i}} · {{end}}{{$d.Name}}{{if and $d.Status (ne $d.Status "ok")}} <span class="badge badge-{{if or (eq $d.Status "ok") (eq $d.Status "private")}}ok{{else if eq $d.Status "expiring"}}warning{{else}}critical{{end}}">{{$d.Status}}</span>{{end}}{{end}}</p>{{end}}
   </div>
   <div class="toolbar">
     <span class="hint">Drag across a chart to zoom, click it to open the logs</span>
