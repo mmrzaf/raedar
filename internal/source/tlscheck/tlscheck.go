@@ -273,7 +273,7 @@ func Evaluate(state tls.ConnectionState, domain string, now time.Time, warn time
 		cert.Status = StatusMismatch
 	case now.After(leaf.NotAfter):
 		cert.Status = StatusExpired
-	case verifyChain(leaf, state.PeerCertificates[1:], domain, roots) != nil:
+	case verifyChain(leaf, state.PeerCertificates[1:], domain, roots, now) != nil:
 		cert.Status = StatusPrivate
 	case leaf.NotAfter.Sub(now) <= warn:
 		cert.Status = StatusExpiring
@@ -290,13 +290,21 @@ func isDefaultCertificate(leaf *x509.Certificate) bool {
 		strings.Contains(leaf.Subject.CommonName, defaultCertificate)
 }
 
-// verifyChain verifies a certificate and its intermediates against the roots.
-func verifyChain(leaf *x509.Certificate, intermediates []*x509.Certificate, domain string, roots *x509.CertPool) error {
+// verifyChain verifies a certificate and its intermediates against the roots
+// at the checker's clock, not the wall clock. Otherwise a test or a replay of
+// stored data would validate a certificate against a different moment than
+// the one being evaluated.
+func verifyChain(leaf *x509.Certificate, intermediates []*x509.Certificate, domain string, roots *x509.CertPool, now time.Time) error {
 	pool := x509.NewCertPool()
 	for _, intermediate := range intermediates {
 		pool.AddCert(intermediate)
 	}
-	_, err := leaf.Verify(x509.VerifyOptions{DNSName: domain, Intermediates: pool, Roots: roots})
+	_, err := leaf.Verify(x509.VerifyOptions{
+		DNSName:       domain,
+		Intermediates: pool,
+		Roots:         roots,
+		CurrentTime:   now,
+	})
 	return err
 }
 
