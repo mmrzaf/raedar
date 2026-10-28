@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -91,6 +92,41 @@ func (s *server) received() []recordedRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]recordedRequest(nil), s.requests...)
+}
+
+func TestTelegramChannelClassifiesRefusals(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.PostFormValue("chat_id") {
+		case "blocked":
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, `{"ok":false,"description":"Forbidden: bot was blocked by the user"}`)
+		case "unavailable":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			io.WriteString(w, `{"ok":true,"result":{"message_id":7}}`)
+		}
+	}))
+	defer srv.Close()
+	channel := &telegramChannel{
+		apiURL:  srv.URL,
+		token:   "123:secret-token",
+		chatIDs: []string{"blocked", "unavailable", "open"},
+		client:  srv.Client(),
+	}
+	results := channel.SendEach(context.Background(), Message{Text: "hello"}, nil)
+	if len(results) != 3 {
+		t.Fatalf("results = %d, want one per chat", len(results))
+	}
+	var refused *refusedError
+	if !errors.As(results[0].err, &refused) {
+		t.Errorf("blocked chat error = %v, want a refusal", results[0].err)
+	}
+	if errors.As(results[1].err, &refused) || results[1].err == nil {
+		t.Errorf("unavailable chat error = %v, want a retryable failure", results[1].err)
+	}
+	if results[2].err != nil || results[2].messageID != 7 {
+		t.Errorf("open chat result = %+v, want the message id", results[2])
+	}
 }
 
 func TestTelegramChannel(t *testing.T) {

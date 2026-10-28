@@ -58,7 +58,7 @@ Raedar ships one SMS shape: a single generic HTTP request per recipient. Provide
 | `RAEDAR_SMS_HTTP_ENCODING` | How placeholder values are escaped in the body: `json` (JSON string escaping, quotes are part of the template), `form` (URL encoding) or `raw`. Default `json`. It also sets `Content-Type` unless a header overrides it. |
 | `RAEDAR_SMS_HTTP_API_KEY` | Substituted for `{{api_key}}` in the URL and body. Prefer `RAEDAR_SMS_HTTP_API_KEY_FILE`. |
 
-Any 2xx response counts as delivered. Raedar retries 4xx/5xx with the same retry schedule as the other channels (10 s, 1 m, 5 m). The request URL is never logged, because the API key may be part of the URL.
+Any 2xx response counts as delivered. Raedar retries 4xx/5xx with the same capped backoff as the other channels while the incident is open. The request URL is never logged, because the API key may be part of the URL.
 
 Example for a provider expecting JSON:
 
@@ -220,7 +220,7 @@ Durations use the configuration syntax: `30s`, `5m`, `2h`, `14d`, and a mute las
 
 ## Delivery
 
-- **Retries.** A failed delivery is retried after 10 seconds, 1 minute, 5 minutes, 15 minutes, 30 minutes and then hourly for as long as the incident is open. A temporary Telegram or SMS outage cannot lose a page. Only the recipient that failed is retried: another chat or number that already got the message is not contacted again. Every attempt is recorded in `deliveries` and visible on the incident page. Delivery is at-least-once: a crash after the provider accepted a message but before Raedar recorded it can repeat that message.
+- **Retries.** A failed delivery is retried after 10 seconds, 1 minute, 5 minutes, 15 minutes, 30 minutes and then hourly for as long as the incident is open. A temporary Telegram or SMS outage cannot lose a page. Only the recipient that failed is retried: another chat or number that already got the message is not contacted again. A Telegram chat that refuses the bot with HTTP 400 or 403, such as a chat the bot was removed from, is not retried: its page is cancelled and the reason is shown on the incident page. Other errors, including a rejected token, stay retryable so the page survives until the operator fixes the configuration. Every attempt is recorded in `deliveries` and visible on the incident page. Delivery is at-least-once: a crash after the provider accepted a message but before Raedar recorded it can repeat that message.
 - **Rate limits.** Per channel, at most `RAEDAR_RATE_LIMIT` messages per hour (30 by default) and at most `RAEDAR_SMS_RATE_LIMIT` per hour for SMS (10 by default). A page beyond the limit stays pending and goes out when the window allows it.
 - **Timeouts.** Each request has a 15-second timeout.
 - **Proxy.** `RAEDAR_OUTBOUND_PROXY` (an `http://` or `socks5://` URL) sends the outbound requests selected by `RAEDAR_OUTBOUND_PROXY_FOR` through a proxy. The setting names any of `telegram`, `sms`, `webhook` and `heartbeat`; `all` (the default) sends every request through it. A server that can reach its SMS provider directly but not Telegram sets `RAEDAR_OUTBOUND_PROXY_FOR=telegram,webhook,heartbeat`. The proxy does not affect the Docker API or PostgreSQL. This is for servers whose direct outbound access is blocked or filtered. The standard `HTTPS_PROXY` variable is ignored on purpose, so it cannot accidentally route Docker API calls through a proxy.

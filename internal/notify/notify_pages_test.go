@@ -331,17 +331,6 @@ func (s *fakeStore) byChannel(channel Kind) []store.Delivery {
 	return deliveries
 }
 
-func (s *fakeStore) allPages() []store.Page {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var pages []store.Page
-	for _, page := range s.pages {
-		pages = append(pages, page)
-	}
-	sort.Slice(pages, func(i, j int) bool { return pages[i].ID < pages[j].ID })
-	return pages
-}
-
 func (s *fakeStore) pageFor(incidentID int64, channel Kind, recipient string) *store.Page {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -733,11 +722,10 @@ func TestNotifierRetriesFailedSend(t *testing.T) {
 
 func TestNotifierAppAlertsDisabled(t *testing.T) {
 	channel := &fakeChannel{kind: KindTelegram}
-	notifier, st, _ := newTestNotifier(t, channel)
+	notifier, st, clk := newTestNotifier(t, channel)
 	appID := int64(7)
-	notifier.model = fakeModel{model: &discovery.Model{Apps: map[string]*discovery.App{
-		"shop": {ID: appID, Name: "shop", Alerts: false},
-	}}}
+	app := &discovery.App{ID: appID, Name: "shop", Alerts: false}
+	notifier.model = fakeModel{model: &discovery.Model{Apps: map[string]*discovery.App{"shop": app}}}
 	incident := testIncident(1, store.SeverityCritical)
 	incident.AppID = &appID
 	st.addIncident(incident)
@@ -745,8 +733,69 @@ func TestNotifierAppAlertsDisabled(t *testing.T) {
 	if got := len(channel.messages()); got != 0 {
 		t.Fatalf("messages = %d, want none for an app with alerts disabled", got)
 	}
-	if pages := st.allPages(); len(pages) != 0 {
-		t.Fatalf("pages = %+v, want none", pages)
+	page := st.pageFor(incident.ID, KindTelegram, "")
+	if page == nil || page.Status != store.PagePending || page.Reason != "app alerts disabled" {
+		t.Fatalf("page = %+v, want pending with the alerts reason", page)
+	}
+
+	app.Alerts = true
+	clk.now = clk.now.Add(time.Minute)
+	runNotifierOnce(t, notifier)
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages after enabling alerts = %d, want the held opening page", got)
+	}
+}
+
+func TestNotifierAppAlertsDisabledDropsResolution(t *testing.T) {
+	channel := &fakeChannel{kind: KindTelegram}
+	notifier, st, _ := newTestNotifier(t, channel)
+	appID := int64(7)
+	app := &discovery.App{ID: appID, Name: "shop", Alerts: true}
+	notifier.model = fakeModel{model: &discovery.Model{Apps: map[string]*discovery.App{"shop": app}}}
+	incident := testIncident(1, store.SeverityCritical)
+	incident.AppID = &appID
+	incident = st.addIncident(incident)
+	notifier.IncidentsChanged(t.Context(), []rules.Change{{Incident: incident, Kind: rules.ChangeOpened}})
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("opening messages = %d, want 1", got)
+	}
+
+	app.Alerts = false
+	resolvedAt := incident.OpenedAt.Add(time.Hour)
+	resolved := incident
+	resolved.ResolvedAt = &resolvedAt
+	st.updateIncident(resolved)
+	notifier.IncidentsChanged(t.Context(), []rules.Change{{Incident: resolved, Kind: rules.ChangeResolved}})
+	app.Alerts = true
+	runNotifierOnce(t, notifier)
+	if got := len(channel.messages()); got != 1 {
+		t.Fatalf("messages = %d, want the stale resolution dropped", got)
+	}
+	if page := st.pageFor(incident.ID, KindTelegram, ""); page == nil || page.Status != store.PageCancelled {
+		t.Fatalf("page = %+v, want cancelled", page)
+	}
+}
+
+func TestNotifierCancelsPageRefusedByRecipient(t *testing.T) {
+	channel := &scriptedChannel{
+		kind: KindTelegram, chatIDs: []string{"101", "202"},
+		outcomes: map[string]error{"202": &refusedError{err: errors.New("the server answered 403 Forbidden")}},
+	}
+	notifier, st, clk := newTestNotifier(t, channel)
+	incident := st.addIncident(testIncident(1, store.SeverityCritical))
+	notifier.IncidentsChanged(t.Context(), []rules.Change{{Incident: incident, Kind: rules.ChangeOpened}})
+
+	page := st.pageFor(incident.ID, KindTelegram, "202")
+	if page == nil || page.Status != store.PageCancelled || !strings.HasPrefix(page.Reason, "recipient refused") {
+		t.Fatalf("page 202 = %+v, want cancelled as refused", page)
+	}
+	if page := st.pageFor(incident.ID, KindTelegram, "101"); page == nil || page.Status != store.PageAnnounced {
+		t.Fatalf("page 101 = %+v, want announced", page)
+	}
+	clk.now = clk.now.Add(time.Hour)
+	runNotifierOnce(t, notifier)
+	if got := channel.callsFor("202"); got != 1 {
+		t.Fatalf("chat 202 calls = %d, want no retry after a refusal", got)
 	}
 }
 

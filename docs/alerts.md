@@ -20,7 +20,7 @@ Lifecycle:
 - **Change of severity.** A warning that becomes critical (for example disk usage crossing the second threshold) sends a new message for the same incident.
 - **One-shot.** Some rules describe something that happened rather than a state: they open and resolve at once and send a single message.
 
-Incidents for apps labeled `raedar.alerts=false` are recorded and shown, but not sent. A Traefik router labeled `raedar.ignore=true` is left out of the route rules entirely; it still appears on its app page. Acked incidents stay silent for the rest of the episode. Incidents covered by a [silence](notifications.md#silences) are recorded and their page waits until the silence expires; if the incident is still open, it is sent then.
+Incidents for apps labeled `raedar.alerts=false` are recorded and shown, but not sent. Their opening messages wait until alerts are turned back on; a resolution that comes in the meantime is dropped. A Traefik router labeled `raedar.ignore=true` is left out of the route rules entirely; it still appears on its app page. Acked incidents stay silent for the rest of the episode. Incidents covered by a [silence](notifications.md#silences) are recorded and their page waits until the silence expires; if the incident is still open, it is sent then.
 
 ## Baselines
 

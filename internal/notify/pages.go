@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -87,9 +88,6 @@ func (n *Notifier) reconcileIncident(ctx context.Context, incident store.Inciden
 
 	if incident.Acked() {
 		return n.store.CancelPendingPages(ctx, incident.ID, "acked")
-	}
-	if !n.alertsAllowed(incident.AppID) {
-		return n.store.CancelPendingPages(ctx, incident.ID, "app alerts disabled")
 	}
 
 	pages, err := n.store.PagesForEpisode(ctx, incident.ID, incident.Episode)
@@ -329,7 +327,14 @@ func (n *Notifier) deliverDue(ctx context.Context) {
 			continue
 		}
 		if !n.alertsAllowed(incident.AppID) {
-			n.cancelPage(ctx, page, "app alerts disabled", now)
+			// Opening and escalation pages wait for the operator to turn
+			// alerts back on. A resolution is best-effort, so it is dropped
+			// rather than delivered after a long silence.
+			if page.Kind == store.DeliveryResolved {
+				n.cancelPage(ctx, page, "app alerts disabled", now)
+			} else {
+				n.waitPage(ctx, page, Decision{Action: ActionWait, Reason: "app alerts disabled"}, now)
+			}
 			continue
 		}
 		if incident.ResolvedAt != nil && !incident.OneShot && page.Kind != store.DeliveryResolved {
@@ -462,6 +467,15 @@ func (n *Notifier) sendPages(ctx context.Context, pages []sendablePage, now time
 			if updateErr := n.store.UpdateDelivery(ctx, row); updateErr != nil {
 				n.logger.Warn("dispatcher: update delivery", slog.String("error", updateErr.Error()))
 			}
+		}
+		var refused *refusedError
+		if errors.As(err, &refused) {
+			for _, item := range ready {
+				n.cancelPage(ctx, item.page, "recipient refused: "+safe, now)
+			}
+			n.logger.Warn("page refused by recipient", slog.String("channel", string(channel.Kind())),
+				slog.String("recipient", ready[0].page.Recipient), slog.String("error", safe))
+			return
 		}
 		retryIn := time.Duration(0)
 		for _, item := range ready {

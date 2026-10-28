@@ -192,7 +192,7 @@ func (c *telegramChannel) SendEach(ctx context.Context, message Message, chats [
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		var response sendMessageResponse
 		if err := sendJSON(c.client, request, &response); err != nil {
-			results = append(results, chatSend{chatID: chatID, err: fmt.Errorf("send Telegram message: %w", SafeError(err))})
+			results = append(results, chatSend{chatID: chatID, err: telegramRefusal(fmt.Errorf("send Telegram message: %w", SafeError(err)))})
 			continue
 		}
 		if !response.Ok {
@@ -378,9 +378,41 @@ func send(client *http.Client, request *http.Request) error {
 		return fmt.Errorf("read the response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return fmt.Errorf("the server answered %s", response.Status)
+		return &statusError{code: response.StatusCode, msg: fmt.Sprintf("the server answered %s", response.Status)}
 	}
 	return nil
+}
+
+// statusError is a non-2xx answer. Its code tells a refused recipient apart
+// from a server that is temporarily unavailable.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+// refusedError marks a delivery that can never succeed for its recipient,
+// such as a chat the bot was removed from. The page is cancelled instead of
+// retried, because retrying would repeat the refusal for as long as the
+// incident stays open.
+type refusedError struct {
+	err error
+}
+
+func (e *refusedError) Error() string { return e.err.Error() }
+func (e *refusedError) Unwrap() error { return e.err }
+
+// telegramRefusal wraps the errors that mean a Telegram chat cannot be
+// reached: 403 when the bot was blocked or removed from the chat, and 400
+// with "chat not found". Other failures, including 401 for a bad token,
+// stay retryable because an operator can fix them without losing the page.
+func telegramRefusal(err error) error {
+	var status *statusError
+	if errors.As(err, &status) && (status.code == http.StatusForbidden || status.code == http.StatusBadRequest) {
+		return &refusedError{err: err}
+	}
+	return err
 }
 
 // sendJSON performs one request, accepts a 2xx response and decodes the
@@ -400,7 +432,7 @@ func sendJSON(client *http.Client, request *http.Request, out any) error {
 		return fmt.Errorf("read the response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return fmt.Errorf("the server answered %s: %s", response.Status, string(data))
+		return &statusError{code: response.StatusCode, msg: fmt.Sprintf("the server answered %s: %s", response.Status, string(data))}
 	}
 	// Empty body: substitute permissive envelope so JSON decoding succeeds
 	// without misleading the rest of the package.
