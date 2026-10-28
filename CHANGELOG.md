@@ -49,6 +49,8 @@ All notable changes to Raedar are listed here. The format follows
   Pending pages are now woken in the same transaction.
 - A pending opening message for an app with alerts disabled waits for alerts
   to come back on instead of being cancelled. Resolutions are still dropped.
+- Acknowledging an incident now records an `acked` delivery for each page it
+  cancels, so the Deliveries page shows why paging ended.
 - A Telegram chat that refuses the bot (HTTP 400 or 403) cancels its page
   instead of being retried for as long as the incident is open. A rejected
   token or a server error is still retried.
