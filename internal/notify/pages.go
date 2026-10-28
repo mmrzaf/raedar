@@ -436,6 +436,9 @@ func (n *Notifier) sendPages(ctx context.Context, pages []sendablePage, now time
 		ready = append(ready, item)
 	}
 	if len(ready) == 0 {
+		if limit != nil {
+			limit.undo()
+		}
 		return
 	}
 
@@ -558,7 +561,7 @@ func (n *Notifier) waitPage(ctx context.Context, page store.Page, decision Decis
 		due = now.Add(pageRecheck)
 	}
 	if !due.After(now) {
-		due = now.Add(pageRecheck)
+		due = now
 	}
 	changed := page.Reason != decision.Reason ||
 		(page.SilenceID == nil) != (decision.SilenceID == nil) ||
