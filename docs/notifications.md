@@ -22,7 +22,7 @@ A resolution goes to the same channels the incident's opening message went to. W
 
 ## Flapping
 
-A subject that opens and resolves repeatedly can still flood a channel with resolution messages even when its opening pages are in the pager cooldown. `RAEDAR_FLAP_WINDOW` (1 hour) and `RAEDAR_FLAP_MAX_PAGES` (1) limit how many opening pages a (rule, subject) may produce in that window. Later opens are recorded as `cooldown` deliveries and dropped, and their resolutions are dropped too. Once the subject stays quiet for the window, the next page goes out normally. Set the window to `0` to disable flap suppression.
+A subject that opens repeatedly can flood a channel even when its opening pages are in the pager cooldown. `RAEDAR_FLAP_WINDOW` (1 hour) and `RAEDAR_FLAP_MAX_PAGES` (1) limit how many **announced** episodes a (rule, subject) may produce in that window. A page that was never sent, because a deploy silence or quiet hours held it, does not consume the budget. Critical incidents bypass the budget, so a crash loop is never lost because an earlier warning used the last slot. Later warning opens are recorded as `dropped` deliveries and cancelled. Once the subject stays quiet for the window, the next page goes out normally. Set the window to `0` to disable flap suppression.
 
 ## Telegram
 
@@ -125,9 +125,12 @@ Body:
 
 ## Silences
 
-A silence stops pages for a scope until it expires. Every incident change is
-still evaluated and recorded, so the incident timeline stays complete; only
-the message is suppressed.
+A silence stops pages for a scope **until it expires**. The page is not
+discarded: it stays pending in the database, and when the silence ends the
+policy is evaluated again. If the incident is still open, the page goes out
+then; if it resolved in the meantime, the opening page is cancelled. Removing
+a silence early wakes the pages waiting on it immediately. Because the queue is
+in PostgreSQL, a restart does not lose a held page.
 
 | Kind | Created by | Scope |
 |---|---|---|
@@ -138,6 +141,33 @@ the message is suppressed.
 Precedence, most specific first: (rule, subject), rule, subject, app,
 everything. When two silences match, the one ending later wins. A silence
 created by an operator lasts at most 30 days.
+
+**Auto-deploy silences never hide a critical incident or a resolution.** They
+only cover the warning noise a deploy can produce, such as one container crash
+or a route blip while the new image starts. A crash loop is critical and pages
+immediately, even inside the deploy window. Manual maintenance windows and
+Telegram mutes apply to every severity because the operator asked for them.
+
+A resolution is best-effort: it is sent to the channels that announced the
+opening, but if a maintenance window or mute covers the incident, or quiet
+hours are open, when the incident resolves, the stale resolution is dropped
+rather than delivered later. A critical resolution still goes out during quiet
+hours unless `RAEDAR_QUIET_PAGE_CRITICAL=false`. The incident timeline and the
+digest still show it.
+
+Expired auto-deploy silences are removed after a day, and expired one-shot
+mutes after the 30-day cap, so the Silences page stays readable.
+
+### Durable pages
+
+Every incident episode has one page per channel and recipient. The page moves
+through `pending`, `announced`, `resolving` and `resolved`, or ends as
+`cancelled` when it was acked, the app disabled alerts, the episode resolved
+before it was announced, or flap policy deliberately dropped it. Silence,
+quiet hours, pager cooldown, rate limiting and transport failures only move the
+`due_at`; they never delete the obligation. The incident page shows the current
+state and the reason a page is waiting. The Deliveries page keeps the audit row
+for every suppression, attempt and send.
 
 ### Quiet hours
 
@@ -160,9 +190,9 @@ once when it expires, so a flapping route produces one catch-up message
 instead of a burst. Escalations and resolutions are never delayed by the
 cooldown.
 
-Held catch-up messages live in memory. If Raedar restarts while one waits, it
-is not sent; the `held` and `cooldown` rows on the Deliveries page remain as
-the record.
+Held pages live in PostgreSQL. If Raedar restarts while one waits, the
+dispatcher resumes it; the `held` and `cooldown` rows on the Deliveries page
+remain as the audit record.
 
 ### Stand-down
 
@@ -190,8 +220,8 @@ Durations use the configuration syntax: `30s`, `5m`, `2h`, `14d`, and a mute las
 
 ## Delivery
 
-- **Retries.** A failed delivery is retried after 10 seconds, 1 minute and 5 minutes. After that it is marked failed. Only the recipients that failed are retried: a Telegram chat or an SMS number that already got the message is not contacted again. Every attempt is recorded in `deliveries` and visible on the incident page.
-- **Rate limits.** Per channel, at most `RAEDAR_RATE_LIMIT` messages per hour (30 by default) and at most `RAEDAR_SMS_RATE_LIMIT` per hour for SMS (10 by default). Messages beyond the limit are held and sent as a single "N more incidents, see Raedar" message when the limit allows.
+- **Retries.** A failed delivery is retried after 10 seconds, 1 minute, 5 minutes, 15 minutes, 30 minutes and then hourly for as long as the incident is open. A temporary Telegram or SMS outage cannot lose a page. Only the recipient that failed is retried: another chat or number that already got the message is not contacted again. Every attempt is recorded in `deliveries` and visible on the incident page. Delivery is at-least-once: a crash after the provider accepted a message but before Raedar recorded it can repeat that message.
+- **Rate limits.** Per channel, at most `RAEDAR_RATE_LIMIT` messages per hour (30 by default) and at most `RAEDAR_SMS_RATE_LIMIT` per hour for SMS (10 by default). A page beyond the limit stays pending and goes out when the window allows it.
 - **Timeouts.** Each request has a 15-second timeout.
 - **Proxy.** `RAEDAR_OUTBOUND_PROXY` (an `http://` or `socks5://` URL) sends the outbound requests selected by `RAEDAR_OUTBOUND_PROXY_FOR` through a proxy. The setting names any of `telegram`, `sms`, `webhook` and `heartbeat`; `all` (the default) sends every request through it. A server that can reach its SMS provider directly but not Telegram sets `RAEDAR_OUTBOUND_PROXY_FOR=telegram,webhook,heartbeat`. The proxy does not affect the Docker API or PostgreSQL. This is for servers whose direct outbound access is blocked or filtered. The standard `HTTPS_PROXY` variable is ignored on purpose, so it cannot accidentally route Docker API calls through a proxy.
 
