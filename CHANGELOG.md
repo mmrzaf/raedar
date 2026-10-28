@@ -4,6 +4,70 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-10-28
+
+### Added
+
+- **Durable notification pages.** Every incident episode now has one page per
+  channel and recipient in PostgreSQL. The planner re-creates a missing page
+  after a crash, and the dispatcher retries it until it is announced,
+  resolved, cancelled or dropped. Silence, quiet hours, cooldown, flap and
+  rate limits only move `due_at`; they no longer discard the page.
+- The incident page shows the notification state of every channel and
+  recipient, including the reason a page is waiting and its next attempt. The
+  Deliveries page shows the recipient, the suppression reason and the silence.
+- Removing a silence wakes the pages waiting on it.
+
+### Changed
+
+- **Auto-deploy silences no longer hide critical incidents or resolutions.**
+  They only cover warning noise during a deploy. A crash loop pages
+  immediately even inside the deploy window.
+- **Flap suppression counts only announced pages.** A page held by a silence
+  or quiet hours no longer consumes the page budget. Critical incidents
+  bypass the budget.
+- **Resolutions are best-effort.** A resolution that would be held by a
+  silence or quiet hours is dropped instead of arriving stale. Critical
+  resolutions still pass quiet hours.
+- Transport failures now retry with capped backoff for as long as the
+  incident is open, instead of failing permanently after three attempts.
+- A page withheld by the rate limit is rescheduled instead of summarized.
+- Expired auto-deploy silences are removed after a day and expired one-shot
+  mutes after the 30-day cap.
+
+### Fixed
+
+- A critical incident opened during an auto-deploy silence was suppressed at
+  open and never retried after the silence expired. The durable page now
+  sends when the silence ends, and criticals bypass the deploy silence
+  entirely.
+- A page suppressed by a silence, a restart, a failed send or a dropped
+  in-memory retry could be lost forever because notifications were only
+  driven by incident state changes. The planner is now level-triggered and
+  guarantees every open incident episode has a durable page.
+- Deleting a silence only removed the row; it did not release the incident.
+  Pending pages are now woken in the same transaction.
+- A pending opening message for an app with alerts disabled waits for alerts
+  to come back on instead of being cancelled. Resolutions are still dropped.
+- A Telegram chat that refuses the bot (HTTP 400 or 403) cancels its page
+  instead of being retried for as long as the incident is open. A rejected
+  token or a server error is still retried.
+- Certificate chain verification used the wall clock instead of the checker's
+  clock, so a certificate that was expiring at the evaluated moment could be
+  classified as `private` once its test window passed. It now verifies at the
+  same `now` as the rest of the check.
+
+### Upgrading
+
+- Migration `0008` is applied on start and is forward-only. It adds
+  `incidents.episode`, the `pages` table and the delivery reason, recipient,
+  page and silence columns.
+- On startup the planner seeds pages from existing incidents and sent
+  deliveries. Already-announced incidents are not paged again. An open
+  incident that has no sent page, such as one whose only page was silenced,
+  is paged after the upgrade. Those messages are grouped per channel and
+  recipient and paced by `RAEDAR_RATE_LIMIT` and `RAEDAR_SMS_RATE_LIMIT`.
+
 ## [0.4.2] - 2026-10-24
 
 ### Fixed
