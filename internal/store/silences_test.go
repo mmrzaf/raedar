@@ -37,11 +37,11 @@ func mustSilence(t *testing.T, ctx timeoutContext, s *Store, silence Silence) {
 
 func mustMatch(t *testing.T, ctx timeoutContext, s *Store, rule, subject string, now time.Time) *Silence {
 	t.Helper()
-	got, err := s.FindActiveSilence(ctx, rule, subject, nil, now)
+	active, err := s.ActiveSilences(ctx, now)
 	if err != nil {
-		t.Fatalf("find silence: %v", err)
+		t.Fatalf("read active silences: %v", err)
 	}
-	return got
+	return MatchSilence(active, rule, subject, nil)
 }
 
 // timeoutContext matches context.Context via a small interface to keep tests

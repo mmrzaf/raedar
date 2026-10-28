@@ -409,9 +409,11 @@ func (e *Engine) open(ctx context.Context, reading reading, now time.Time) (*sto
 		incident.Severity = reading.severity
 		incident.Summary = reading.summary
 		incident.Details = encodeDetails(withReopened(reading.details))
-		if err := e.store.ReopenIncident(ctx, incident); err != nil {
+		episode, err := e.store.ReopenIncident(ctx, incident)
+		if err != nil {
 			return nil, false, err
 		}
+		incident.Episode = episode
 		e.logger.Warn("incident reopened", slog.String("rule", reading.rule), slog.String("subject", reading.subject))
 		return &incident, true, nil
 	}
@@ -431,6 +433,7 @@ func (e *Engine) open(ctx context.Context, reading reading, now time.Time) (*sto
 		return nil, false, err
 	}
 	incident.ID = id
+	incident.Episode = 1
 	e.logger.Warn("incident opened", slog.String("rule", reading.rule),
 		slog.String("subject", reading.subject), slog.String("severity", string(reading.severity)))
 	return &incident, false, nil
@@ -489,6 +492,7 @@ func (e *Engine) evaluateCrashes(ctx context.Context, now time.Time, snapshot *s
 			return nil, err
 		}
 		incident.ID = id
+		incident.Episode = 1
 		e.logger.Warn("container crashed", slog.String("slot", slot.subject),
 			slog.Int("exit_code", payload.ExitCode), slog.Bool("oom", payload.OOM))
 		if slot.alerts {

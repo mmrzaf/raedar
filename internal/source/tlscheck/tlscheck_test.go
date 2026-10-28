@@ -264,6 +264,17 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+func TestEvaluateChecksTheChainAtTheEvaluationTime(t *testing.T) {
+	// The chain was valid in 2020 but has long expired on the wall clock. A
+	// replay of that moment must not call it private.
+	now := time.Date(2020, 1, 15, 12, 0, 0, 0, time.UTC)
+	certificate := issue(t, "example.com", []string{"example.com"}, now.Add(-30*24*time.Hour), now.Add(30*24*time.Hour))
+	got := Evaluate(certificate.state(t), "example.com", now, 14*24*time.Hour, certificate.roots)
+	if got.Status != StatusOK {
+		t.Errorf("status = %q, want %q", got.Status, StatusOK)
+	}
+}
+
 func TestEvaluateKeepsTheCertificateDetails(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	certificate := issue(t, "example.com", []string{"example.com", "www.example.com"}, now.Add(-time.Hour), now.Add(90*24*time.Hour))

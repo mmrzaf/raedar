@@ -77,13 +77,32 @@ func (s *Store) CreateSilence(ctx context.Context, silence Silence) (int64, erro
 }
 
 // DeleteSilence removes one silence by id and returns whether anything was
-// removed.
+// removed. Pages waiting on that silence are woken in the same transaction,
+// so removing a mute releases the incident on the next dispatcher tick.
 func (s *Store) DeleteSilence(ctx context.Context, id int64) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `delete from silences where id = $1`, id)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("delete silence %d: %w", id, err)
 	}
-	return tag.RowsAffected() > 0, nil
+	defer tx.Rollback(ctx)
+	// Wake before deleting: the foreign key would otherwise null the
+	// silence_id first and the update would match nothing.
+	if _, err := tx.Exec(ctx, `
+		update pages set due_at = now(), reason = 'silence removed', updated_at = now()
+		where silence_id = $1 and status in ('pending', 'resolving')`, id); err != nil {
+		return false, fmt.Errorf("wake pages of silence %d: %w", id, err)
+	}
+	tag, err := tx.Exec(ctx, `delete from silences where id = $1`, id)
+	if err != nil {
+		return false, fmt.Errorf("delete silence %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("delete silence %d: %w", id, err)
+	}
+	return true, nil
 }
 
 // ActiveSilences returns every silence in force at now, oldest end first
@@ -98,31 +117,15 @@ func (s *Store) ActiveSilences(ctx context.Context, now time.Time) ([]Silence, e
 	return scanSilences(rows)
 }
 
-// FindActiveSilence reports the most specific active silence for rule,
-// subject and app at now, or nil when there is none. The match precedence
-// is:
-//
-//	rule + subject > rule > subject > app > *
-//
-// and ties are broken by the latest ends_at (longest remaining), so a more
-// specific rule wins over a wider rule that ends later.
-func (s *Store) FindActiveSilence(ctx context.Context, rule, subject string, appID *int64, now time.Time) (*Silence, error) {
-	all, err := s.ActiveSilences(ctx, now)
-	if err != nil {
-		return nil, err
-	}
-	return matchSilence(all, rule, subject, appID), nil
-}
-
-// matchSilence finds the most specific active silence for rule+subject,
-// where an app-scoped silence matches when appID matches. A silence with
-// rule=nil matches any rule; subject=nil matches any subject; app=nil
-// matches any app. Precedence:
+// MatchSilence finds the most specific silence for rule+subject, where an
+// app-scoped silence matches when appID matches. A silence with rule=nil
+// matches any rule; subject=nil matches any subject; app=nil matches any app.
+// Precedence:
 //
 //	(rule, subject) > (rule) > (subject) > (app) > (wildcard)
 //
 // Ties on rank prefer the silence ending later.
-func matchSilence(active []Silence, rule, subject string, appID *int64) *Silence {
+func MatchSilence(active []Silence, rule, subject string, appID *int64) *Silence {
 	var best *Silence
 	bestRank := -1
 	for i := range active {
@@ -152,6 +155,21 @@ func matchSilence(active []Silence, rule, subject string, appID *int64) *Silence
 		}
 	}
 	return best
+}
+
+// PruneSilences deletes the generated silence rows that no longer have any
+// effect: auto-deploy rows after a day and one-shot mutes after the operator
+// cap. Maintenance windows are kept as operator history.
+func (s *Store) PruneSilences(ctx context.Context, now time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		delete from silences
+		where (kind = 'auto_deploy' and ends_at < $1)
+		   or (kind = 'one_shot_mute' and ends_at < $2)`,
+		now.Add(-24*time.Hour), now.Add(-MaxSilenceDuration))
+	if err != nil {
+		return 0, fmt.Errorf("prune silences: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // silenceSelect is the SELECT fragment shared by silence queries.

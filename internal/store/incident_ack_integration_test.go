@@ -73,7 +73,7 @@ func TestReopenIncidentClearsAck(t *testing.T) {
 		t.Fatalf("ResolveIncident: %v", err)
 	}
 	incident.OpenedAt = time.Now()
-	if err := st.ReopenIncident(ctx, incident); err != nil {
+	if _, err := st.ReopenIncident(ctx, incident); err != nil {
 		t.Fatalf("ReopenIncident: %v", err)
 	}
 	got, err := st.IncidentByID(ctx, incident.ID)
@@ -106,32 +106,5 @@ func TestTelegramMessageDeliveriesKeyedByChat(t *testing.T) {
 	}
 	if got, err := st.TelegramMessageDeliveries(ctx, 30, message); err != nil || len(got) != 0 {
 		t.Fatalf("deliveries of an unknown chat = %+v, %v; want none", got, err)
-	}
-}
-
-// TestLastSentCountsOnlyPages verifies that resolutions and tests do not start
-// the pager cooldown.
-func TestLastSentCountsOnlyPages(t *testing.T) {
-	st := newMigratedStore(t)
-	ctx := context.Background()
-	incident := newTestIncident(t, st, "route.down")
-	sent := time.Now()
-	for _, kind := range []DeliveryKind{DeliveryResolved, DeliveryTest} {
-		if _, err := st.AddDelivery(ctx, Delivery{
-			IncidentID: &incident.ID, Kind: kind, Channel: "telegram", CreatedAt: sent, SentAt: &sent, Status: "sent",
-		}); err != nil {
-			t.Fatalf("AddDelivery: %v", err)
-		}
-	}
-	if got, err := st.LastSent(ctx, incident.Rule, incident.Subject); err != nil || got != nil {
-		t.Fatalf("LastSent = %+v, %v; want none for a resolution", got, err)
-	}
-	if _, err := st.AddDelivery(ctx, Delivery{
-		IncidentID: &incident.ID, Kind: DeliveryEscalated, Channel: "telegram", CreatedAt: sent, SentAt: &sent, Status: "sent",
-	}); err != nil {
-		t.Fatalf("AddDelivery: %v", err)
-	}
-	if got, err := st.LastSent(ctx, incident.Rule, incident.Subject); err != nil || got == nil {
-		t.Fatalf("LastSent = %+v, %v; want the escalation", got, err)
 	}
 }

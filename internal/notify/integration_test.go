@@ -102,19 +102,34 @@ func TestPagerRetriesOnlyFailedChats(t *testing.T) {
 		t.Fatalf("group calls after first attempt = %d, want 1", got)
 	}
 
-	// Run the retry queue once with the failing chat now healthy.
+	// Make the failed chat's page due and run the dispatcher again with the
+	// chat now healthy.
+	current, err := st.IncidentByID(ctx, incident.ID)
+	if err != nil || current == nil {
+		t.Fatalf("IncidentByID: %v, %v", current, err)
+	}
+	pages, err := st.PagesForEpisode(ctx, incident.ID, current.Episode)
+	if err != nil {
+		t.Fatalf("PagesForEpisode: %v", err)
+	}
+	found := false
+	for _, page := range pages {
+		if page.Recipient != "group" {
+			continue
+		}
+		found = true
+		page.DueAt = time.Now().Add(-time.Second)
+		if err := st.UpdatePage(ctx, page); err != nil {
+			t.Fatalf("UpdatePage: %v", err)
+		}
+	}
+	if !found {
+		t.Fatal("no page for the failed chat")
+	}
 	tg.setOutcome("group", scriptedOutcome{messageID: 2002})
-	notifier.mu.Lock()
-	queued := len(notifier.retries)
-	// Pretend the retry delay has passed.
-	for _, pending := range notifier.retries {
-		pending.at = time.Now().Add(-time.Second)
-	}
-	notifier.mu.Unlock()
-	if queued == 0 {
-		t.Fatal("no retry was queued")
-	}
+	notifier.workMu.Lock()
 	notifier.deliverDue(ctx)
+	notifier.workMu.Unlock()
 
 	if got := tg.callsFor("personal"); got != 1 {
 		t.Fatalf("personal calls after retry = %d, want still 1 (must not duplicate)", got)

@@ -37,17 +37,28 @@ type Delivery struct {
 	// messages; message ids are only unique within one chat.
 	TelegramChatID    *int64
 	TelegramMessageID *int64
+	// PageID is the durable page obligation this delivery belongs to; nil
+	// for a digest or a test.
+	PageID *int64
+	// Recipient is the chat id, phone number, or "" for a channel that does
+	// not fan out.
+	Recipient string
+	// Reason explains a suppressed or dropped delivery.
+	Reason *string
+	// SilenceID is the silence that suppressed the delivery, when one did.
+	SilenceID *int64
 }
 
 // deliveryColumns is the SELECT list scanDelivery reads.
 const deliveryColumns = `d.id, d.incident_id, d.kind, d.channel, d.created_at, d.sent_at, d.attempts,
-	d.status, d.error, d.telegram_chat_id, d.telegram_message_id`
+	d.status, d.error, d.telegram_chat_id, d.telegram_message_id, d.page_id, d.recipient, d.reason, d.silence_id`
 
 // scanDelivery reads one row selected with deliveryColumns into d, followed
 // by any extra columns.
 func scanDelivery(row pgx.Row, d *Delivery, extra ...any) error {
 	fields := append([]any{&d.ID, &d.IncidentID, &d.Kind, &d.Channel, &d.CreatedAt, &d.SentAt,
-		&d.Attempts, &d.Status, &d.Error, &d.TelegramChatID, &d.TelegramMessageID}, extra...)
+		&d.Attempts, &d.Status, &d.Error, &d.TelegramChatID, &d.TelegramMessageID,
+		&d.PageID, &d.Recipient, &d.Reason, &d.SilenceID}, extra...)
 	return row.Scan(fields...)
 }
 
@@ -56,12 +67,13 @@ func (s *Store) AddDelivery(ctx context.Context, delivery Delivery) (int64, erro
 	var id int64
 	err := s.pool.QueryRow(ctx, `
 		insert into deliveries (incident_id, kind, channel, created_at, sent_at, attempts, status, error,
-		                        telegram_chat_id, telegram_message_id)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		                        telegram_chat_id, telegram_message_id, page_id, recipient, reason, silence_id)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		returning id`,
 		delivery.IncidentID, delivery.Kind, delivery.Channel, delivery.CreatedAt, delivery.SentAt,
 		delivery.Attempts, delivery.Status, delivery.Error, delivery.TelegramChatID,
-		delivery.TelegramMessageID).Scan(&id)
+		delivery.TelegramMessageID, delivery.PageID, delivery.Recipient, delivery.Reason,
+		delivery.SilenceID).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert delivery: %w", err)
 	}
@@ -73,10 +85,12 @@ func (s *Store) AddDelivery(ctx context.Context, delivery Delivery) (int64, erro
 func (s *Store) UpdateDelivery(ctx context.Context, delivery Delivery) error {
 	_, err := s.pool.Exec(ctx, `
 		update deliveries
-		set sent_at = $2, attempts = $3, status = $4, error = $5, telegram_chat_id = $6, telegram_message_id = $7
+		set sent_at = $2, attempts = $3, status = $4, error = $5, telegram_chat_id = $6,
+		    telegram_message_id = $7, recipient = $8, reason = $9, silence_id = $10
 		where id = $1`,
 		delivery.ID, delivery.SentAt, delivery.Attempts, delivery.Status, delivery.Error,
-		delivery.TelegramChatID, delivery.TelegramMessageID)
+		delivery.TelegramChatID, delivery.TelegramMessageID, delivery.Recipient, delivery.Reason,
+		delivery.SilenceID)
 	if err != nil {
 		return fmt.Errorf("update delivery %d: %w", delivery.ID, err)
 	}

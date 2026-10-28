@@ -113,9 +113,9 @@ See [notifications.md](notifications.md#silences) for how the gate uses these.
 | `RAEDAR_PAGER_COOLDOWN` | `30m` | Minimum time between two pages for the same (rule, subject). `0` disables it. |
 | `RAEDAR_PAGER_COOLDOWN_BY_RULE` | — | Per-rule overrides, `rule=duration,...` (for example `route.down=15m,host.disk=1h`). |
 | `RAEDAR_FLAP_WINDOW` | `1h` | Window in which a (rule, subject) may use its page budget. `0` disables flap suppression. |
-| `RAEDAR_FLAP_MAX_PAGES` | `1` | Opening pages allowed per window; later opens and their resolutions are recorded but dropped. |
+| `RAEDAR_FLAP_MAX_PAGES` | `1` | Announced episodes allowed per window; later warning opens are dropped. Silenced attempts do not count, and critical incidents bypass the budget. |
 | `RAEDAR_STAND_DOWN_AFTER` | `24h` | After this much quiet with nothing open, send one "all quiet" message. `0` disables it. |
-| `RAEDAR_DEPLOY_SILENCE` | `5m` | Silence an app for this long after each deploy. `0` disables it. |
+| `RAEDAR_DEPLOY_SILENCE` | `5m` | Silence warning noise for an app this long after each deploy. Critical incidents and resolutions still go out. `0` disables it. |
 
 ## Presentation
 

@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -13,138 +12,191 @@ import (
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
-// fakeGateStore is an in-memory stand-in for the gate's store needs. It
-// reuses the production silence matcher so the precedence tests can never
-// drift from the runtime behaviour.
+// fakeGateStore is an in-memory stand-in for the gate's store needs.
 type fakeGateStore struct {
-	mu         sync.Mutex
-	silences   []store.Silence
-	incidents  map[int64]store.Incident
-	deliveries []store.Delivery
+	mu            sync.Mutex
+	silences      []store.Silence
+	announcements map[string]announcement
+	err           error
+}
+
+type announcement struct {
+	count int
+	last  time.Time
 }
 
 func newGateStore() *fakeGateStore {
-	return &fakeGateStore{incidents: map[int64]store.Incident{}}
+	return &fakeGateStore{announcements: map[string]announcement{}}
 }
 
-func (s *fakeGateStore) FindActiveSilence(ctx context.Context, rule, subject string, appID *int64, now time.Time) (*store.Silence, error) {
+func (s *fakeGateStore) ActiveSilences(context.Context, time.Time) ([]store.Silence, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return matchSilenceLocal(s.silences, rule, subject, appID), nil
-}
-
-func (s *fakeGateStore) IncidentByID(ctx context.Context, id int64) (*store.Incident, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if inc, ok := s.incidents[id]; ok {
-		copy := inc
-		return &copy, nil
+	if s.err != nil {
+		return nil, s.err
 	}
-	return nil, nil
+	return append([]store.Silence(nil), s.silences...), nil
 }
 
-func (s *fakeGateStore) LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error) {
+func (s *fakeGateStore) Announcements(_ context.Context, rule, subject, channel string, since time.Time) (int, *time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, d := range s.deliveries {
-		if d.Status != "sent" || d.IncidentID == nil {
-			continue
-		}
-		inc, ok := s.incidents[*d.IncidentID]
-		if !ok || inc.Rule != rule || inc.Subject != subject {
-			continue
-		}
-		copy := d
-		return &copy, nil
+	if s.err != nil {
+		return 0, nil, s.err
 	}
-	return nil, nil
+	entry, ok := s.announcements[rule+"\x00"+subject+"\x00"+channel]
+	if !ok || entry.last.IsZero() || entry.last.Before(since) {
+		return 0, nil, nil
+	}
+	last := entry.last
+	return entry.count, &last, nil
+}
+
+func (s *fakeGateStore) setAnnouncements(rule, subject, channel string, count int, last time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.announcements[rule+"\x00"+subject+"\x00"+channel] = announcement{count: count, last: last}
 }
 
 func gateStr(s string) *string { return &s }
 
+func gateIncident(severity store.Severity) store.Incident {
+	return store.Incident{
+		ID: 1, Episode: 1, Rule: "route.down", Subject: "fallback@file",
+		Severity: severity, OpenedAt: time.Date(2026, 10, 20, 18, 0, 0, 0, time.UTC),
+	}
+}
+
 func TestGateAcked(t *testing.T) {
 	now := time.Now()
-	db := newGateStore()
-	db.incidents[1] = store.Incident{
-		ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning,
-		OpenedAt: now.Add(-time.Minute), Summary: "disk", AckedAt: &now,
-	}
-	gate := &Gate{Store: db, Logger: discardLogger()}
+	incident := gateIncident(store.SeverityCritical)
+	incident.AckedAt = &now
+	gate := &Gate{Store: newGateStore(), Logger: discardLogger()}
 	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident: db.incidents[1], ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: incident, Kind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
 	})
-	if got.Status != GateAcked {
-		t.Fatalf("status = %q, want acked", got.Status)
+	if got.Action != ActionDrop || got.Reason != "acked" {
+		t.Fatalf("decision = %+v, want drop acked", got)
 	}
 }
 
-func TestGateSilenced(t *testing.T) {
-	now := time.Now()
+func TestGateManualSilenceWaits(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	ends := now.Add(time.Hour)
 	db := newGateStore()
 	db.silences = append(db.silences, store.Silence{
-		Kind: store.SilenceOneShotMute, Rule: gateStr("route.down"), Subject: gateStr("fallback@file"),
-		Reason: "scanner noise", StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour),
+		ID: 16, Kind: store.SilenceOneShotMute, Rule: gateStr("route.down"), Subject: gateStr("fallback@file"),
+		Reason: "scanner noise", StartsAt: now.Add(-time.Minute), EndsAt: ends,
 	})
 	gate := &Gate{Store: db, Logger: discardLogger()}
 	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident:   store.Incident{ID: 1, Rule: "route.down", Subject: "fallback@file", Severity: store.SeverityCritical, OpenedAt: now},
-		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: gateIncident(store.SeverityCritical), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
 	})
-	if got.Status != GateSilenced {
-		t.Fatalf("status = %q, want silenced", got.Status)
+	if got.Action != ActionWait || !got.ReadyAt.Equal(ends) || got.SilenceID == nil || *got.SilenceID != 16 {
+		t.Fatalf("decision = %+v, want wait until %v on silence 16", got, ends)
 	}
 }
 
-func TestGateSilenceSpecificBeatsGlobal(t *testing.T) {
-	now := time.Now()
-	db := newGateStore()
-	db.silences = append(db.silences,
-		store.Silence{Kind: store.SilenceMaintenanceWindow, Reason: "global",
-			StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour)},
-		store.Silence{Kind: store.SilenceOneShotMute, Rule: gateStr("route.down"), Subject: gateStr("fallback@file"),
-			Reason: "exact", StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour)},
-	)
-	gate := &Gate{Store: db, Logger: discardLogger()}
-	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident:   store.Incident{ID: 1, Rule: "route.down", Subject: "fallback@file", Severity: store.SeverityWarning, OpenedAt: now},
-		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
-	})
-	if got.Status != GateSilenced || got.Reason != "exact" {
-		t.Fatalf("got %+v, want silenced with reason exact", got)
-	}
-}
-
-func TestGateAppScopedSilence(t *testing.T) {
-	now := time.Now()
-	db := newGateStore()
+func TestGateAutoDeploySilenceSparesCritical(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	appID := int64(7)
+	db := newGateStore()
 	db.silences = append(db.silences, store.Silence{
 		Kind: store.SilenceAutoDeploy, AppID: &appID, Reason: "deploy",
 		StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour),
 	})
 	gate := &Gate{Store: db, Logger: discardLogger()}
+	incident := gateIncident(store.SeverityWarning)
+	incident.AppID = &appID
+	incident.Rule = "container.crashed"
 	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident:   store.Incident{ID: 1, Rule: "container.crashed", Subject: "shop / shop #1", AppID: &appID, Severity: store.SeverityWarning, OpenedAt: now},
-		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: incident, Kind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
 	})
-	if got.Status != GateSilenced {
-		t.Fatalf("status = %q, want silenced by app-scoped silence", got.Status)
+	if got.Action != ActionWait {
+		t.Fatalf("warning decision = %+v, want wait", got)
+	}
+	incident.Severity = store.SeverityCritical
+	got = gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: incident, Kind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+	})
+	if got.Action != ActionSend {
+		t.Fatalf("critical decision = %+v, want send (auto-deploy must not hide a critical)", got)
 	}
 }
 
-func TestGateDefaultRecords(t *testing.T) {
+func TestGateAutoDeployDoesNotSuppressResolution(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	appID := int64(7)
+	db := newGateStore()
+	db.silences = append(db.silences, store.Silence{
+		Kind: store.SilenceAutoDeploy, AppID: &appID, Reason: "deploy",
+		StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour),
+	})
+	gate := &Gate{Store: db, Logger: discardLogger()}
+	incident := gateIncident(store.SeverityWarning)
+	incident.AppID = &appID
+	got := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: incident, Kind: store.DeliveryResolved, Channel: KindTelegram, Now: now,
+	})
+	if got.Action != ActionSend {
+		t.Fatalf("decision = %+v, want send", got)
+	}
+}
+
+func TestGateSilenceSpecificBeatsGlobal(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := newGateStore()
+	db.silences = append(db.silences,
+		store.Silence{Kind: store.SilenceMaintenanceWindow, Reason: "global",
+			StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour)},
+		store.Silence{Kind: store.SilenceOneShotMute, Rule: gateStr("route.down"), Subject: gateStr("fallback@file"),
+			Reason: "exact", StartsAt: now.Add(-time.Minute), EndsAt: now.Add(2 * time.Hour)},
+	)
+	gate := &Gate{Store: db, Logger: discardLogger()}
+	got := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: gateIncident(store.SeverityWarning), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
+	})
+	if got.Action != ActionWait || !strings.Contains(got.Reason, "exact") {
+		t.Fatalf("decision = %+v, want the exact silence", got)
+	}
+}
+
+func TestGateCriticalSilenceFallsThroughToBroaderManual(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	appID := int64(7)
+	db := newGateStore()
+	db.silences = append(db.silences,
+		store.Silence{Kind: store.SilenceAutoDeploy, AppID: &appID, Reason: "deploy",
+			StartsAt: now.Add(-time.Minute), EndsAt: now.Add(time.Hour)},
+		store.Silence{Kind: store.SilenceMaintenanceWindow, Rule: gateStr("route.down"), Reason: "maintenance",
+			StartsAt: now.Add(-time.Minute), EndsAt: now.Add(2 * time.Hour)},
+	)
+	gate := &Gate{Store: db, Logger: discardLogger()}
+	incident := gateIncident(store.SeverityCritical)
+	incident.AppID = &appID
+	got := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: incident, Kind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+	})
+	if got.Action != ActionWait || !strings.Contains(got.Reason, "maintenance") {
+		t.Fatalf("decision = %+v, want the manual silence, not the skipped auto-deploy one", got)
+	}
+}
+
+func TestGateDefaultSends(t *testing.T) {
 	now := time.Now()
 	gate := &Gate{Store: newGateStore(), Logger: discardLogger()}
 	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident:   store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning, OpenedAt: now},
-		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: gateIncident(store.SeverityWarning), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
 	})
-	if got.Status != GateRecorded {
-		t.Fatalf("status = %q, want recorded", got.Status)
+	if got.Action != ActionSend {
+		t.Fatalf("decision = %+v, want send", got)
 	}
 }
 
-func TestGateQuietHoursHoldsButCriticalBypasses(t *testing.T) {
+func TestGateQuietHours(t *testing.T) {
 	from := time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC)
 	to := time.Date(0, 1, 1, 7, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
@@ -153,195 +205,166 @@ func TestGateQuietHoursHoldsButCriticalBypasses(t *testing.T) {
 		QuietFrom: &from, QuietTo: &to, QuietZone: time.UTC, PageCritical: true,
 	}
 	warning := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident:   store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning},
-		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: gateIncident(store.SeverityWarning), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
 	})
-	if warning.Status != GateHeld {
-		t.Fatalf("warning status = %q, want held", warning.Status)
+	if warning.Action != ActionWait {
+		t.Fatalf("warning decision = %+v, want wait", warning)
 	}
-	// The window closes at 07:00 the next morning.
 	wantReady := time.Date(2026, 10, 21, 7, 0, 0, 0, time.UTC)
 	if !warning.ReadyAt.Equal(wantReady) {
 		t.Fatalf("readyAt = %v, want %v", warning.ReadyAt, wantReady)
 	}
 	critical := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident:   store.Incident{ID: 2, Rule: "route.down", Subject: "x", Severity: store.SeverityCritical},
-		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: gateIncident(store.SeverityCritical), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
 	})
-	if critical.Status != GateRecorded {
-		t.Fatalf("critical status = %q, want recorded", critical.Status)
+	if critical.Action != ActionSend {
+		t.Fatalf("critical decision = %+v, want send", critical)
 	}
 }
 
-func TestGateQuietHoursOutsideWindowRecords(t *testing.T) {
+func TestGateQuietHoursHoldsCriticalWhenDisabled(t *testing.T) {
 	from := time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC)
 	to := time.Date(0, 1, 1, 7, 0, 0, 0, time.UTC)
-	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
 	gate := &Gate{
 		Store: newGateStore(), Logger: discardLogger(),
-		QuietFrom: &from, QuietTo: &to, QuietZone: time.UTC,
+		QuietFrom: &from, QuietTo: &to, QuietZone: time.UTC, PageCritical: false,
 	}
 	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident:   store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning},
-		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: gateIncident(store.SeverityCritical), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
 	})
-	if got.Status != GateRecorded {
-		t.Fatalf("status = %q, want recorded", got.Status)
+	if got.Action != ActionWait {
+		t.Fatalf("decision = %+v, want wait", got)
+	}
+}
+
+func TestGateResolutionsAreBestEffort(t *testing.T) {
+	from := time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC)
+	to := time.Date(0, 1, 1, 7, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 20, 23, 30, 0, 0, time.UTC)
+	gate := &Gate{
+		Store: newGateStore(), Logger: discardLogger(),
+		QuietFrom: &from, QuietTo: &to, QuietZone: time.UTC, PageCritical: true,
+	}
+	warning := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: gateIncident(store.SeverityWarning), Kind: store.DeliveryResolved,
+		Channel: KindTelegram, Now: now,
+	})
+	if warning.Action != ActionDrop {
+		t.Fatalf("warning resolution = %+v, want drop", warning)
+	}
+	critical := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: gateIncident(store.SeverityCritical), Kind: store.DeliveryResolved,
+		Channel: KindTelegram, Now: now,
+	})
+	if critical.Action != ActionSend {
+		t.Fatalf("critical resolution = %+v, want send", critical)
 	}
 }
 
 func TestGateCooldown(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	db := newGateStore()
-	db.incidents[1] = store.Incident{
-		ID: 1, Rule: "route.down", Subject: "fallback@file",
-		Severity: store.SeverityCritical, OpenedAt: now.Add(-time.Hour),
-	}
-	sentAt := now.Add(-5 * time.Minute)
-	db.deliveries = []store.Delivery{
-		{ID: 1, IncidentID: ptrInt64(1), Status: "sent", SentAt: &sentAt},
-	}
+	db.setAnnouncements("route.down", "fallback@file", "telegram", 1, now.Add(-5*time.Minute))
 	gate := &Gate{Store: db, Logger: discardLogger(), Cooldown: 15 * time.Minute}
 	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident: db.incidents[1], ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: gateIncident(store.SeverityCritical), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
 	})
-	if got.Status != GateCooldown {
-		t.Fatalf("status = %q, want cooldown", got.Status)
+	if got.Action != ActionWait || !got.ReadyAt.Equal(now.Add(10*time.Minute)) {
+		t.Fatalf("decision = %+v, want wait until the cooldown ends", got)
 	}
-	if want := sentAt.Add(15 * time.Minute); !got.ReadyAt.Equal(want) {
-		t.Fatalf("readyAt = %v, want %v", got.ReadyAt, want)
-	}
-
-	// Past the cooldown the page records.
+	// Past the cooldown the page sends.
 	later := now.Add(11 * time.Minute)
 	got = gate.Evaluate(context.Background(), DecisionInputs{
-		Incident: db.incidents[1], ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: later,
+		Incident: gateIncident(store.SeverityCritical), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: later,
 	})
-	if got.Status != GateRecorded {
-		t.Fatalf("after cooldown: status = %q, want recorded", got.Status)
-	}
-}
-
-func TestGateFlap(t *testing.T) {
-	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	incident := store.Incident{
-		ID: 1, Rule: "host.unit_failed", Subject: "storage-budget-check.service",
-		Severity: store.SeverityWarning, OpenedAt: now.Add(-10 * time.Minute),
-	}
-	count := 0
-	gate := &Gate{
-		Store: newGateStore(), Logger: discardLogger(),
-		FlapWindow: time.Hour, FlapMaxPages: 1,
-		RecentOpenCount: func(context.Context, string, string, string, time.Time) (int, error) {
-			return count, nil
-		},
-	}
-	tests := []struct {
-		name   string
-		kind   store.DeliveryKind
-		count  int
-		status GateStatus
-		drop   bool
-	}{
-		{name: "first open records", kind: store.DeliveryOpened, count: 0, status: GateRecorded},
-		{name: "second open drops", kind: store.DeliveryOpened, count: 1, status: GateCooldown, drop: true},
-		{name: "first resolution records", kind: store.DeliveryResolved, count: 1, status: GateRecorded},
-		{name: "resolution after flapping drops", kind: store.DeliveryResolved, count: 2, status: GateCooldown, drop: true},
-		{name: "escalation always records", kind: store.DeliveryEscalated, count: 5, status: GateRecorded},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			count = tt.count
-			got := gate.Evaluate(context.Background(), DecisionInputs{
-				Incident: incident, ChangeKind: tt.kind, Channel: KindTelegram, Now: now,
-			})
-			if got.Status != tt.status || got.Drop != tt.drop {
-				t.Fatalf("decision = %+v, want status %q drop %v", got, tt.status, tt.drop)
-			}
-		})
+	if got.Action != ActionSend {
+		t.Fatalf("after cooldown: decision = %+v, want send", got)
 	}
 }
 
 func TestGateCooldownByRule(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	db := newGateStore()
-	db.incidents[1] = store.Incident{
-		ID: 1, Rule: "route.down", Subject: "fallback@file",
-		Severity: store.SeverityCritical, OpenedAt: now.Add(-time.Hour),
-	}
-	sentAt := now.Add(-20 * time.Minute)
-	db.deliveries = []store.Delivery{
-		{ID: 1, IncidentID: ptrInt64(1), Status: "sent", SentAt: &sentAt},
-	}
+	db.setAnnouncements("route.down", "fallback@file", "telegram", 1, now.Add(-20*time.Minute))
 	gate := &Gate{
 		Store: db, Logger: discardLogger(),
 		Cooldown:       30 * time.Minute,
 		CooldownByRule: map[string]time.Duration{"route.down": 15 * time.Minute},
 	}
 	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident: db.incidents[1], ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: now,
+		Incident: gateIncident(store.SeverityCritical), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
 	})
-	if got.Status != GateRecorded {
-		t.Fatalf("status = %q, want recorded (15m override expired)", got.Status)
+	if got.Action != ActionSend {
+		t.Fatalf("decision = %+v, want send (15m override expired)", got)
 	}
 }
 
-func matchSilenceLocal(active []store.Silence, rule, subject string, appID *int64) *store.Silence {
-	var best *store.Silence
-	bestRank := -1
-	for i := range active {
-		candidate := &active[i]
-		var rank int
-		switch {
-		case candidate.Rule != nil && *candidate.Rule == rule && candidate.Subject != nil && *candidate.Subject == subject:
-			rank = 4
-		case candidate.Rule != nil && *candidate.Rule == rule && candidate.Subject == nil && candidate.AppID == nil:
-			rank = 3
-		case candidate.Rule == nil && candidate.Subject != nil && *candidate.Subject == subject && candidate.AppID == nil:
-			rank = 2
-		case candidate.Rule == nil && candidate.Subject == nil && candidate.AppID != nil && appID != nil && *candidate.AppID == *appID:
-			rank = 1
-		case candidate.Rule == nil && candidate.Subject == nil && candidate.AppID == nil:
-			rank = 0
-		default:
-			continue
-		}
-		if rank > bestRank {
-			bestRank = rank
-			best = candidate
-			continue
-		}
-		if rank == bestRank && best != nil && candidate.EndsAt.After(best.EndsAt) {
-			best = candidate
-		}
-	}
-	return best
-}
-
-func ptrInt64(v int64) *int64 { return &v }
-
-// TestGateCooldownSparesEscalationsAndResolutions verifies that the cooldown
-// only delays opening pages: an escalation or a resolution right after the
-// opening page must go out.
 func TestGateCooldownSparesEscalationsAndResolutions(t *testing.T) {
 	now := time.Now()
 	db := newGateStore()
-	sentAt := now.Add(-time.Minute)
-	db.incidents[1] = store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning, OpenedAt: sentAt}
-	id := int64(1)
-	db.deliveries = append(db.deliveries, store.Delivery{IncidentID: &id, Kind: store.DeliveryOpened, Status: "sent", SentAt: &sentAt})
+	db.setAnnouncements("route.down", "fallback@file", "telegram", 1, now.Add(-time.Minute))
 	gate := &Gate{Store: db, Logger: discardLogger(), Cooldown: 30 * time.Minute}
-	for kind, want := range map[store.DeliveryKind]GateStatus{
-		store.DeliveryOpened:    GateCooldown,
-		store.DeliveryEscalated: GateRecorded,
-		store.DeliveryResolved:  GateRecorded,
+	for kind, want := range map[store.DeliveryKind]Action{
+		store.DeliveryOpened:    ActionWait,
+		store.DeliveryEscalated: ActionSend,
+		store.DeliveryResolved:  ActionSend,
 	} {
 		got := gate.Evaluate(context.Background(), DecisionInputs{
-			Incident: db.incidents[1], ChangeKind: kind, Channel: KindTelegram, Now: now,
+			Incident: gateIncident(store.SeverityWarning), Kind: kind,
+			Channel: KindTelegram, Now: now,
 		})
-		if got.Status != want {
-			t.Errorf("%s: status = %q, want %q", kind, got.Status, want)
+		if got.Action != want {
+			t.Errorf("%s: action = %q, want %q", kind, got.Action, want)
 		}
+	}
+}
+
+func TestGateFlapCountsAnnouncedPagesOnly(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := newGateStore()
+	gate := &Gate{
+		Store: db, Logger: discardLogger(),
+		FlapWindow: time.Hour, FlapMaxPages: 1,
+	}
+	// No announced page yet: the first page is allowed.
+	got := gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: gateIncident(store.SeverityWarning), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
+	})
+	if got.Action != ActionSend {
+		t.Fatalf("first open = %+v, want send", got)
+	}
+	// One announced episode uses the budget.
+	db.setAnnouncements("route.down", "fallback@file", "telegram", 1, now.Add(-time.Minute))
+	got = gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: gateIncident(store.SeverityWarning), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
+	})
+	if got.Action != ActionDrop || got.Reason != "flapping" {
+		t.Fatalf("second open = %+v, want drop flapping", got)
+	}
+	// A critical episode bypasses the budget.
+	got = gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: gateIncident(store.SeverityCritical), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: now,
+	})
+	if got.Action != ActionSend {
+		t.Fatalf("critical open = %+v, want send", got)
+	}
+	// Resolutions are not flap pages.
+	got = gate.Evaluate(context.Background(), DecisionInputs{
+		Incident: gateIncident(store.SeverityWarning), Kind: store.DeliveryResolved,
+		Channel: KindTelegram, Now: now,
+	})
+	if got.Action != ActionSend {
+		t.Fatalf("resolution = %+v, want send", got)
 	}
 }
 
@@ -355,7 +378,6 @@ func TestQuietEndsAtAcrossDaylightSaving(t *testing.T) {
 	from := time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC)
 	to := time.Date(0, 1, 1, 7, 0, 0, 0, time.UTC)
 	gate := &Gate{QuietFrom: &from, QuietTo: &to, QuietZone: berlin}
-	// The clocks go forward at 02:00 on 2026-03-29.
 	now := time.Date(2026, 3, 28, 23, 30, 0, 0, berlin)
 	got, inside := gate.quietEndsAt(now)
 	want := time.Date(2026, 3, 29, 7, 0, 0, 0, berlin)
@@ -367,14 +389,11 @@ func TestQuietEndsAtAcrossDaylightSaving(t *testing.T) {
 // failingGateStore fails every lookup.
 type failingGateStore struct{}
 
-func (failingGateStore) FindActiveSilence(context.Context, string, string, *int64, time.Time) (*store.Silence, error) {
+func (failingGateStore) ActiveSilences(context.Context, time.Time) ([]store.Silence, error) {
 	return nil, errGateStore
 }
-func (failingGateStore) IncidentByID(context.Context, int64) (*store.Incident, error) {
-	return nil, errGateStore
-}
-func (failingGateStore) LastSent(context.Context, string, string) (*store.Delivery, error) {
-	return nil, errGateStore
+func (failingGateStore) Announcements(context.Context, string, string, string, time.Time) (int, *time.Time, error) {
+	return 0, nil, errGateStore
 }
 
 var errGateStore = errors.New("database unavailable")
@@ -382,20 +401,20 @@ var errGateStore = errors.New("database unavailable")
 // TestGateFailsOpenAndLogs verifies that a failing store never blocks a page
 // and that each failed lookup is logged.
 func TestGateFailsOpenAndLogs(t *testing.T) {
-	var logs bytes.Buffer
+	var logs strings.Builder
 	gate := &Gate{
-		Store:    &failingGateStore{},
+		Store:    failingGateStore{},
 		Logger:   slog.New(slog.NewTextHandler(&logs, nil)),
 		Cooldown: time.Hour,
 	}
 	got := gate.Evaluate(context.Background(), DecisionInputs{
-		Incident:   store.Incident{ID: 1, Rule: "host.disk", Subject: "/", Severity: store.SeverityWarning},
-		ChangeKind: store.DeliveryOpened, Channel: KindTelegram, Now: time.Now(),
+		Incident: gateIncident(store.SeverityWarning), Kind: store.DeliveryOpened,
+		Channel: KindTelegram, Now: time.Now(),
 	})
-	if got.Status != GateRecorded {
-		t.Fatalf("status = %q, want recorded", got.Status)
+	if got.Action != ActionSend {
+		t.Fatalf("decision = %+v, want send", got)
 	}
-	for _, want := range []string{"read incident", "read silences", "read last page"} {
+	for _, want := range []string{"read silences", "read last announcement"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("log does not mention %q:\n%s", want, logs.String())
 		}

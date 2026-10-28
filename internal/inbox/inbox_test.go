@@ -160,9 +160,6 @@ func (s *stubNotifier) SendReply(ctx context.Context, chatID int64, text string)
 // accepts the type.
 type nilStore struct{}
 
-func (nilStore) FindActiveSilence(context.Context, string, string, *int64, time.Time) (*store.Silence, error) {
-	return nil, nil
-}
 func (nilStore) IncidentByID(context.Context, int64) (*store.Incident, error) { return nil, nil }
 func (nilStore) CreateSilence(context.Context, store.Silence) (int64, error)  { return 0, nil }
 func (nilStore) DeleteSilence(context.Context, int64) (bool, error)           { return false, nil }
