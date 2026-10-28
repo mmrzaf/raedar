@@ -78,6 +78,17 @@ func TestPagesLifecycle(t *testing.T) {
 			t.Fatalf("announced page after ack = %+v, want it kept", saved)
 		}
 	}
+	rows, err := st.Deliveries(ctx, incident.ID)
+	if err != nil {
+		t.Fatalf("Deliveries: %v", err)
+	}
+	var acked bool
+	for _, row := range rows {
+		acked = acked || row.Status == "acked"
+	}
+	if !acked {
+		t.Fatal("no acked delivery row recorded")
+	}
 }
 
 // TestReopenStartsANewEpisodeAndCancelsOldPages verifies the episode counter

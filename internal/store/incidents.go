@@ -253,6 +253,13 @@ func (s *Store) AckIncident(ctx context.Context, id int64, at time.Time, by stri
 		return false, nil
 	}
 	if _, err := tx.Exec(ctx, `
+		insert into deliveries (incident_id, page_id, kind, channel, recipient, created_at, status, reason)
+		select p.incident_id, p.id, p.kind, p.channel, p.recipient, $2, 'acked', 'acked'
+		from pages p
+		where p.incident_id = $1 and p.status in ('pending', 'resolving')`, id, at); err != nil {
+		return false, fmt.Errorf("record acked pages of incident %d: %w", id, err)
+	}
+	if _, err := tx.Exec(ctx, `
 		update pages set status = 'cancelled', reason = 'acked', due_at = now(), updated_at = now()
 		where incident_id = $1 and status in ('pending', 'resolving')`, id); err != nil {
 		return false, fmt.Errorf("cancel pages of incident %d: %w", id, err)
