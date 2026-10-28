@@ -11,7 +11,7 @@
   {{if .Rows}}
   <div class="table-wrap">
   <table>
-    <thead><tr><th>When</th><th>Incident</th><th>Kind</th><th>Channel</th><th>Status</th><th class="num">Attempts</th><th>Error</th></tr></thead>
+    <thead><tr><th>When</th><th>Incident</th><th>Kind</th><th>Channel</th><th>Recipient</th><th>Status</th><th class="num">Attempts</th><th>Reason</th><th>Error</th></tr></thead>
     <tbody>
     {{range .Rows}}
       <tr>
@@ -19,8 +19,10 @@
         <td>{{if .Subject}}<a href="/incidents/{{.IncidentID}}">{{.Subject}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
         <td>{{.Kind}}</td>
         <td>{{.Channel}}</td>
+        <td>{{if .Recipient}}{{.Recipient}}{{else}}<span class="muted">—</span>{{end}}</td>
         <td><span class="badge badge-{{.Status}}">{{.Status}}</span></td>
         <td class="num">{{.Attempts}}</td>
+        <td class="wrap error-cell">{{if .Reason}}{{.Reason}}{{else}}<span class="muted">—</span>{{end}}</td>
         <td class="wrap error-cell">{{if .Error}}{{.Error}}{{else}}<span class="muted">—</span>{{end}}</td>
       </tr>
     {{end}}

@@ -327,6 +327,11 @@ func maintenance(ctx context.Context, st *store.Store, cfg *config.Config, logge
 			} else {
 				logger.Info("retention done")
 			}
+			if pruned, err := st.PruneSilences(ctx, now); err != nil {
+				logger.Error("silence cleanup failed", slog.String("error", err.Error()))
+			} else if pruned > 0 {
+				logger.Info("expired silences removed", slog.Int64("silences", pruned))
+			}
 			nextRetention = nextTimeOfDay(now, cfg.Location, maintenanceHour, 0)
 		}
 		if !nextDigest.IsZero() && !now.Before(nextDigest) {

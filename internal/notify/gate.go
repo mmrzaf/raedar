@@ -1,98 +1,86 @@
-// The gate is the single place that decides whether an incident change
-// becomes a page right now, is deferred, or is suppressed.
+// The gate is the single place that decides whether a page may be sent now,
+// must wait, or is deliberately dropped. It is pure policy: it reads the
+// incident, the active silences and the announcement history, and returns a
+// decision. The dispatcher owns the durable page state and applies it.
 package notify
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
-// GateStatus is the disposition the gate takes on one
-// (incident, change-kind, channel) tuple.
-type GateStatus string
+// Action is what the gate wants the dispatcher to do with one page.
+type Action string
 
 const (
-	// GateRecorded sends the page now.
-	GateRecorded GateStatus = "recorded"
-	// GateSilenced suppresses the page because a silence covers the
-	// incident. No message is ever sent.
-	GateSilenced GateStatus = "silenced"
-	// GateAcked suppresses the page because the operator acked the
-	// incident. No message is ever sent.
-	GateAcked GateStatus = "acked"
-	// GateHeld defers the page until the quiet window ends.
-	GateHeld GateStatus = "held"
-	// GateCooldown defers the page until the cooldown expires.
-	GateCooldown GateStatus = "cooldown"
+	// ActionSend sends the page now.
+	ActionSend Action = "send"
+	// ActionWait keeps the page pending until ReadyAt.
+	ActionWait Action = "wait"
+	// ActionDrop cancels the page. The reason says why.
+	ActionDrop Action = "drop"
 )
 
-// Decision is what the gate decided for one tuple. ReadyAt is set for the
-// deferred statuses (held, cooldown) and is the time the deferred page
-// becomes eligible to send. Reason is shown in the deliveries page.
+// Decision is the gate's verdict for one page.
 type Decision struct {
-	Status  GateStatus
-	Channel Kind
-	Reason  string
-	ReadyAt time.Time
-	// Drop suppresses a held or cooldown page without queueing a catch-up.
-	// The gate sets it for a flapping incident that has used its page budget.
-	Drop bool
+	Action    Action
+	ReadyAt   time.Time
+	Reason    string
+	SilenceID *int64
 }
 
 // DecisionInputs is the input for one gate evaluation.
 type DecisionInputs struct {
-	Incident   store.Incident
-	ChangeKind store.DeliveryKind
-	Channel    Kind
-	Now        time.Time
+	Incident store.Incident
+	Kind     store.DeliveryKind
+	Channel  Kind
+	Now      time.Time
+	// Attempts is how many times this page was already attempted. A retry
+	// of a failed send is not a new opening: cooldown and flap must not
+	// delay it again.
+	Attempts int
 }
 
 // GateStore is the slice of the store the gate needs.
 type GateStore interface {
-	// FindActiveSilence reports the most specific active silence for the
-	// incident's rule, subject and app at now, or nil when none matches.
-	FindActiveSilence(ctx context.Context, rule, subject string, appID *int64, now time.Time) (*store.Silence, error)
-	// IncidentByID returns one incident with its current ack state.
-	IncidentByID(ctx context.Context, id int64) (*store.Incident, error)
-	// LastSent returns the most recent sent delivery for the (rule,
-	// subject) pair, or nil when none exists.
-	LastSent(ctx context.Context, rule, subject string) (*store.Delivery, error)
+	// ActiveSilences returns the silences in force at now.
+	ActiveSilences(ctx context.Context, now time.Time) ([]store.Silence, error)
+	// Announcements returns how many episodes of this rule, subject and
+	// channel were announced since a time, and when the last one was.
+	Announcements(ctx context.Context, rule, subject, channel string, since time.Time) (int, *time.Time, error)
 }
 
-// Gate decides the disposition of each incident change.
+// Gate decides the disposition of one page.
 //
 // Order of checks:
 //
-//  1. acked      the operator already saw this incident
+//  1. acked      the operator already saw this episode
 //  2. silenced   a silence covers the incident
 //  3. held       the quiet window is open and the incident is not critical
-//  4. flap       the same (rule, subject) already used its page budget in the
-//     flap window; the page is recorded and dropped
-//  5. cooldown   an opening page for the same (rule, subject) went out within
-//     the cooldown; escalations and resolutions are never delayed by it
-//  6. recorded   send now
+//  4. flap       the subject used its page budget
+//  5. cooldown   an opening page for the same (rule, subject) went out recently
+//  6. send
 //
-// A failing store lookup never blocks a page: the gate logs it and carries
-// on to the next check, because a missed page costs more than a duplicate.
+// A failing store lookup never blocks a page: the gate logs it and carries on
+// to the next check, because a missed page costs more than a duplicate.
 type Gate struct {
 	Store  GateStore
 	Logger *slog.Logger
 
-	// Cooldown is the minimum time between two pages for the same
+	// Cooldown is the minimum time between two opening pages for the same
 	// (rule, subject). CooldownByRule overrides it per rule.
 	Cooldown       time.Duration
 	CooldownByRule map[string]time.Duration
 
 	// FlapWindow and FlapMaxPages keep a flapping subject to at most
-	// FlapMaxPages opening pages per window. A resolution is also suppressed
-	// once the subject has flapped. Zero disables the check; RecentOpenCount
-	// is supplied by the store.
-	FlapWindow      time.Duration
-	FlapMaxPages    int
-	RecentOpenCount func(ctx context.Context, rule, subject, channel string, since time.Time) (int, error)
+	// FlapMaxPages announced episodes per window. Only pages the operator
+	// actually saw count. Critical incidents bypass the budget.
+	FlapWindow   time.Duration
+	FlapMaxPages int
 
 	// PageCritical lets critical incidents bypass the quiet window.
 	PageCritical bool
@@ -105,72 +93,100 @@ type Gate struct {
 	QuietZone *time.Location
 }
 
-// Evaluate reports the disposition of one incident change.
+// Evaluate reports the disposition of one page.
 func (g *Gate) Evaluate(ctx context.Context, inputs DecisionInputs) Decision {
 	now := inputs.Now
+	incident := inputs.Incident
 
-	// 1. an acked incident never pages, at any severity.
-	if g.Store != nil {
-		current, err := g.Store.IncidentByID(ctx, inputs.Incident.ID)
-		if err != nil {
-			g.warn("gate: read incident", err)
-		} else if current != nil && current.Acked() {
-			return Decision{Status: GateAcked, Channel: inputs.Channel, Reason: "acked"}
-		}
+	// 1. an acked episode never pages, at any severity.
+	if incident.Acked() {
+		return Decision{Action: ActionDrop, Reason: "acked"}
 	}
 
-	// 2. an active silence covers the incident.
+	// 2. an active silence covers the incident. Auto-deploy silences are
+	// deploy noise, not an operator decision: they never hide a critical
+	// incident or a resolution. Manual silences apply to every severity.
 	if g.Store != nil {
-		silence, err := g.Store.FindActiveSilence(
-			ctx, inputs.Incident.Rule, inputs.Incident.Subject, inputs.Incident.AppID, now)
+		active, err := g.Store.ActiveSilences(ctx, now)
 		if err != nil {
 			g.warn("gate: read silences", err)
-		} else if silence != nil {
-			return Decision{Status: GateSilenced, Channel: inputs.Channel, Reason: silence.Reason}
+		} else {
+			applicable := make([]store.Silence, 0, len(active))
+			for _, silence := range active {
+				if silenceApplies(silence, incident.Severity, inputs.Kind) {
+					applicable = append(applicable, silence)
+				}
+			}
+			if silence := store.MatchSilence(applicable, incident.Rule, incident.Subject, incident.AppID); silence != nil {
+				if inputs.Kind == store.DeliveryResolved {
+					// A resolution held until a maintenance window ends is
+					// stale; the incident is already visible as resolved.
+					return Decision{Action: ActionDrop, Reason: "silenced: " + silence.Reason}
+				}
+				reason := fmt.Sprintf("silence #%d: %s", silence.ID, silence.Reason)
+				return Decision{Action: ActionWait, ReadyAt: silence.EndsAt, Reason: reason, SilenceID: &silence.ID}
+			}
 		}
 	}
 
 	// 3. quiet hours hold warnings until the window closes. Critical
-	// incidents bypass the hold unless the operator disabled that.
+	// incidents bypass the hold unless the operator disabled that. A
+	// resolution is not worth waking the operator for: send a critical one
+	// they are already awake for, drop the rest.
 	if endsAt, inside := g.quietEndsAt(now); inside {
-		if !(g.PageCritical && inputs.Incident.Severity == store.SeverityCritical) {
-			return Decision{Status: GateHeld, Channel: inputs.Channel, Reason: "quiet hours", ReadyAt: endsAt}
+		critical := incident.Severity == store.SeverityCritical
+		if inputs.Kind == store.DeliveryResolved {
+			if !(critical && g.PageCritical) {
+				return Decision{Action: ActionDrop, Reason: "quiet hours"}
+			}
+		} else if !(g.PageCritical && critical) {
+			return Decision{Action: ActionWait, ReadyAt: endsAt, Reason: "quiet hours"}
 		}
 	}
 
-	// 4. a subject that has used its page budget in the flap window is
-	// recorded and dropped. Resolutions are dropped too once the subject has
-	// flapped, so a crash loop does not produce a resolution message for
-	// every cycle.
-	if g.FlapWindow > 0 && g.FlapMaxPages > 0 && g.RecentOpenCount != nil &&
-		(inputs.ChangeKind == store.DeliveryOpened || inputs.ChangeKind == store.DeliveryResolved) {
-		count, err := g.RecentOpenCount(ctx, inputs.Incident.Rule, inputs.Incident.Subject,
+	// 4. a subject that has used its announced-page budget is dropped.
+	// Silenced attempts do not count: the budget is about what the operator
+	// saw. Critical incidents bypass it, so a crash loop is never lost
+	// because an earlier warning used the last slot.
+	if g.Store != nil && inputs.Kind == store.DeliveryOpened && inputs.Attempts == 0 &&
+		g.FlapWindow > 0 && g.FlapMaxPages > 0 && incident.Severity != store.SeverityCritical {
+		count, _, err := g.Store.Announcements(ctx, incident.Rule, incident.Subject,
 			string(inputs.Channel), now.Add(-g.FlapWindow))
 		if err != nil {
-			g.warn("gate: count recent pages", err)
-		} else if inputs.ChangeKind == store.DeliveryOpened && count >= g.FlapMaxPages {
-			return Decision{Status: GateCooldown, Channel: inputs.Channel, Reason: "flapping", Drop: true}
-		} else if inputs.ChangeKind == store.DeliveryResolved && count > g.FlapMaxPages {
-			return Decision{Status: GateCooldown, Channel: inputs.Channel, Reason: "flapping", Drop: true}
+			g.warn("gate: count announcements", err)
+		} else if count >= g.FlapMaxPages {
+			return Decision{Action: ActionDrop, Reason: "flapping"}
 		}
 	}
 
-	// 5. an opening page for the same (rule, subject) inside the cooldown is
-	// deferred to the end of that cooldown.
-	if window := g.cooldownFor(inputs.Incident.Rule); window > 0 && g.Store != nil &&
-		inputs.ChangeKind == store.DeliveryOpened {
-		last, err := g.Store.LastSent(ctx, inputs.Incident.Rule, inputs.Incident.Subject)
-		if err != nil {
-			g.warn("gate: read last page", err)
-		} else if last != nil && last.SentAt != nil {
-			if readyAt := last.SentAt.Add(window); now.Before(readyAt) {
-				return Decision{Status: GateCooldown, Channel: inputs.Channel, Reason: "pager cooldown", ReadyAt: readyAt}
+	// 5. an opening page for the same (rule, subject) inside the cooldown
+	// waits for it to expire. Escalations and resolutions are never delayed.
+	if g.Store != nil && inputs.Kind == store.DeliveryOpened && inputs.Attempts == 0 {
+		window := g.cooldownFor(incident.Rule)
+		if window > 0 {
+			_, last, err := g.Store.Announcements(ctx, incident.Rule, incident.Subject,
+				string(inputs.Channel), now.Add(-window))
+			if err != nil {
+				g.warn("gate: read last announcement", err)
+			} else if last != nil {
+				if readyAt := last.Add(window); now.Before(readyAt) {
+					return Decision{Action: ActionWait, ReadyAt: readyAt, Reason: "pager cooldown"}
+				}
 			}
 		}
 	}
 
 	// 6. send now.
-	return Decision{Status: GateRecorded, Channel: inputs.Channel}
+	return Decision{Action: ActionSend}
+}
+
+// silenceApplies reports whether a silence covers this kind of page and
+// severity. Auto-deploy silences only cover warnings and announcements.
+func silenceApplies(silence store.Silence, severity store.Severity, kind store.DeliveryKind) bool {
+	if silence.Kind != store.SilenceAutoDeploy {
+		return true
+	}
+	return severity != store.SeverityCritical && kind != store.DeliveryResolved
 }
 
 // warn logs a failed store lookup.

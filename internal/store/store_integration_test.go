@@ -148,7 +148,7 @@ func TestMigrateAppliesToEmptyDatabase(t *testing.T) {
 	}
 	wantTables := []string{
 		"apps", "baselines", "certs", "containers", "deliveries", "disk_hour", "disk_minute",
-		"docker_disk", "events", "host_hour", "host_minute", "incidents", "path_window", "peers",
+		"docker_disk", "events", "host_hour", "host_minute", "incidents", "pages", "path_window", "peers",
 		"route_hour", "route_minute", "routes", "schema_migrations", "silences",
 		"slot_hour", "slot_minute", "slots", "source_state", "telegram_inbox", "units",
 	}

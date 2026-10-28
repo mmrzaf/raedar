@@ -78,6 +78,7 @@ type incidentPageData struct {
 	App         string
 	Duration    time.Duration
 	Details     map[string]any
+	Pages       []store.Page
 	Deliveries  []store.Delivery
 	ChartSeries string
 	ChartFrom   time.Time
@@ -261,6 +262,11 @@ func (s *Server) incidentPage(w http.ResponseWriter, request *http.Request) {
 		http.NotFound(w, request)
 		return
 	}
+	pages, err := s.store.PagesForEpisode(request.Context(), id, incident.Episode)
+	if err != nil {
+		http.Error(w, "cannot read the notification state", http.StatusInternalServerError)
+		return
+	}
 	deliveries, err := s.store.Deliveries(request.Context(), id)
 	if err != nil {
 		http.Error(w, "cannot read the deliveries", http.StatusInternalServerError)
@@ -292,7 +298,8 @@ func (s *Server) incidentPage(w http.ResponseWriter, request *http.Request) {
 		"Page": pageData{Title: "Incident", HostName: s.cfg.HostName, Now: s.clock.Now(), Version: s.version,
 			Sources: s.sourceViews(request), Nav: "", Location: s.cfg.Location},
 		"Data": incidentPageData{Incident: incident, App: incidentApp(*incident), Duration: duration,
-			Details: details, Deliveries: deliveries, ChartSeries: key, ChartFrom: from, ChartTo: to, Link: link},
+			Details: details, Pages: pages, Deliveries: deliveries,
+			ChartSeries: key, ChartFrom: from, ChartTo: to, Link: link},
 	})
 }
 
