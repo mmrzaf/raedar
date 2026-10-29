@@ -12,6 +12,8 @@ Every page has a top bar with the host name, the navigation (Overview, Host, Pat
 
 Content sits in cards. Charts show a floating readout with every series at the pointer, the latest value in the card header for single-series charts, and a legend for two or more series. Usage is shown as meters that turn amber from 75 % and red from 90 %.
 
+Sort a data table by clicking a column header; a second click reverses the order. Missing values stay last. The selected order lasts for the browser session, so the overview's automatic refresh keeps it.
+
 ## Overview `/`
 
 The page refreshes itself every 30 seconds.
@@ -19,7 +21,7 @@ The page refreshes itself every 30 seconds.
 0. **Status banner.** One line that says whether the host is fine: "All systems normal", or how many incidents are open and whether any is critical.
 1. **Open incidents.** Shown only when there are any, most severe first: rule, subject, value, how long it has been open. Each links to its incident page.
 2. **Host strip.** CPU, load, memory, swap, each filesystem (usage, free space, and "full in N days" when growing, "over a year" beyond 365 days), Docker disk usage with the reclaimable part.
-3. **Apps.** One row per app, apps with problems first, then by traffic:
+3. **Apps.** One row per app, apps with problems first, then by traffic. Every column sorts:
 
    | Column | Content |
    |---|---|
@@ -76,7 +78,7 @@ The same chart layout and time range controls as the app page, for the host:
 - one chart per filesystem: used space with the warning and critical thresholds, and the forecast line when growing
 - Docker disk usage: images, build cache, volumes, container layers
 
-Below the charts:
+Below the charts, both tables sort by column:
 
 - **systemd.** Failed units, then all timers with their last run, last result and next run.
 - **Certificates.** Every checked domain: status, issuer, expiry date, days left, last check time.

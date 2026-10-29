@@ -32,7 +32,7 @@
   <div class="card">
   {{if .Silences}}
   <div class="table-wrap">
-  <table>
+  <table data-sortable data-table="silences">
     <thead><tr><th>#</th><th>Kind</th><th>Scope</th><th>Reason</th><th>Ends</th><th></th></tr></thead>
     <tbody>
     {{range .Silences}}

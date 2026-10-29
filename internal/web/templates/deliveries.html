@@ -10,7 +10,7 @@
   <div class="card">
   {{if .Rows}}
   <div class="table-wrap">
-  <table>
+  <table data-sortable data-table="deliveries">
     <thead><tr><th>When</th><th>Incident</th><th>Kind</th><th>Channel</th><th>Recipient</th><th>Status</th><th class="num">Attempts</th><th>Reason</th><th>Error</th></tr></thead>
     <tbody>
     {{range .Rows}}
