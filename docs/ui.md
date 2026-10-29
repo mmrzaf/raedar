@@ -85,9 +85,10 @@ Below the charts:
 
 For seeing when things tend to happen. Pick a subject (an app, one of its routes, a slot, or the host) and a metric (requests, error rate, p95, CPU, memory, disk used, load), and a period (4 weeks by default, up to 52).
 
-- **Week heatmap.** Rows are weekdays, columns are hours of the day in `RAEDAR_TZ`, the color is the metric's average for that hour across the period. A recurring evening peak or a nightly slowdown shows up as a band.
-- **Day profile.** The average 24-hour curve of the last 7 days overlaid on the average of the period before it, to see whether the daily shape is changing.
-- **Trend.** One value per day across the whole period (daily total for counts, daily average for gauges, daily maximum for disk), to see slow growth.
+- **Summary.** The highest and lowest weekday hours, with the last 7 days compared with the weeks before them.
+- **Week heatmap.** Rows are weekdays, columns are hours of the day in `RAEDAR_TZ`, the color is the metric's average for that hour across the period. The color ramp stretches over the values in the period, and the legend labels its low and high ends with their values, so a narrow band still shows its shape. Hovering a cell shows its value and how it compares with the week average; the peak cell is marked.
+- **Day profile.** The average 24-hour curve of the last 7 days against the average of the period before it, to see whether the daily shape is changing.
+- **Trend.** One value per day across the whole period (daily total for counts, daily average for gauges, daily maximum for disk), with a 7-day average to show slow growth under the weekday rhythm.
 
 ## Events `/events`
 
