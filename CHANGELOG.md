@@ -4,6 +4,25 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.4] - 2026-10-29
+
+### Added
+
+- **Sortable tables.** Every data table sorts by clicking a column header; a
+  second click reverses the order. Missing values stay last, and the selected
+  order survives the overview's automatic refresh.
+- The patterns page summarizes the highest and lowest weekday hours and
+  compares the last 7 days with the weeks before.
+
+### Changed
+
+- **Clearer patterns heatmap.** A seven-step spectrum stretches over the values
+  in the period, the legend labels both ends, the peak cell is marked, and
+  hovering a cell shows its value and how it compares with the week average.
+  The trend chart adds a 7-day average.
+- The heatmap fits all 24 hours on a phone, and the hourly chart axis drops to
+  four labels on narrow screens.
+
 ## [0.4.3] - 2026-10-28
 
 ### Added
