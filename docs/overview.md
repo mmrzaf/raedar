@@ -48,7 +48,7 @@ https://raedar.example.com/apps/gitman?from=…&to=…
 
 The link opens the gitman page on that time window. The error line jumps right after the deploy marker. Clicking the spike shows the gitman container's logs from that minute. After a rollback the rate falls back, and at 21:25 a second message says the incident is resolved after 21 minutes.
 
-The next morning's digest mentions that `/` is at 81 % and growing about 0.4 GB a day, full in roughly 12 days. On the Patterns page, the latency heatmap for the same app shows a dark band every night between 02:00 and 03:00. Adding the Postgres container's CPU to the gitman charts shows that it lines up with the nightly backup.
+The next morning's digest mentions that `/` is at 81 % and growing about 0.4 GB a day, full in roughly 12 days. On the Patterns page, the latency heatmap for the same app shows a clear band every night between 02:00 and 03:00. Adding the Postgres container's CPU to the gitman charts shows that it lines up with the nightly backup.
 
 ## Out of scope
 

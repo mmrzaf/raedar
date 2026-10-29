@@ -84,20 +84,20 @@
   {{if .Apps}}
   <div class="card">
   <div class="table-wrap">
-  <table>
+  <table data-sortable data-table="apps">
     <thead><tr><th>Status</th><th>App</th><th class="num">Traffic</th><th class="num">Errors</th><th class="num">p95</th><th class="num">CPU</th><th class="num">Memory</th><th class="num">Containers</th><th>Last deploy</th></tr></thead>
     <tbody>
     {{range .Apps}}
       <tr>
         <td><span class="badge badge-{{.Status}}">{{if eq .Status "ok"}}OK{{else}}{{.Status}}{{end}}</span></td>
         <td class="wrap"><a class="app-name" href="/apps/{{.Name}}">{{.Name}}</a>{{if .Domains}}<div class="app-domains">{{range $i, $domain := .Domains}}{{if $i}}, {{end}}{{$domain}}{{end}}</div>{{end}}</td>
-        <td class="num">{{rate .RequestsPerMinute}}<span class="spark" data-values="{{range .Sparkline}}{{printf "%.0f" .}},{{end}}" aria-hidden="true"></span></td>
-        <td class="num">{{printf "%.1f" .ErrorRate}}%{{if gt .ErrorBaseline 0.0}}{{if gt .ErrorRate .ErrorBaseline}} <span class="warn" title="above the usual {{printf "%.1f" .ErrorBaseline}}%">↑</span>{{end}}{{end}}</td>
-        <td class="num">{{.P95}}{{if and .P95.Known (gt .P95Baseline 0.0)}}{{if gt .P95.MS (mulf .P95Baseline 1.5)}} <span class="warn" title="usual {{latency .P95Baseline}}">↑</span>{{else if lt .P95.MS (mulf .P95Baseline 0.5)}} <span class="muted" title="usual {{latency .P95Baseline}}">↓</span>{{end}}{{end}}</td>
-        <td class="num">{{cpu .CPU}}</td>
-        <td class="num">{{if gt .MemoryLimit 0}}<div class="cell-meter"><span>{{bytes .Memory}} <span class="muted">of {{bytes .MemoryLimit}}</span></span><progress class="meter meter-sm meter-{{level .MemoryUsage}}" max="100" value="{{printf "%.0f" .MemoryUsage}}" aria-label="Memory in use"></progress></div>{{else}}{{bytes .Memory}}{{end}}</td>
-        <td class="num">{{.Running}}/{{.Total}}{{if gt .Restarts 0}} <span class="muted">· {{plural .Restarts "restart"}} in 24 h</span>{{end}}</td>
-        <td>{{relative .LastDeploy}}</td>
+        <td class="num" data-sort="{{.RequestsPerMinute}}">{{rate .RequestsPerMinute}}<span class="spark" data-values="{{range .Sparkline}}{{printf "%.0f" .}},{{end}}" aria-hidden="true"></span></td>
+        <td class="num" data-sort="{{.ErrorRate}}">{{printf "%.1f" .ErrorRate}}%{{if gt .ErrorBaseline 0.0}}{{if gt .ErrorRate .ErrorBaseline}} <span class="warn" title="above the usual {{printf "%.1f" .ErrorBaseline}}%">↑</span>{{end}}{{end}}</td>
+        <td class="num" data-sort="{{if .P95.Known}}{{.P95.MS}}{{end}}">{{.P95}}{{if and .P95.Known (gt .P95Baseline 0.0)}}{{if gt .P95.MS (mulf .P95Baseline 1.5)}} <span class="warn" title="usual {{latency .P95Baseline}}">↑</span>{{else if lt .P95.MS (mulf .P95Baseline 0.5)}} <span class="muted" title="usual {{latency .P95Baseline}}">↓</span>{{end}}{{end}}</td>
+        <td class="num" data-sort="{{.CPU}}">{{cpu .CPU}}</td>
+        <td class="num" data-sort="{{.Memory}}">{{if gt .MemoryLimit 0}}<div class="cell-meter"><span>{{bytes .Memory}} <span class="muted">of {{bytes .MemoryLimit}}</span></span><progress class="meter meter-sm meter-{{level .MemoryUsage}}" max="100" value="{{printf "%.0f" .MemoryUsage}}" aria-label="Memory in use"></progress></div>{{else}}{{bytes .Memory}}{{end}}</td>
+        <td class="num" data-sort="{{.Running}}">{{.Running}}/{{.Total}}{{if gt .Restarts 0}} <span class="muted">· {{plural .Restarts "restart"}} in 24 h</span>{{end}}</td>
+        <td data-sort="{{unix .LastDeploy}}">{{relative .LastDeploy}}</td>
       </tr>
     {{end}}
     </tbody>

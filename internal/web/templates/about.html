@@ -29,18 +29,18 @@
   <div class="section-head"><h2>Sources</h2></div>
   <div class="card">
   {{if .Sources}}
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table data-sortable data-table="sources">
     <thead><tr><th>Source</th><th>Status</th><th>Last error</th><th>Position</th><th>Updated</th></tr></thead>
-    <tbody>{{range .Sources}}<tr><td><strong>{{.Name}}</strong></td><td><span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "degraded"}}warning{{else}}critical{{end}}">{{.Status}}</span></td><td class="wrap">{{if .LastError}}{{.LastError}}{{else}}<span class="muted">—</span>{{end}}</td><td class="muted small">{{if .Position}}{{.Position}}{{else}}—{{end}}</td><td>{{relative .UpdatedAt}}</td></tr>{{end}}</tbody>
+    <tbody>{{range .Sources}}<tr><td><strong>{{.Name}}</strong></td><td><span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "degraded"}}warning{{else}}critical{{end}}">{{.Status}}</span></td><td class="wrap">{{if .LastError}}{{.LastError}}{{else}}<span class="muted">—</span>{{end}}</td><td class="muted small">{{if .Position}}{{.Position}}{{else}}—{{end}}</td><td data-sort="{{unix .UpdatedAt}}">{{relative .UpdatedAt}}</td></tr>{{end}}</tbody>
   </table></div>
   {{else}}<div class="card-pad empty">No source has reported yet.</div>{{end}}
   </div>
 </section>
 <section class="section">
   <div class="section-head"><h2>Database</h2></div>
-  <div class="card"><div class="table-wrap"><table>
+  <div class="card"><div class="table-wrap"><table data-sortable data-table="tables">
     <thead><tr><th>Table</th><th class="num">Size</th></tr></thead>
-    <tbody>{{range .Tables}}<tr><td class="mono">{{.Name}}</td><td class="num">{{bytes .Bytes}}</td></tr>{{end}}</tbody>
+    <tbody>{{range .Tables}}<tr><td class="mono">{{.Name}}</td><td class="num" data-sort="{{.Bytes}}">{{bytes .Bytes}}</td></tr>{{end}}</tbody>
   </table></div></div>
 </section>
 {{end}}

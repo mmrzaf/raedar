@@ -13,16 +13,36 @@
 </form>
 <div class="patterns" data-series="{{.Series}}" data-weeks="{{.Weeks}}">
   <p class="patterns-error" hidden>The patterns could not be loaded. Check the database and try again.</p>
+  <div class="pattern-summary card" hidden>
+    <div class="summary-item">
+      <span class="summary-label">Highest</span>
+      <span class="summary-value" data-summary="high">—</span>
+      <span class="summary-note" data-summary="high-note"></span>
+    </div>
+    <div class="summary-item">
+      <span class="summary-label">Lowest</span>
+      <span class="summary-value" data-summary="low">—</span>
+      <span class="summary-note" data-summary="low-note"></span>
+    </div>
+    <div class="summary-item">
+      <span class="summary-label">Last 7 days</span>
+      <span class="summary-value" data-summary="recent">—</span>
+      <span class="summary-note" data-summary="recent-note"></span>
+    </div>
+  </div>
   <section class="section">
     <div class="section-head"><h2>Week heatmap</h2><span class="hint">average per weekday and hour</span></div>
-    <div class="card">
-      <div class="heatmap" aria-label="Average by weekday and hour"></div>
+    <div class="card heatmap-card">
+      <div class="heatmap-scroll">
+        <div class="heatmap" aria-label="Average by weekday and hour"></div>
+      </div>
       <div class="legend-scale"><span class="legend-min"></span><span class="ramp"></span><span class="legend-max"></span></div>
+      <div class="chart-tip heat-tip" hidden></div>
     </div>
   </section>
   <div class="charts">
-    <section class="card"><div class="card-head"><h2>Day profile</h2><span class="hint">average by hour of day</span></div><div class="chart" data-chart="profile"></div></section>
-    <section class="card"><div class="card-head"><h2>Trend</h2><span class="hint">one value per day</span></div><div class="chart" data-chart="trend"></div></section>
+    <section class="card"><div class="card-head"><h2>Day profile</h2><span class="hint">last 7 days against the weeks before</span></div><div class="chart" data-chart="profile"></div></section>
+    <section class="card"><div class="card-head"><h2>Trend</h2><span class="hint">one value per day · 7-day average</span></div><div class="chart" data-chart="trend"></div></section>
   </div>
 </div>
 {{template "footer" .}}

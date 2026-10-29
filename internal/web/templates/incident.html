@@ -34,7 +34,7 @@
   <div class="section-head"><h2>Notifications</h2><span class="hint">the durable page state per channel and recipient</span></div>
   <div class="card">
   {{if .Pages}}
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table data-sortable data-table="notifications">
     <thead><tr><th>Channel</th><th>Recipient</th><th>Kind</th><th>Status</th><th>Next attempt</th><th>Reason</th></tr></thead>
     <tbody>{{range .Pages}}<tr><td>{{.Channel}}</td><td>{{if .Recipient}}{{.Recipient}}{{else}}<span class="muted">—</span>{{end}}</td><td>{{.Kind}}</td><td><span class="badge badge-{{if or (eq .Status "announced") (eq .Status "resolved")}}ok{{else if eq .Status "cancelled"}}critical{{else}}warning{{end}}">{{.Status}}</span></td><td>{{if or (eq .Status "pending") (eq .Status "resolving")}}{{datetime .DueAt}}{{else}}<span class="muted">—</span>{{end}}</td><td class="wrap error-cell">{{if .Reason}}{{.Reason}}{{else}}<span class="muted">—</span>{{end}}</td></tr>{{end}}</tbody>
   </table></div>
@@ -45,7 +45,7 @@
   <div class="section-head"><h2>Deliveries</h2></div>
   <div class="card">
   {{if .Deliveries}}
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table data-sortable data-table="deliveries">
     <thead><tr><th>Channel</th><th>Recipient</th><th>Kind</th><th>Created</th><th>Sent</th><th class="num">Attempts</th><th>Status</th><th>Reason</th><th>Error</th></tr></thead>
     <tbody>{{range .Deliveries}}<tr><td>{{.Channel}}</td><td>{{if .Recipient}}{{.Recipient}}{{else}}<span class="muted">—</span>{{end}}</td><td>{{.Kind}}</td><td>{{datetime .CreatedAt}}</td><td>{{if .SentAt}}{{datetime .SentAt}}{{else}}<span class="muted">—</span>{{end}}</td><td class="num">{{.Attempts}}</td><td><span class="badge badge-{{if eq .Status "sent"}}ok{{else if eq .Status "failed"}}critical{{else}}warning{{end}}">{{.Status}}</span></td><td class="wrap error-cell">{{if .Reason}}{{.Reason}}{{else}}<span class="muted">—</span>{{end}}</td><td class="wrap error-cell">{{if .Error}}{{.Error}}{{else}}<span class="muted">—</span>{{end}}</td></tr>{{end}}</tbody>
   </table></div>

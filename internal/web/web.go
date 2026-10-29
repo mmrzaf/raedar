@@ -190,6 +190,13 @@ func templateFuncs(location *time.Location, clock clock.Clock, names func(string
 		"relative": func(at time.Time) string {
 			return relativeTime(clock.Now(), at)
 		},
+		// unix gives sortable timestamps to tables that show a relative time.
+		"unix": func(at time.Time) string {
+			if at.IsZero() {
+				return ""
+			}
+			return strconv.FormatInt(at.Unix(), 10)
+		},
 		"duration": durationText,
 		"bytes":    bytesText,
 		"count":    countText,

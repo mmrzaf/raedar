@@ -188,7 +188,11 @@ export function drawChart(target, series, unit, options = {}) {
       ...axisStyle,
       size: 30,
       grid: { show: false },
-      splits: () => Array.from({ length: 8 }, (_, index) => index * 3),
+      // Fewer hour labels on a narrow chart, where eight would overlap.
+      splits: () => {
+        const step = width() < 480 ? 6 : 3;
+        return Array.from({ length: Math.floor(23 / step) + 1 }, (_, index) => index * step);
+      },
       values: (chart, ticks) => ticks.map((hour) => `${pad(hour)}:00`),
     }
     : {

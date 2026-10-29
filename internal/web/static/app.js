@@ -2,6 +2,7 @@
 import { drawAppCharts, drawHostCharts, drawIncidentChart, drawSparklines } from "./pages.js";
 import { drawPatterns } from "./patterns.js";
 import { setupLogs } from "./logs.js";
+import { setupTables } from "./tables.js";
 
 // The theme button cycles system -> light -> dark. Charts take their colors
 // when they are drawn, so a change reloads the page.
@@ -34,6 +35,7 @@ if (refresh > 0) {
 }
 
 drawSparklines();
+setupTables();
 setupLogs();
 drawAppCharts();
 drawHostCharts();

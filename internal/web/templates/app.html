@@ -28,14 +28,14 @@
   <div class="section-head"><h2>Containers</h2></div>
   <div class="card">
   {{if .Containers}}
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table data-sortable data-table="containers">
     <thead><tr><th>Slot</th><th>Container</th><th>Image</th><th>State</th><th>Health</th><th>Uptime</th><th class="num">Restarts</th><th class="num">CPU</th><th class="num">Memory</th></tr></thead>
     <tbody>{{range .Containers}}<tr>
       <td><strong>{{.Slot}}</strong></td><td class="mono">{{.Name}}</td><td class="muted">{{.Image}}</td>
       <td>{{if .State}}<span class="badge badge-{{if eq .State "running"}}ok{{else}}warning{{end}}">{{.State}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
       <td>{{if .Health}}<span class="badge badge-{{if eq .Health "healthy"}}ok{{else if eq .Health "unhealthy"}}critical{{else}}warning{{end}}">{{.Health}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
-      <td>{{if .Uptime}}{{duration .Uptime}}{{else}}<span class="muted">—</span>{{end}}</td><td class="num">{{.Restarts}}</td>
-      <td class="num">{{cpu .CPU}}</td><td class="num">{{bytes .Memory}}</td>
+      <td data-sort="{{if .Uptime}}{{.Uptime.Seconds}}{{end}}">{{if .Uptime}}{{duration .Uptime}}{{else}}<span class="muted">—</span>{{end}}</td><td class="num">{{.Restarts}}</td>
+      <td class="num" data-sort="{{.CPU}}">{{cpu .CPU}}</td><td class="num" data-sort="{{.Memory}}">{{bytes .Memory}}</td>
     </tr>{{end}}</tbody>
   </table></div>
   {{else}}<div class="card-pad empty">No containers for this app yet.</div>{{end}}
@@ -45,12 +45,12 @@
   <div class="section-head"><h2>Paths</h2><span class="hint">by 5xx, then slowest p95</span></div>
   <div class="card">
   {{if .Paths}}
-  <div class="table-wrap"><table>
+  <div class="table-wrap"><table data-sortable data-table="paths">
     <thead><tr><th>Method</th><th>Path</th><th class="num">Requests</th><th class="num">4xx</th><th class="num">5xx</th><th class="num">p50</th><th class="num">p95</th></tr></thead>
     <tbody>{{range .Paths}}<tr>
-      <td><span class="kind">{{.Method}}</span></td><td class="mono">{{.Pattern}}</td><td class="num">{{count .Requests}}</td>
-      <td class="num">{{printf "%.1f" .S4xx}}%</td><td class="num">{{printf "%.1f" .S5xx}}%</td>
-      <td class="num">{{.P50}}</td><td class="num">{{.P95}}</td>
+      <td><span class="kind">{{.Method}}</span></td><td class="mono">{{.Pattern}}</td><td class="num" data-sort="{{.Requests}}">{{count .Requests}}</td>
+      <td class="num" data-sort="{{.S4xx}}">{{printf "%.1f" .S4xx}}%</td><td class="num" data-sort="{{.S5xx}}">{{printf "%.1f" .S5xx}}%</td>
+      <td class="num" data-sort="{{if .P50.Known}}{{.P50.MS}}{{end}}">{{.P50}}</td><td class="num" data-sort="{{if .P95.Known}}{{.P95.MS}}{{end}}">{{.P95}}</td>
     </tr>{{end}}</tbody>
   </table></div>
   {{else}}<div class="card-pad empty">No request paths in this range. The access log has not produced lines for this app.</div>{{end}}

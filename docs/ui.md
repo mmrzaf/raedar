@@ -12,6 +12,8 @@ Every page has a top bar with the host name, the navigation (Overview, Host, Pat
 
 Content sits in cards. Charts show a floating readout with every series at the pointer, the latest value in the card header for single-series charts, and a legend for two or more series. Usage is shown as meters that turn amber from 75 % and red from 90 %.
 
+Sort a data table by clicking a column header; a second click reverses the order. Missing values stay last. The selected order lasts for the browser session, so the overview's automatic refresh keeps it.
+
 ## Overview `/`
 
 The page refreshes itself every 30 seconds.
@@ -19,7 +21,7 @@ The page refreshes itself every 30 seconds.
 0. **Status banner.** One line that says whether the host is fine: "All systems normal", or how many incidents are open and whether any is critical.
 1. **Open incidents.** Shown only when there are any, most severe first: rule, subject, value, how long it has been open. Each links to its incident page.
 2. **Host strip.** CPU, load, memory, swap, each filesystem (usage, free space, and "full in N days" when growing, "over a year" beyond 365 days), Docker disk usage with the reclaimable part.
-3. **Apps.** One row per app, apps with problems first, then by traffic:
+3. **Apps.** One row per app, apps with problems first, then by traffic. Every column sorts:
 
    | Column | Content |
    |---|---|
@@ -76,7 +78,7 @@ The same chart layout and time range controls as the app page, for the host:
 - one chart per filesystem: used space with the warning and critical thresholds, and the forecast line when growing
 - Docker disk usage: images, build cache, volumes, container layers
 
-Below the charts:
+Below the charts, both tables sort by column:
 
 - **systemd.** Failed units, then all timers with their last run, last result and next run.
 - **Certificates.** Every checked domain: status, issuer, expiry date, days left, last check time.
@@ -85,9 +87,10 @@ Below the charts:
 
 For seeing when things tend to happen. Pick a subject (an app, one of its routes, a slot, or the host) and a metric (requests, error rate, p95, CPU, memory, disk used, load), and a period (4 weeks by default, up to 52).
 
-- **Week heatmap.** Rows are weekdays, columns are hours of the day in `RAEDAR_TZ`, the color is the metric's average for that hour across the period. A recurring evening peak or a nightly slowdown shows up as a band.
-- **Day profile.** The average 24-hour curve of the last 7 days overlaid on the average of the period before it, to see whether the daily shape is changing.
-- **Trend.** One value per day across the whole period (daily total for counts, daily average for gauges, daily maximum for disk), to see slow growth.
+- **Summary.** The highest and lowest weekday hours, with the last 7 days compared with the weeks before them.
+- **Week heatmap.** Rows are weekdays, columns are hours of the day in `RAEDAR_TZ`, the color is the metric's average for that hour across the period. The color ramp stretches over the values in the period, and the legend labels its low and high ends with their values, so a narrow band still shows its shape. Hovering a cell shows its value and how it compares with the week average; the peak cell is marked.
+- **Day profile.** The average 24-hour curve of the last 7 days against the average of the period before it, to see whether the daily shape is changing.
+- **Trend.** One value per day across the whole period (daily total for counts, daily average for gauges, daily maximum for disk), with a 7-day average to show slow growth under the weekday rhythm.
 
 ## Events `/events`
 
