@@ -8,9 +8,9 @@ Raedar runs as one more Compose project on the host it watches.
 |---|---|
 | Docker with Compose | Raedar runs as a container and reads the Docker API. |
 | Traefik v3 writing a JSON access log | Request, error and latency data. |
-| PostgreSQL 14 or newer, reachable over a Docker network | History. A database on the host's existing PostgreSQL is enough. |
+| PostgreSQL 14 or newer | History. The stack in `deploy/` bundles one; an existing server works too. |
 | A Docker socket proxy (recommended) | Gives Raedar read-only access to the Docker API. |
-| An authentication middleware in Traefik | The UI has no login of its own. |
+| Access control in front of the UI | The UI has no login of its own; `deploy/` ships basic auth. |
 
 Optional: the system D-Bus socket for systemd units, and an outbound proxy if the host cannot reach Telegram or the SMS provider directly.
 
@@ -66,107 +66,29 @@ networks:
 
 `CONTAINERS` includes container logs, which the UI shows. Mounting the Docker socket directly into Raedar also works, but gives it full control of Docker; the proxy is strongly recommended.
 
-## 3. Database
+## 3. Raedar, PostgreSQL and the socket proxy
 
-On the existing PostgreSQL:
+[`deploy/compose.yaml`](../deploy/compose.yaml) is a complete, portable stack: Raedar, its own PostgreSQL, a read-only socket proxy, and an HTTP basic-auth middleware on Raedar's router. Hostname, Traefik network, entrypoint, certificate resolver and extra middlewares come from `deploy/.env`; application settings come from the optional `deploy/raedar.env`. [`deploy/README.md`](../deploy/README.md) is the installation guide, including the mount security table, upgrades, backup and restore, and using an existing PostgreSQL.
 
-```sql
-CREATE ROLE raedar LOGIN PASSWORD 'choose-a-password';
-CREATE DATABASE raedar OWNER raedar;
-```
-
-Raedar creates its tables on first start.
-
-## 4. Raedar
-
-`compose.yml`:
-
-```yaml
-services:
-  raedar:
-    image: ghcr.io/mmrzaf/raedar:<version>
-    container_name: raedar
-    restart: unless-stopped
-    read_only: true
-    user: "65534:65534"
-    security_opt: [no-new-privileges:true]
-    cap_drop: [ALL]
-    mem_limit: 128m
-    cpus: 0.25
-    environment:
-      RAEDAR_DATABASE_URL_FILE: /run/secrets/database_url
-      RAEDAR_DOCKER_HOST: tcp://socket-proxy:2375
-      RAEDAR_PUBLIC_URL: https://raedar.example.com
-      RAEDAR_TZ: Asia/Tehran
-      RAEDAR_TELEGRAM_TOKEN_FILE: /run/secrets/telegram_token
-      RAEDAR_TELEGRAM_CHAT_IDS: "123456789"
-      # SMS example: the API key is kept out of the URL by routing through
-      # RAEDAR_SMS_HTTP_HEADERS (Authorization). Operators whose provider
-      # takes the key in the URL path can use the {{api_key}} placeholder
-      # in RAEDAR_SMS_HTTP_URL and inject the value from their secret
-      # manager at deployment time.
-      RAEDAR_SMS_TO: "+989120000000"
-      RAEDAR_SMS_FROM: "10004346"
-      RAEDAR_SMS_HTTP_URL: "https://sms.example.com/v1/send"
-      RAEDAR_SMS_HTTP_HEADERS: "Authorization: Bearer ${SMS_API_KEY}"
-      RAEDAR_SMS_HTTP_BODY: '{"to":"{{to}}","from":"{{from}}","text":"{{message}}"}'
-      RAEDAR_SMS_HTTP_ENCODING: "json"
-    volumes:
-      - /:/host/root:ro
-      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
-      - ./secrets:/run/secrets:ro
-      # with an access log file:
-      # - /srv/logs/traefik:/traefik-logs:ro
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/raedar", "healthcheck"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.raedar.rule=Host(`raedar.example.com`)
-      - traefik.http.routers.raedar.entrypoints=websecure
-      - traefik.http.routers.raedar.tls=true
-      - traefik.http.routers.raedar.middlewares=admin-auth@file
-      - traefik.http.services.raedar.loadbalancer.server.port=8080
-    networks: [proxy, socket, data]
-
-networks:
-  proxy:
-    external: true   # the network Traefik routes on
-  socket:
-    external: true   # the socket proxy's network
-  data:
-    external: true   # the network PostgreSQL is on
-```
+Optional host access (disk and inode usage, systemd) is a separate file, [`deploy/compose.host.yaml`](../deploy/compose.host.yaml); leave it out and those sources are reported as unavailable.
 
 Notes:
 
 - **Host root.** `/` is mounted read-only only to measure filesystem usage and read the hostname. Raedar runs as an unprivileged user, so it can read only world-readable files.
-- **D-Bus.** Remove that line if you do not want systemd monitoring. Keep `user: "65534:65534"` (`nobody`) when you use it: the system bus only accepts connections from users that exist in the host's user database, and a container user the host does not know, such as the uid common in minimal images, is disconnected during the handshake. With `RAEDAR_SYSTEMD=on` that stops Raedar from starting; with `auto` it only costs the systemd view.
-- **Networks.** Raedar must share a network with Traefik (for routing and TLS checks), with the socket proxy and with PostgreSQL. Use the names of your existing networks.
+- **D-Bus.** Keep `user: "65534:65534"` (`nobody`) when you use it: the system bus only accepts connections from users that exist in the host's user database. With `RAEDAR_SYSTEMD=on` an unusable bus stops Raedar from starting; with `auto` it only costs the systemd view.
+- **Networks.** Raedar must share a network with Traefik (routing, TLS checks and active checks) and with the socket proxy.
 - **Memory.** Raedar sets `GOMEMLIMIT` to 80 % of the container's memory limit when it detects one.
 
-## 5. Protect the UI
+## 4. Protect the UI
 
-The UI has no login. The `middlewares` label above must point to an authentication middleware that exists in Traefik, for example basic auth from the file provider:
+The UI has no login. The stack in `deploy/` always attaches a basic-auth middleware; extend it with `RAEDAR_EXTRA_MIDDLEWARES` (IP allow-list, forward-auth such as Authelia or oauth2-proxy). Never publish Raedar's port directly with `ports:`.
 
-```yaml
-http:
-  middlewares:
-    admin-auth:
-      basicAuth:
-        usersFile: /etc/traefik/users
-```
-
-An IP allow-list or a forward-auth service (Authelia, oauth2-proxy) works as well. Never publish Raedar's port directly with `ports:`.
-
-## 6. First run
+## 5. First run
 
 ```sh
 docker compose up -d
-docker exec raedar raedar check
-docker exec raedar raedar notify-test
+docker compose exec raedar raedar check
+docker compose exec raedar raedar notify-test
 ```
 
 `check` lists every source and channel with its status. Within two minutes the overview shows apps, containers and host data; request data appears as soon as traffic arrives. Baselines need three days of history; until then the fixed thresholds apply.
@@ -180,7 +102,7 @@ To let another Raedar instance (say on `host-2`) report to this one, set on this
       RAEDAR_HEARTBEAT_RECEIVE_TOKEN_FILE: /run/secrets/heartbeat_token
 ```
 
-and add a second router that serves only `/heartbeat/` without the authentication middleware, since the token protects it:
+and add a second router (for example in a `compose.override.yaml`) that serves only `/heartbeat/` without the authentication middleware, since the token protects it:
 
 ```yaml
       - traefik.http.routers.raedar-heartbeat.rule=Host(`raedar.example.com`) && PathPrefix(`/heartbeat/`)
@@ -221,7 +143,7 @@ On hosts where containers run under a shared systemd slice (`cgroup_parent`), ad
 
 ## Upgrading
 
-Change the image tag and run `docker compose up -d`. Migrations run on start. Downgrading to a version older than the database schema is not supported.
+Pull the new image (or change `RAEDAR_IMAGE`) and run `docker compose up -d`. Back up the database first (see `deploy/README.md`). Migrations run on start. Downgrading to a version older than the database schema is not supported.
 
 ## Removing
 

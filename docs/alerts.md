@@ -7,7 +7,7 @@ Raedar alerts on a short list of conditions that mean something is wrong or abou
 | Property | Meaning |
 |---|---|
 | Rule | Which rule fired, for example `route.errors`. |
-| Subject | What it fired for, for example `shop@docker`, `gitman / web #1`, `/` (a filesystem), `postgres-backup.service`, `shop.example.com`. |
+| Subject | What it fired for, for example `shop@docker`, `shop / web #1`, `/` (a filesystem), `postgres-backup.service`, `shop.example.com`. |
 | Severity | `warning` or `critical`. |
 | Opened, resolved | When the condition started holding, and when it stopped. |
 | Summary and details | The values that triggered it, the baseline, and context such as a recent deploy or the endpoint involved. |
@@ -41,6 +41,7 @@ Evaluation runs every 60 seconds over complete minutes.
 |---|---|---|---|
 | `route.errors` | Over the last 5 minutes: at least `RAEDAR_ERRORS_MIN_REQUESTS` (20) requests and at least 5 responses with a 5xx status, and the 5xx rate is at least `RAEDAR_ERRORS_MIN_RATE` (2 %) and at least `RAEDAR_ERRORS_FACTOR` (3) × the baseline. | 2 min | warning |
 | `route.slow` | Over the last 10 minutes: at least `RAEDAR_SLOW_MIN_REQUESTS` (50) requests counted for latency, and p95 latency is at least `RAEDAR_SLOW_MIN_P95` (300 ms) and at least `RAEDAR_SLOW_FACTOR` (2) × the baseline p95. Routes where at least `RAEDAR_LONG_REQUEST_SHARE` (5 %) of requests are longer than `RAEDAR_LONG_REQUEST` (10 s) are long-lived and do not page. | 5 min | warning |
+| `probe.failed` | Active availability checks (off by default, see [data-sources.md](data-sources.md#active-checks)): the route's verdict is `unhealthy` (an unexpected HTTP status, such as 5xx) or `unreachable` (no answer, timeout, TLS failure) after 3 failed checks in a row. It resolves after 2 good checks in a row. Works on idle routes. | — | warning, critical for `raedar.critical` apps |
 | `route.down` | Over the last 2 minutes: at least 3 requests, and at least half of them answered by Traefik with 502/503/504 because no backend responded. | — | critical |
 
 While `route.down` is open for a route, `route.errors` and `route.slow` stay quiet for it. A route with no traffic cannot be judged from the access log; the container rules below cover that case.

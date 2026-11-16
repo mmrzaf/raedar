@@ -1,0 +1,16 @@
+# Optional host access for Raedar. Use together with compose.yaml:
+#
+#   docker compose -f compose.yaml -f compose.host.yaml up -d
+#
+# It adds, read-only: the host's root filesystem (disk and inode usage,
+# hostname) and the system D-Bus socket (systemd units and timers). Raedar runs
+# unprivileged, so it can only read what is world-readable. Leave this file out
+# and Raedar still works; the Host page then shows those sources as unavailable.
+services:
+  raedar:
+    environment:
+      RAEDAR_HOST_ROOT: /host/root
+      RAEDAR_SYSTEMD: auto
+    volumes:
+      - /:/host/root:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro

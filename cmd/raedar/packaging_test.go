@@ -27,22 +27,34 @@ func TestContainerRunsAsNobody(t *testing.T) {
 	if dockerfile == nil || dockerfile[1] != want {
 		t.Errorf("Dockerfile USER = %v, want %s", dockerfile, want)
 	}
-	compose := regexp.MustCompile(`(?m)^\s+user: "([^"]+)"$`).FindStringSubmatch(readRepoFile(t, "deploy/docker-compose.yml"))
+	compose := regexp.MustCompile(`(?m)^\s+user: "([^"]+)"$`).FindStringSubmatch(readRepoFile(t, "deploy/compose.yaml"))
 	if compose == nil || compose[1] != want {
-		t.Errorf("deploy/docker-compose.yml user = %v, want %s", compose, want)
+		t.Errorf("deploy/compose.yaml user = %v, want %s", compose, want)
 	}
 	if got := readRepoFile(t, "docs/deployment.md"); strings.Contains(got, "65532") {
 		t.Error("docs/deployment.md still names uid 65532")
 	}
 }
 
-func TestProductionComposeMountsTheSystemBus(t *testing.T) {
-	compose := readRepoFile(t, "deploy/docker-compose.yml")
+func TestHostOverrideMountsTheSystemBusAndKeepsSystemdOptional(t *testing.T) {
+	compose := readRepoFile(t, "deploy/compose.host.yaml")
 	if !strings.Contains(compose, "/run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro") {
-		t.Error("deploy/docker-compose.yml does not mount the system bus socket")
+		t.Error("deploy/compose.host.yaml does not mount the system bus socket")
 	}
-	env := readRepoFile(t, "deploy/.env.example")
-	if !regexp.MustCompile(`(?m)^RAEDAR_SYSTEMD=auto$`).MatchString(env) {
-		t.Error("deploy/.env.example must not make systemd mandatory; RAEDAR_SYSTEMD should be auto")
+	if !regexp.MustCompile(`(?m)^\s+RAEDAR_SYSTEMD: auto$`).MatchString(compose) {
+		t.Error("deploy/compose.host.yaml must not make systemd mandatory; RAEDAR_SYSTEMD should be auto")
+	}
+}
+
+// TestDeployFilesAreNotCoupledToAnOperator keeps private infrastructure
+// names and absolute host paths out of the files operators copy.
+func TestDeployFilesAreNotCoupledToAnOperator(t *testing.T) {
+	for _, name := range []string{"deploy/compose.yaml", "deploy/compose.host.yaml", "deploy/.env.example", "deploy/raedar.env.example", "deploy/README.md"} {
+		text := strings.ToLower(readRepoFile(t, name))
+		for _, banned := range []string{"waiotech", "arvancloud", "admin-auth@file", "/srv/", "zld_"} {
+			if strings.Contains(text, banned) {
+				t.Errorf("%s contains %q", name, banned)
+			}
+		}
 	}
 }

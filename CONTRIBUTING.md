@@ -20,11 +20,11 @@ Thanks for your interest. Raedar is deliberately small and focused on one kind o
 
 `VERSION` holds the current version. A release is a `v<VERSION>` tag on a commit of `main` that passed CI; automation validates and publishes tags but never creates or moves them.
 
-1. Bump `VERSION` on `develop` (a patch for fixes) and merge it to `main`.
+1. Bump `VERSION` and `CHANGELOG.md` on `develop` and merge it to `main`.
 2. Wait for CI on `main` to pass.
-3. Create an annotated tag `v<VERSION>` and push it to both remotes.
+3. Create an annotated tag `v<VERSION>` and push it.
 
-The tag makes Gitman build and deploy `raedar:<VERSION>` on the production host; GitHub independently publishes the multi-arch image and the release. Database migrations are forward-only; back up the database before a release that changes the schema.
+The tag makes GitHub Actions run the full checks, then publish the multi-arch image to `ghcr.io` and create the release. Deploying is the operator's job: see [deploy/README.md](deploy/README.md). Database migrations are forward-only; back up the database before upgrading across a schema change.
 
 ## Reporting bugs
 

@@ -567,7 +567,7 @@ func TestNotifierAutoDeploySilenceSparesCritical(t *testing.T) {
 	critical := testIncident(1, store.SeverityCritical)
 	critical.AppID = &appID
 	critical.Rule = "container.restarting"
-	critical.Subject = "waiotech / worker #1"
+	critical.Subject = "shop / worker #1"
 	incident := st.addIncident(critical)
 
 	notifier.IncidentsChanged(t.Context(), []rules.Change{{Incident: incident, Kind: rules.ChangeOpened}})
