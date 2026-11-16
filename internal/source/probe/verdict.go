@@ -55,8 +55,3 @@ func Advance(previous *store.ProbeState, routeID int64, target string, outcome O
 	}
 	return state
 }
-
-// Failing reports whether a verdict is a failure incidents should act on.
-func Failing(state string) bool {
-	return state == store.ProbeUnhealthy || state == store.ProbeUnreachable
-}

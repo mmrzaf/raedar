@@ -59,8 +59,8 @@ func TestRouteReadingsSkipsCatchAllAndIgnoredRoutes(t *testing.T) {
 }
 
 func TestRouteSlowIgnoresLongLivedTraffic(t *testing.T) {
-	app := &discovery.App{Name: "gitman", Alerts: true}
-	route := testRoute(1, "gitman@docker", "git.example.com")
+	app := &discovery.App{Name: "billing", Alerts: true}
+	route := testRoute(1, "billing@docker", "billing.example.com")
 	route.App = app
 	s := testSnapshot(route)
 	var latency store.Histogram
