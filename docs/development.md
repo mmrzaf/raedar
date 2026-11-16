@@ -70,7 +70,7 @@ Areas that must be covered by unit tests: Traefik rule parsing, path normalizati
 
 ## Releases
 
-- Versions follow semantic versioning and are tagged `vX.Y.Z`.
-- A tag builds the image for `linux/amd64` and `linux/arm64` and pushes it to `ghcr.io/mmrzaf/raedar` as `X.Y.Z`, `X.Y` and `latest`.
-- Each release lists changes to configuration variables, labels and the webhook payload explicitly.
+- Versions follow semantic versioning and are tagged `vX.Y.Z` on `main`; the tag must match `VERSION`.
+- A tag builds the image for `linux/amd64` and `linux/arm64` and pushes it to `ghcr.io/mmrzaf/raedar` as `X.Y.Z`, `X.Y` and `latest`. Pre-release tags (`vX.Y.Z-...`) only get the exact version.
+- The release notes are the `CHANGELOG.md` section for that version, so each entry lists changes to configuration variables, labels and the webhook payload explicitly. The release fails before publishing anything when the section is missing.
 - Database migrations are forward-only; a release never edits a migration that has been released.
