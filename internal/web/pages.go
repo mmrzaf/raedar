@@ -50,7 +50,10 @@ type checkView struct {
 	// NotChecked is why the route is not checked.
 	NotChecked string
 	// State is healthy, unhealthy, unreachable or unknown.
-	State       string
+	State string
+	// LastResult is the outcome of the newest single check; it can differ
+	// from State while the verdict waits for more evidence.
+	LastResult  string
 	Since       time.Time
 	LastChecked time.Time
 	Status      int
@@ -554,7 +557,7 @@ func (s *Server) checkViews(ctx context.Context, app *discovery.App, r rangeView
 		}
 		view.Target = target.String()
 		if state, ok := states[route.ID]; ok {
-			view.State, view.Since, view.LastChecked, view.Error = state.State, state.Since, state.LastChecked, state.Error
+			view.State, view.LastResult, view.Since, view.LastChecked, view.Error = state.State, state.LastResult, state.Since, state.LastChecked, state.Error
 			if state.StatusCode != nil {
 				view.Status = *state.StatusCode
 			}

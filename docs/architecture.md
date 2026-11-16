@@ -19,6 +19,8 @@ flowchart LR
   HS --> HC[Host collector]
   SD --> SC[systemd collector]
   TL --> TC[TLS checker]
+  TL --> PC[Active checks<br/>optional]
+  PC --> DB
   DIS --> AGG
 
   AGG --> DB[(PostgreSQL)]
@@ -48,6 +50,7 @@ flowchart LR
 | Container collector | Samples CPU, memory and network for every running container. |
 | Host collector | Samples CPU, load, memory, swap and filesystem usage of the host, plus Docker's own disk usage. |
 | systemd collector | Reads unit and timer state from systemd over D-Bus. |
+| Active checks | Optional. Sends one HTTP request per eligible route to Traefik and records healthy, unhealthy or unreachable, kept apart from access-log traffic. See [data-sources.md](data-sources.md#active-checks). |
 | TLS checker | Performs a TLS handshake with Traefik for every routed domain and records what certificate is served. |
 | Heartbeat receiver | Accepts heartbeats from other Raedar instances listed as peers. |
 | Rules engine | Evaluates the rules in [alerts.md](alerts.md) once a minute, opens and resolves incidents. |

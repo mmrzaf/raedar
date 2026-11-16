@@ -40,12 +40,9 @@ func NewClient(address, userAgent string, timeout time.Duration, roots *x509.Cer
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, network, address)
 		},
-		// The proxy environment must not redirect a check to somewhere else.
-		Proxy:               nil,
 		TLSClientConfig:     &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout: timeout,
 		DisableKeepAlives:   true,
-		ForceAttemptHTTP2:   false,
 	}
 	return &Client{http: &http.Client{
 		Transport:     userAgentTransport{base: transport, userAgent: userAgent},

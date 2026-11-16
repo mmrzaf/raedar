@@ -58,4 +58,4 @@ The next morning's digest mentions that `/` is at 81 % and growing about 0.4 GB 
 - **Log storage and search.** Raedar shows container logs live from Docker and keeps none.
 - **Custom dashboards, query languages and plugins.**
 - **Built-in authentication.** The UI is served behind a Traefik authentication middleware.
-- **Uptime checks from the internet.** Use the outgoing heartbeat together with an external service or a second Raedar instance.
+- **Uptime checks from the internet.** Raedar's optional active checks run on the host through Traefik and cannot see outages the outside world sees. Use the outgoing heartbeat with an external service or a second Raedar instance for that.

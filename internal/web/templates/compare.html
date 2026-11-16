@@ -55,12 +55,12 @@
   </table></div></div>
 </section>
 <div class="charts" data-compare="{{.Joined}}" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
-  <section class="card"><div class="card-head"><h2>Requests</h2><span class="hint">dashed: combined</span></div><div class="chart" data-chart="requests"></div></section>
-  <section class="card"><div class="card-head"><h2>5xx rate</h2><span class="hint">dashed: combined, from summed counts</span></div><div class="chart" data-chart="errors"></div></section>
-  <section class="card"><div class="card-head"><h2>Latency p95</h2><span class="hint">dashed: merged histogram</span></div><div class="chart" data-chart="latency"></div></section>
-  <section class="card"><div class="card-head"><h2>CPU</h2><span class="hint">dashed: sum of all containers</span></div><div class="chart" data-chart="cpu"></div></section>
-  <section class="card"><div class="card-head"><h2>Memory</h2><span class="hint">dashed: sum of all containers</span></div><div class="chart" data-chart="memory"></div></section>
-  <section class="card"><div class="card-head"><h2>Response traffic</h2><span class="hint">dashed: combined</span></div><div class="chart" data-chart="bytes"></div></section>
+  <section class="card"><div class="card-head"><h2>Requests</h2><span class="hint">dashed: combined</span></div><div class="chart" data-chart="requests" role="img" aria-label="Requests per app and combined"></div></section>
+  <section class="card"><div class="card-head"><h2>5xx rate</h2><span class="hint">dashed: combined, from summed counts</span></div><div class="chart" data-chart="errors" role="img" aria-label="5xx rate per app and combined"></div></section>
+  <section class="card"><div class="card-head"><h2>Latency p95</h2><span class="hint">dashed: merged histogram</span></div><div class="chart" data-chart="latency" role="img" aria-label="p95 latency per app and combined"></div></section>
+  <section class="card"><div class="card-head"><h2>CPU</h2><span class="hint">dashed: sum of all containers</span></div><div class="chart" data-chart="cpu" role="img" aria-label="CPU per app and combined"></div></section>
+  <section class="card"><div class="card-head"><h2>Memory</h2><span class="hint">dashed: sum of all containers</span></div><div class="chart" data-chart="memory" role="img" aria-label="Memory per app and combined"></div></section>
+  <section class="card"><div class="card-head"><h2>Response traffic</h2><span class="hint">dashed: combined</span></div><div class="chart" data-chart="bytes" role="img" aria-label="Response traffic per app and combined"></div></section>
 </div>
 <section class="section">
   <div class="section-head"><h2>Deploys and incidents</h2></div>

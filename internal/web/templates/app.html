@@ -9,6 +9,7 @@
     {{if .App.Domains}}<p class="sub">{{range $i, $d := .App.Domains}}{{if $i}} · {{end}}{{$d.Name}}{{if and $d.Status (ne $d.Status "ok")}} <span class="badge badge-{{if or (eq $d.Status "ok") (eq $d.Status "private")}}ok{{else if eq $d.Status "expiring"}}warning{{else}}critical{{end}}">{{$d.Status}}</span>{{end}}{{end}}</p>{{end}}
   </div>
   <div class="toolbar">
+    <a href="/compare?apps={{.App.Name}}&amp;range={{$.Data.Range.Preset}}">Compare with other apps</a>
     <span class="hint">Drag across a chart to zoom, click it to open the logs</span>
     <nav class="segmented" aria-label="Time range">
       {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Data.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
@@ -33,7 +34,7 @@
       <td><strong>{{.Route}}</strong></td>
       {{if .NotChecked}}<td colspan="4" class="muted">not checked: {{.NotChecked}}</td>
       {{else}}<td class="mono">{{.Target}}</td>
-      <td><span class="badge badge-{{if eq .State "healthy"}}ok{{else if eq .State "unknown"}}warning{{else}}critical{{end}}">{{.State}}</span>{{if .Since.IsZero}}{{else}} <span class="muted">since {{relative .Since}}</span>{{end}}{{if .Error}} <span class="muted">{{.Error}}</span>{{end}}</td>
+      <td><span class="badge badge-{{if eq .State "healthy"}}ok{{else if eq .State "unknown"}}warning{{else}}critical{{end}}">{{.State}}</span>{{if .Since.IsZero}}{{else}} <span class="muted">since {{relative .Since}}</span>{{end}}{{if and .Error (ne .LastResult "healthy")}}<br><span class="muted">latest check: {{.Error}}</span>{{end}}</td>
       <td class="num">{{if .Checks}}{{printf "%.2f" .Availability}}% <span class="muted">of {{count .Checks}}</span>{{else}}<span class="muted">no checks in range</span>{{end}}</td>
       <td class="num">{{if .LastChecked.IsZero}}<span class="muted">—</span>{{else}}{{if .Status}}HTTP {{.Status}} · {{.LatencyMS}} ms · {{end}}{{relative .LastChecked}}{{end}}</td>{{end}}
     </tr>{{end}}</tbody>

@@ -52,23 +52,23 @@ type Options struct {
 
 // Checker sends one HTTP check per eligible route on every interval.
 type Checker struct {
-	cfg     config.ProbeConfig
-	opts    Options
-	model   Model
-	store   Store
-	logger  *slog.Logger
-	status  *sourcestatus.Reporter
-	clock   clock.Clock
-	mu      sync.Mutex
-	clients map[string]*Client
+	cfg    config.ProbeConfig
+	opts   Options
+	model  Model
+	store  Store
+	logger *slog.Logger
+	status *sourcestatus.Reporter
+	clock  clock.Clock
+	// client is reused while the Traefik address stays the same.
+	client     *Client
+	clientAddr string
 }
 
 // New returns a checker.
 func New(cfg config.ProbeConfig, opts Options, model Model, st Store, logger *slog.Logger, c clock.Clock) *Checker {
 	return &Checker{
 		cfg: cfg, opts: opts, model: model, store: st, logger: logger, clock: c,
-		status:  sourcestatus.New(SourceName, st, c, logger),
-		clients: make(map[string]*Client),
+		status: sourcestatus.New(SourceName, st, c, logger),
 	}
 }
 
@@ -128,16 +128,14 @@ func (c *Checker) address() string {
 	return c.model.TLSCheckAddr()
 }
 
-// client returns the client for an address.
-func (c *Checker) client(address string) *Client {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if client, ok := c.clients[address]; ok {
-		return client
+// clientFor returns the client for an address. Only the checker's own
+// goroutine calls it, so it needs no lock.
+func (c *Checker) clientFor(address string) *Client {
+	if c.client == nil || c.clientAddr != address {
+		c.client = NewClient(address, c.opts.UserAgent, c.cfg.Timeout, c.opts.Roots)
+		c.clientAddr = address
 	}
-	client := NewClient(address, c.opts.UserAgent, c.cfg.Timeout, c.opts.Roots)
-	c.clients = map[string]*Client{address: client}
-	return client
+	return c.client
 }
 
 // cycle runs one round of checks.
@@ -175,7 +173,7 @@ func (c *Checker) cycle(ctx context.Context) {
 		c.status.Report(ctx, store.StatusDegraded, err)
 		return
 	}
-	client := c.client(address)
+	client := c.clientFor(address)
 	spacing := time.Duration(0)
 	if len(jobs) > 1 {
 		spacing = c.cfg.Interval * 8 / 10 / time.Duration(len(jobs))
