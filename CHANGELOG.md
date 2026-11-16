@@ -4,6 +4,15 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-11-17
+
+### Added
+
+- **Gitman deployment pipeline.** `.gitman.yml` is back: a `v*` tag builds
+  `raedar:<version>` on the production host, writes the stack from `deploy/`
+  and pins `RAEDAR_IMAGE` to the new image. GitHub stays a mirror and publishes
+  the image and the release independently.
+
 ## [1.0.0] - 2026-11-17
 
 ### Added
