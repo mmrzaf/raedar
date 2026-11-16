@@ -24,7 +24,7 @@ Thanks for your interest. Raedar is deliberately small and focused on one kind o
 2. Wait for CI on `main` to pass.
 3. Create an annotated tag `v<VERSION>` and push it.
 
-The tag makes GitHub Actions run the full checks, then publish the multi-arch image to `ghcr.io` and create the release. Deploying is the operator's job: see [deploy/README.md](deploy/README.md). Database migrations are forward-only; back up the database before upgrading across a schema change.
+The tag makes GitHub Actions run the full checks, then publish the multi-arch image to `ghcr.io` and create the release. It also makes Gitman run `.gitman.yml` on the production host: build `raedar:<VERSION>`, write the stack from `deploy/` and pin `RAEDAR_IMAGE`. Elsewhere, deployment is the operator's job: see [deploy/README.md](deploy/README.md). Database migrations are forward-only; back up the database before upgrading across a schema change.
 
 ## Reporting bugs
 
