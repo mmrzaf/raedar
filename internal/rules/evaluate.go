@@ -21,6 +21,7 @@ type snapshot struct {
 	routes    map[int64]*routeInfo
 	slots     map[int64]*slotInfo
 	baselines map[int64]store.Baseline
+	probes    map[int64]store.ProbeState
 
 	windows    map[time.Duration]map[int64]*store.RouteWindow
 	pathErrors map[int64]pathTop
@@ -144,6 +145,11 @@ func (e *Engine) collect(ctx context.Context, now time.Time) (*snapshot, error) 
 	if s.sources, err = e.store.SourceStates(ctx); err != nil {
 		return nil, err
 	}
+	if e.cfg.Probe.Enabled {
+		if s.probes, err = e.store.ProbeStates(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
 }
 
@@ -260,6 +266,7 @@ func (e *Engine) readings(now time.Time, s *snapshot) []reading {
 	readings = append(readings, e.containerReadings(now, s)...)
 	readings = append(readings, e.hostReadings(now, s)...)
 	readings = append(readings, e.unitReadings(now, s)...)
+	readings = append(readings, e.probeReadings(now, s)...)
 	readings = append(readings, e.certReadings(now, s)...)
 	readings = append(readings, e.peerReadings(now, s)...)
 	readings = append(readings, e.sourceReadings(now, s)...)
@@ -600,4 +607,55 @@ func idOf(id int64) *int64 {
 		return nil
 	}
 	return &id
+}
+
+// probeReadings evaluates probe.failed for every route with an active-check
+// verdict. The verdict already carries the debouncing (several failures to
+// fail, several successes to recover), so a failing verdict fires at once and
+// a healthy one resolves at once. Routes without a verdict, and unknown ones,
+// produce no reading and therefore neither open nor keep an incident.
+func (e *Engine) probeReadings(now time.Time, s *snapshot) []reading {
+	var readings []reading
+	routeIDs := make([]int64, 0, len(s.probes))
+	for routeID := range s.probes {
+		routeIDs = append(routeIDs, routeID)
+	}
+	sort.Slice(routeIDs, func(i, j int) bool { return routeIDs[i] < routeIDs[j] })
+	for _, routeID := range routeIDs {
+		info, ok := s.routes[routeID]
+		if !ok || e.routeIgnored(info.route.Name) {
+			continue
+		}
+		state := s.probes[routeID]
+		if state.State == store.ProbeUnknown {
+			continue
+		}
+		failing := state.State == store.ProbeUnhealthy || state.State == store.ProbeUnreachable
+		severity := store.SeverityWarning
+		if info.app != nil && info.app.Critical {
+			severity = store.SeverityCritical
+		}
+		details := map[string]any{
+			"state": state.State, "target": state.Target, "since": state.Since,
+			"checked_at": state.LastChecked, "domains": info.route.Domains,
+		}
+		if state.StatusCode != nil {
+			details["status"] = *state.StatusCode
+		}
+		if state.Error != "" {
+			details["error"] = state.Error
+		}
+		readings = append(readings, reading{
+			rule:     RuleProbeFailed,
+			subject:  info.route.Name,
+			appID:    appIDOf(info.app),
+			routeID:  idOf(routeID),
+			severity: severity,
+			firing:   failing,
+			alerts:   alertsOf(info.app),
+			summary:  "availability check " + state.State,
+			details:  details,
+		})
+	}
+	return readings
 }

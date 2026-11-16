@@ -593,3 +593,12 @@ func isDigit(b byte) bool {
 func isLetter(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
+
+// checkProbePath checks a request path for active checks: absolute, without a
+// query, fragment, scheme or whitespace.
+func checkProbePath(s string) error {
+	if !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") || strings.ContainsAny(s, " \t\r\n?#\\") {
+		return errors.New("must be a path starting with a single /, without a query or fragment")
+	}
+	return nil
+}

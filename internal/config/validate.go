@@ -1,6 +1,9 @@
 package config
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // validate reports every problem that involves more than one variable.
 func (c *Config) validate() []error {
@@ -9,6 +12,23 @@ func (c *Config) validate() []error {
 	problems = append(problems, validateHost(c.Host)...)
 	problems = append(problems, validateNotify(c.Notify)...)
 	problems = append(problems, validateHeartbeat(c.Heartbeat)...)
+	problems = append(problems, validateProbe(c.Probe)...)
+	return problems
+}
+
+// validateProbe keeps the active checks small: a check every 15 seconds at
+// most, a timeout shorter than the interval, and a bounded concurrency.
+func validateProbe(p ProbeConfig) []error {
+	var problems []error
+	if p.Interval < 15*time.Second {
+		problems = append(problems, errors.New("RAEDAR_PROBE_INTERVAL must be at least 15s"))
+	}
+	if p.Timeout < time.Second || p.Timeout >= p.Interval {
+		problems = append(problems, errors.New("RAEDAR_PROBE_TIMEOUT must be at least 1s and shorter than RAEDAR_PROBE_INTERVAL"))
+	}
+	if p.Concurrency > 16 {
+		problems = append(problems, errors.New("RAEDAR_PROBE_CONCURRENCY must be at most 16"))
+	}
 	return problems
 }
 

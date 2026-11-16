@@ -123,6 +123,18 @@ See [notifications.md](notifications.md#silences) for how the gate uses these.
 |---|---|---|
 | `RAEDAR_SUBJECT_NAMES` | — | Rename subjects, `subject=name,...`. A trailing `*` is a prefix pattern. |
 
+## Active availability checks
+
+Off by default; see [data-sources.md](data-sources.md#active-checks).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RAEDAR_PROBES` | `off` | `on` enables one HTTP check per eligible route, sent to Traefik. |
+| `RAEDAR_PROBE_INTERVAL` | `1m` | Time between two checks of a route. At least `15s`. |
+| `RAEDAR_PROBE_TIMEOUT` | `5s` | Timeout of one check; at least `1s` and shorter than the interval. |
+| `RAEDAR_PROBE_CONCURRENCY` | `4` | Checks in flight at once, at most `16`. |
+| `RAEDAR_PROBE_PATH` | `/` | Path requested when neither the route rule nor the label `raedar.probe.path` names one. |
+
 ## Heartbeats
 
 | Variable | Default | Meaning |

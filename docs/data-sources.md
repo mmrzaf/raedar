@@ -150,3 +150,16 @@ For every domain of every TLS route (and every domain in `RAEDAR_TLS_DOMAINS`), 
 | `error` | The connection or handshake failed. |
 
 The connection goes to Traefik directly (`RAEDAR_TLS_CHECK_ADDR`, detected automatically by default), so the check sees what the origin serves even when a CDN sits in front of it.
+
+## Active checks
+
+Optional (`RAEDAR_PROBES=on`) and separate from the passive access-log data. The access log shows what users did; it cannot tell whether an idle application is up. An active check can.
+
+- **What is checked.** One `GET` per HTTP route that Raedar discovered from Docker labels, has TLS and an exact hostname (no regex or wildcard hosts). Routes whose rule needs headers, query parameters, a client IP or a non-GET method are not checked, and the app page says why for each route that is skipped.
+- **Where it goes.** Every request is sent to Traefik's HTTPS address (`RAEDAR_TLS_CHECK_ADDR` or the detected one), with the route's hostname as `Host` and TLS server name. The hostname is never resolved or dialled, so a label cannot make Raedar connect to another host. Redirects are not followed, no cookies or credentials are sent (only a `raedar-probe/<version>` user agent), the body is not read, and the certificate is verified.
+- **Path.** The path of a `Path` / `PathPrefix` matcher in the rule, else `RAEDAR_PROBE_PATH` (`/`); label `raedar.probe.path` overrides both.
+- **Verdict per check.** `healthy`: the status is expected. By default every status below 500 is healthy, so a protected route answering 401 or 403, or a redirect, counts as alive; `raedar.probe.expect=200-299` tightens it. `unhealthy`: the route answered with an unexpected status (5xx by default). `unreachable`: no answer, such as a timeout, a connection or a TLS failure. `unknown`: too little evidence (a new route with fewer than 3 consecutive failures, or no check yet).
+- **Failure and recovery.** The route's verdict changes after 3 failed checks in a row and recovers after 2 good ones, so one lost request opens nothing. A failing verdict opens a `probe.failed` incident, which goes through the normal notifications.
+- **Bounds.** One check per route per `RAEDAR_PROBE_INTERVAL` (at least 15 s), spread over the interval, at most `RAEDAR_PROBE_CONCURRENCY` at once (at most 16), each limited by `RAEDAR_PROBE_TIMEOUT`.
+- **Raedar's own network.** Before each round Raedar opens a TCP connection to Traefik. If that fails no verdicts change and the `probe` source is reported unavailable; a Raedar-side problem does not become an incident for every route.
+- **History.** Outcomes are counted per minute and rolled up per hour; the app page shows the share of healthy checks in the selected range, labelled as synthetic.

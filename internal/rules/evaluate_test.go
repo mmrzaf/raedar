@@ -113,3 +113,28 @@ func TestCertReadingsSkipRemovedRoutes(t *testing.T) {
 		t.Fatalf("live route produced %d certificate readings, want 2", len(readings))
 	}
 }
+
+func TestProbeReadings(t *testing.T) {
+	app := &discovery.App{Name: "shop", Alerts: true, Critical: true}
+	route := testRoute(1, "shop@docker", "shop.example.com")
+	route.App = app
+	s := testSnapshot(route, testRoute(2, "other@docker"))
+	code := 503
+	s.probes = map[int64]store.ProbeState{
+		1: {RouteID: 1, State: store.ProbeUnhealthy, StatusCode: &code, Target: "shop.example.com/"},
+		2: {RouteID: 2, State: store.ProbeUnknown},
+		9: {RouteID: 9, State: store.ProbeUnreachable}, // route no longer exists
+	}
+	readings := testEngine(config.RulesConfig{}).probeReadings(time.Now(), s)
+	if len(readings) != 1 {
+		t.Fatalf("readings = %d, want only the known failing route", len(readings))
+	}
+	got := readings[0]
+	if got.rule != RuleProbeFailed || !got.firing || got.severity != store.SeverityCritical || got.subject != "shop@docker" {
+		t.Errorf("reading = %+v, want a firing critical probe.failed for shop@docker", got)
+	}
+	s.probes[1] = store.ProbeState{RouteID: 1, State: store.ProbeHealthy}
+	if r := testEngine(config.RulesConfig{}).probeReadings(time.Now(), s); len(r) != 1 || r[0].firing {
+		t.Errorf("a healthy verdict must produce a resolving reading, got %+v", r)
+	}
+}

@@ -29,7 +29,7 @@ type Retention struct {
 // Retention deletes the history that is older than the policy, in batches to
 // keep the transactions short.
 func (s *Store) Retention(ctx context.Context, policy Retention, now time.Time) error {
-	minuteTables := []string{"route_minute", "slot_minute", "host_minute", "disk_minute"}
+	minuteTables := []string{"route_minute", "slot_minute", "host_minute", "disk_minute", "probe_minute"}
 	for _, table := range minuteTables {
 		if err := s.deleteBefore(ctx, table, "ts", now.Add(-policy.Minute)); err != nil {
 			return err
@@ -38,7 +38,7 @@ func (s *Store) Retention(ctx context.Context, policy Retention, now time.Time) 
 	if err := s.deleteBefore(ctx, "path_window", "ts", now.Add(-policy.Paths)); err != nil {
 		return err
 	}
-	hourTables := []string{"route_hour", "slot_hour", "host_hour", "disk_hour", "docker_disk"}
+	hourTables := []string{"route_hour", "slot_hour", "host_hour", "disk_hour", "docker_disk", "probe_hour"}
 	for _, table := range hourTables {
 		if err := s.deleteBefore(ctx, table, "ts", now.Add(-policy.Hour)); err != nil {
 			return err

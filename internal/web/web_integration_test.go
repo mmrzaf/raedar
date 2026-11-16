@@ -548,3 +548,155 @@ func TestSilenceFormRejectsUnsafeInput(t *testing.T) {
 		t.Fatalf("silences after rejected forms = %v, %v; want none", silences, err)
 	}
 }
+
+// addApp adds an app with one route and slot, one minute of traffic 90
+// minutes before the fixture's clock, and a matching model entry.
+func addApp(t *testing.T, st *store.Store, model *discovery.Model, name string, requests, errors int64, bucket int) {
+	t.Helper()
+	ctx := context.Background()
+	at := time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC).Add(-90 * time.Minute)
+	appID, err := st.UpsertApp(ctx, name, at)
+	if err != nil {
+		t.Fatalf("UpsertApp() error = %v", err)
+	}
+	routeID, err := st.UpsertRoute(ctx, store.Route{Name: name + "@docker", AppID: &appID, Kind: "http", Origin: "labels",
+		Domains: []string{name + ".example.com"}}, at)
+	if err != nil {
+		t.Fatalf("UpsertRoute() error = %v", err)
+	}
+	slotID, err := st.UpsertSlot(ctx, store.Slot{AppID: appID, Key: "web #1", Service: "web", Replica: 1}, at)
+	if err != nil {
+		t.Fatalf("UpsertSlot() error = %v", err)
+	}
+	latency := make([]int32, store.Buckets)
+	latency[bucket] = int32(requests)
+	if err := st.FlushBuckets(ctx, store.Flush{Minutes: []store.RouteMinute{{
+		RouteID: routeID, TS: at, Requests: requests, S2xx: requests - errors, S5xx: errors, Latency: latency,
+	}}}); err != nil {
+		t.Fatalf("FlushBuckets() error = %v", err)
+	}
+	if err := st.InsertSlotMinute(ctx, store.SlotMinute{SlotID: slotID, TS: at, CPUMillicores: 50, MemBytes: 64 << 20, Running: true}); err != nil {
+		t.Fatalf("InsertSlotMinute() error = %v", err)
+	}
+	app := &discovery.App{ID: appID, Name: name, Group: "shops", Slots: map[string]*discovery.Slot{}, Routes: map[string]*discovery.Route{}}
+	app.Slots["web #1"] = &discovery.Slot{ID: slotID, App: app, Key: "web #1", Service: "web", Replica: 1}
+	app.Routes[name+"@docker"] = &discovery.Route{ID: routeID, Name: name + "@docker", App: app, Kind: "http"}
+	model.Apps[name] = app
+	model.Routes[name+"@docker"] = app.Routes[name+"@docker"]
+}
+
+func TestCombinedAppsUseSummedCountsAndMergedHistograms(t *testing.T) {
+	server, st, _, model := newIntegrationServer(t)
+	addApp(t, st, model, "blog", 60, 5, 8)
+	handler := server.Handler()
+	from := time.Date(2026, 10, 18, 13, 0, 0, 0, time.UTC).Unix()
+	to := time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC).Unix()
+	query := func(kind subjectKind, subject, metric string) []*float64 {
+		path := "/api/series?series=" + url.QueryEscape(seriesRef{Kind: kind, Subject: subject, Metric: metric}.String()) +
+			fmt.Sprintf("&from=%d&to=%d&points=10", from, to)
+		recorder := get(t, handler, path)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d (body %q)", path, recorder.Code, recorder.Body.String())
+		}
+		var body struct {
+			Series []struct {
+				Points [][2]*float64 `json:"points"`
+			} `json:"series"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		var values []*float64
+		for _, point := range body.Series[0].Points {
+			if point[1] != nil {
+				values = append(values, point[1])
+			}
+		}
+		return values
+	}
+	// shop: 1 of 40 (2.5%), blog: 5 of 60 (8.33%). The combined rate is 6 of
+	// 100, not the mean of the two percentages (5.42%).
+	rate := query(subjectApps, "shop,blog", "error_rate")
+	if len(rate) != 1 || *rate[0] != 6 {
+		t.Errorf("combined error rate = %v, want one value of 6", rate)
+	}
+	requests := query(subjectApps, "shop,blog", "requests")
+	if len(requests) != 1 || *requests[0] != 100 {
+		t.Errorf("combined requests = %v, want 100", requests)
+	}
+	var merged store.Histogram
+	shopHist, blogHist := store.Histogram{}, store.Histogram{}
+	shopHist[2], blogHist[8] = 40, 60
+	merged.Merge(&shopHist)
+	merged.Merge(&blogHist)
+	want := percentileOf(&merged, 95).MS
+	p95 := query(subjectApps, "shop,blog", "p95")
+	if len(p95) != 1 || *p95[0] != want {
+		t.Errorf("combined p95 = %v, want %v from the merged histogram", p95, want)
+	}
+	// Resources add: shop has 100-120 mc samples at other times, blog 50 mc at
+	// the traffic minute; only the minute where blog has data is checked here.
+	cpu := query(subjectApps, "blog", "cpu")
+	if len(cpu) != 1 || *cpu[0] != 50 {
+		t.Errorf("blog cpu = %v, want 50", cpu)
+	}
+	if missing := get(t, handler, "/api/series?series="+url.QueryEscape("apps/nope/requests")+fmt.Sprintf("&from=%d&to=%d", from, to)); missing.Code != http.StatusNotFound {
+		t.Errorf("unknown app status = %d, want 404", missing.Code)
+	}
+}
+
+func TestComparePageShowsExactTotals(t *testing.T) {
+	server, st, _, model := newIntegrationServer(t)
+	addApp(t, st, model, "blog", 60, 5, 8)
+	handler := server.Handler()
+	recorder := get(t, handler, "/compare?apps=shop,blog&range=24h")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %q)", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{"Combined", "6.00%", "data-compare=\"blog,shop\"", "shops"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("compare page lacks %q", want)
+		}
+	}
+	// A group selects all its members.
+	recorder = get(t, handler, "/compare?group=shops")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "data-compare=\"blog\"") {
+		t.Errorf("group selection failed: %d", recorder.Code)
+	}
+	// Without any parameter the page still renders with the busiest apps.
+	if recorder = get(t, handler, "/compare"); recorder.Code != http.StatusOK {
+		t.Errorf("default compare status = %d", recorder.Code)
+	}
+}
+
+func TestAppPageShowsActiveChecksOnlyWhenEnabled(t *testing.T) {
+	server, st, _, model := newIntegrationServer(t)
+	handler := server.Handler()
+	if body := get(t, handler, "/apps/shop").Body.String(); strings.Contains(body, "Availability checks") {
+		t.Error("active checks are off, but the page shows them")
+	}
+	server.cfg.Probe.Enabled = true
+	route := model.Routes["shop@docker"]
+	route.Rule = "Host(`shop.example.com`)"
+	now := time.Date(2026, 10, 18, 14, 32, 0, 0, time.UTC)
+	code, ms := 200, 12
+	if err := st.SaveProbeState(context.Background(), store.ProbeState{RouteID: route.ID, State: store.ProbeHealthy, Since: now,
+		LastResult: store.ProbeHealthy, LastChecked: now, StatusCode: &code, LatencyMS: &ms, Target: "shop.example.com/"}); err != nil {
+		t.Fatalf("SaveProbeState() error = %v", err)
+	}
+	if err := st.AddProbeResult(context.Background(), store.ProbeMinute{RouteID: route.ID, TS: now.Add(-10 * time.Minute), Result: store.ProbeHealthy}); err != nil {
+		t.Fatalf("AddProbeResult() error = %v", err)
+	}
+	body := get(t, handler, "/apps/shop").Body.String()
+	for _, want := range []string{"Availability checks", "shop.example.com/", "healthy", "synthetic"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("app page lacks %q", want)
+		}
+	}
+	// A route that cannot be checked says why.
+	route.Rule = "Host(`shop.example.com`) && Header(`X-A`, `b`)"
+	if body := get(t, handler, "/apps/shop").Body.String(); !strings.Contains(body, "not checked") {
+		t.Error("an ineligible route must be listed with a reason")
+	}
+}

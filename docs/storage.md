@@ -36,6 +36,16 @@ Raedar stores everything in its own PostgreSQL database. Most Docker + Traefik h
 
 `route_minute` holds a row only for minutes with at least one request. `ts` is always the start of the minute, hour or window, stored in UTC. Hourly rows start on local hour boundaries of `RAEDAR_TZ`, so in a zone such as `Asia/Tehran` (UTC+03:30) they start at :30 UTC and every hour belongs to exactly one local hour of the day.
 
+### Active checks
+
+| Table | Key | Columns |
+|---|---|---|
+| `probe_state` | `route_id` | `state` (`healthy`, `unhealthy`, `unreachable`, `unknown`), `since`, `last_result`, `last_checked`, `status_code`, `latency_ms`, `error`, `target`, consecutive failure and success counts |
+| `probe_minute` | `route_id`, `ts` | `checks`, `healthy`, `unhealthy`, `unreachable`, `latency_ms_max` |
+| `probe_hour` | `route_id`, `ts` | same as `probe_minute`, rolled up with the other hourly tables |
+
+These hold synthetic checks only and are separate from `route_minute`, which describes real requests.
+
 ### State and history
 
 | Table | Content |

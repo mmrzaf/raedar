@@ -34,6 +34,8 @@ type Config struct {
 	Rules RulesConfig
 	// Notify holds the notification and digest settings.
 	Notify NotifyConfig
+	// Probe holds the active availability check settings.
+	Probe ProbeConfig
 	// Heartbeat holds the heartbeat sender and receiver settings.
 	Heartbeat HeartbeatConfig
 	// SubjectNames renames subjects in messages and the UI.
@@ -123,6 +125,21 @@ type RulesConfig struct {
 	// fires: at least CrashLoopCrashes crashes inside CrashLoopWindow.
 	CrashLoopWindow  time.Duration
 	CrashLoopCrashes int
+}
+
+// ProbeConfig holds the settings of the optional active availability checks.
+type ProbeConfig struct {
+	// Enabled turns the checks on. They are off by default.
+	Enabled bool
+	// Interval is the time between two checks of a route.
+	Interval time.Duration
+	// Timeout bounds one check.
+	Timeout time.Duration
+	// Concurrency is the maximum number of checks in flight.
+	Concurrency int
+	// Path is the path requested when neither the route rule nor a label names
+	// one.
+	Path string
 }
 
 // NotifyConfig holds the notification and digest settings.

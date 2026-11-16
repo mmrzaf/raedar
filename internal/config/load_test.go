@@ -128,6 +128,7 @@ func TestLoadDefaults(t *testing.T) {
 				DeploySilence:     5 * time.Minute,
 			},
 		},
+		Probe: ProbeConfig{Interval: time.Minute, Timeout: 5 * time.Second, Concurrency: 4, Path: "/"},
 		Heartbeat: HeartbeatConfig{
 			Interval: time.Minute,
 			Timeout:  3 * time.Minute,
@@ -470,5 +471,27 @@ func TestLoadInvalidValueNamesVariable(t *testing.T) {
 				t.Errorf("error = %q, want it to name %s", err.Error(), tt.name)
 			}
 		})
+	}
+}
+
+func TestProbeConfiguration(t *testing.T) {
+	cfg, err := Load(lookupFrom(map[string]string{"RAEDAR_DATABASE_URL": "postgres://u:p@h/db"}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Probe.Enabled || cfg.Probe.Interval != time.Minute || cfg.Probe.Timeout != 5*time.Second || cfg.Probe.Concurrency != 4 || cfg.Probe.Path != "/" {
+		t.Errorf("probe defaults = %+v; checks must be off by default with small bounds", cfg.Probe)
+	}
+	for name, env := range map[string]map[string]string{
+		"interval too short": {"RAEDAR_PROBE_INTERVAL": "5s"},
+		"timeout too long":   {"RAEDAR_PROBE_TIMEOUT": "2m"},
+		"too concurrent":     {"RAEDAR_PROBE_CONCURRENCY": "64"},
+		"external url":       {"RAEDAR_PROBE_PATH": "//evil.example/x"},
+		"query":              {"RAEDAR_PROBE_PATH": "/x?a=b"},
+	} {
+		env["RAEDAR_DATABASE_URL"] = "postgres://u:p@h/db"
+		if _, err := Load(lookupFrom(env)); err == nil {
+			t.Errorf("%s: Load() accepted %v", name, env)
+		}
 	}
 }

@@ -49,7 +49,7 @@ func (s *Store) Rollup(ctx context.Context, now time.Time, location *time.Locati
 }
 
 // rollupTables are the tables that hold one row per local hour.
-var rollupTables = []string{"route_hour", "slot_hour", "host_hour", "disk_hour"}
+var rollupTables = []string{"route_hour", "slot_hour", "host_hour", "disk_hour", "probe_hour"}
 
 // RealignRollups rebuilds the hourly rows that do not start on a local hour
 // boundary, which happens when the time zone changes or when rows were written
@@ -138,6 +138,15 @@ func rollupHour(ctx context.Context, tx pgx.Tx, hour time.Time) error {
 				from disk_minute
 				where ts >= $1 and ts < $1 + interval '1 hour'
 				group by disk`,
+		},
+		{
+			name: "probe_hour",
+			sql: `
+				insert into probe_hour (route_id, ts, checks, healthy, unhealthy, unreachable, latency_ms_max)
+				select route_id, $1, sum(checks), sum(healthy), sum(unhealthy), sum(unreachable), max(latency_ms_max)
+				from probe_minute
+				where ts >= $1 and ts < $1 + interval '1 hour'
+				group by route_id`,
 		},
 	}
 	for _, statement := range statements {
