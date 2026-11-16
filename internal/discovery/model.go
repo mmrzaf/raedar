@@ -44,6 +44,18 @@ type App struct {
 	ErrorsMinRate *config.Percent
 	// SlowMinP95 overrides RAEDAR_SLOW_MIN_P95 for the app's routes.
 	SlowMinP95 *time.Duration
+	// Group is the optional logical group from the raedar.group label, for
+	// example "billing" for several Compose projects of one subsystem; empty
+	// when the app has none.
+	Group string
+	// ProbeOff reports raedar.probe=false: no active checks for the app.
+	ProbeOff bool
+	// ProbePath is the raedar.probe.path label: the path to check instead of
+	// the default. Empty when not set.
+	ProbePath string
+	// ProbeExpect is the raedar.probe.expect label: the expected status codes,
+	// such as 200 or 200-299,401. Empty when not set.
+	ProbeExpect string
 	// Slots are the app's slots by key.
 	Slots map[string]*Slot
 	// Routes are the app's routes by name.
@@ -164,6 +176,10 @@ const (
 	labelIgnore         = "raedar.ignore"
 	labelCritical       = "raedar.critical"
 	labelAlerts         = "raedar.alerts"
+	labelGroup          = "raedar.group"
+	labelProbe          = "raedar.probe"
+	labelProbePath      = "raedar.probe.path"
+	labelProbeExpect    = "raedar.probe.expect"
 	labelLatencyIgnore  = "raedar.latency.ignore"
 	labelErrorsMinRate  = "raedar.errors.min_rate"
 	labelSlowMinP95     = "raedar.slow.min_p95"
@@ -310,6 +326,18 @@ func resolveAppLabels(app *App, containers []*Container, logger *slog.Logger) {
 	}
 	if value, ok := labelValue(members, labelAlerts); ok {
 		app.Alerts = !isFalse(value)
+	}
+	if value, ok := labelValue(members, labelGroup); ok {
+		app.Group = strings.TrimSpace(value)
+	}
+	if value, ok := labelValue(members, labelProbe); ok {
+		app.ProbeOff = isFalse(value)
+	}
+	if value, ok := labelValue(members, labelProbePath); ok {
+		app.ProbePath = strings.TrimSpace(value)
+	}
+	if value, ok := labelValue(members, labelProbeExpect); ok {
+		app.ProbeExpect = strings.TrimSpace(value)
 	}
 	if value, ok := labelValue(members, labelLatencyIgnore); ok {
 		app.LatencyIgnore = splitList(value)

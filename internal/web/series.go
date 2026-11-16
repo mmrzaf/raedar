@@ -19,11 +19,19 @@ import (
 // maxSeriesPerRequest bounds how many series one request may ask for.
 const maxSeriesPerRequest = 20
 
+// maxAppsPerSeries bounds how many apps one combined series may add up.
+const maxAppsPerSeries = 12
+
 // subjectKind is what a series measures.
 type subjectKind string
 
 const (
-	subjectApp   subjectKind = "app"
+	subjectApp subjectKind = "app"
+	// subjectApps is the combination of several apps; its subject is the
+	// comma-separated app names. Request metrics are summed over the apps'
+	// routes and histograms merged; resource metrics are summed over their
+	// containers.
+	subjectApps  subjectKind = "apps"
 	subjectRoute subjectKind = "route"
 	subjectSlot  subjectKind = "slot"
 	subjectHost  subjectKind = "host"
@@ -33,7 +41,7 @@ const (
 // valid reports whether k is one of the known kinds.
 func (k subjectKind) valid() bool {
 	switch k {
-	case subjectApp, subjectRoute, subjectSlot, subjectHost, subjectDisk:
+	case subjectApp, subjectApps, subjectRoute, subjectSlot, subjectHost, subjectDisk:
 		return true
 	}
 	return false
@@ -172,6 +180,36 @@ var (
 	}
 )
 
+// resourceMetric is one measurable thing of the combined containers of apps.
+type resourceMetric struct {
+	name  string
+	unit  string
+	daily aggregation
+	// value returns the metric of a bin; ok is false when the bin does not
+	// carry it, for example the container count of hourly data.
+	value func(store.ResourceBin) (value float64, ok bool)
+}
+
+// The resource metrics of the apps kind. Gauges are the sum over the apps'
+// containers; traffic is a sum over time.
+var appsResourceMetrics = []resourceMetric{
+	{name: "cpu", unit: "millicores", value: func(b store.ResourceBin) (float64, bool) { return b.CPU, true }},
+	{name: "memory", unit: "bytes", value: func(b store.ResourceBin) (float64, bool) { return b.Memory, true }},
+	{name: "net_rx", unit: "bytes", daily: aggregateSum, value: func(b store.ResourceBin) (float64, bool) { return float64(b.NetRx), true }},
+	{name: "net_tx", unit: "bytes", daily: aggregateSum, value: func(b store.ResourceBin) (float64, bool) { return float64(b.NetTx), true }},
+	{name: "containers", unit: "count", value: func(b store.ResourceBin) (float64, bool) { return b.Running, b.HasRunning }},
+}
+
+// findResource returns the resource metric with this name.
+func findResource(name string) (resourceMetric, bool) {
+	for _, candidate := range appsResourceMetrics {
+		if candidate.name == name {
+			return candidate, true
+		}
+	}
+	return resourceMetric{}, false
+}
+
 // find returns the metric with this name.
 func find[B any](metrics []metric[B], name string) (metric[B], bool) {
 	for _, candidate := range metrics {
@@ -187,6 +225,12 @@ func metricExists(kind subjectKind, name string) bool {
 	switch kind {
 	case subjectApp, subjectRoute:
 		_, ok := find(routeMetrics, name)
+		return ok
+	case subjectApps:
+		if _, ok := find(routeMetrics, name); ok {
+			return true
+		}
+		_, ok := findResource(name)
 		return ok
 	case subjectSlot:
 		_, ok := find(slotMetrics, name)
@@ -235,6 +279,12 @@ func patternMetricNames(kind subjectKind) []string {
 func dailyAggregation(ref seriesRef) aggregation {
 	switch ref.Kind {
 	case subjectApp, subjectRoute:
+		m, _ := find(routeMetrics, ref.Metric)
+		return m.daily
+	case subjectApps:
+		if m, ok := findResource(ref.Metric); ok {
+			return m.daily
+		}
 		m, _ := find(routeMetrics, ref.Metric)
 		return m.daily
 	case subjectSlot:
@@ -384,6 +434,8 @@ func (s *Server) series(ctx context.Context, model *discovery.Model, ref seriesR
 			value, ok := m.value(entry)
 			answer.Points = append(answer.Points, newSeriesPoint(entry.TS, value, ok))
 		}
+	case subjectApps:
+		return s.appsSeries(ctx, model, ref, timeRange, source, bin)
 	case subjectSlot:
 		m, _ := find(slotMetrics, ref.Metric)
 		answer.Unit = m.unit
@@ -468,4 +520,78 @@ func resolveSlot(model *discovery.Model, subject string) (*discovery.Slot, error
 		}
 	}
 	return nil, fmt.Errorf("%w: slot %d", errUnknownSubject, id)
+}
+
+// splitApps splits the subject of an apps reference into app names.
+func splitApps(subject string) []string {
+	var names []string
+	for _, name := range strings.Split(subject, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// appsSeries reads a metric of several apps combined. Request metrics are
+// computed from the summed counters and merged latency histograms of all the
+// apps' routes, so an error rate is total errors over total requests and a
+// percentile comes from the merged histogram. Resource metrics add the
+// containers' values at each sample time.
+func (s *Server) appsSeries(ctx context.Context, model *discovery.Model, ref seriesRef, timeRange store.Range, source store.RangeSource, bin time.Duration) (seriesAnswer, error) {
+	answer := seriesAnswer{Series: ref.String(), Metric: ref.Metric, Label: ref.Subject, Points: []seriesPoint{}}
+	if model == nil {
+		return answer, fmt.Errorf("no model")
+	}
+	names := splitApps(ref.Subject)
+	if len(names) == 0 || len(names) > maxAppsPerSeries {
+		return answer, fmt.Errorf("%w %q: want between 1 and %d app names", errBadSeries, ref.Subject, maxAppsPerSeries)
+	}
+	var routeIDs, slotIDs []int64
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		app, ok := model.Apps[name]
+		if !ok {
+			return answer, fmt.Errorf("%w: app %q", errUnknownSubject, name)
+		}
+		for _, route := range app.Routes {
+			if route.ID != 0 {
+				routeIDs = append(routeIDs, route.ID)
+			}
+		}
+		for _, slot := range app.Slots {
+			if slot.ID != 0 {
+				slotIDs = append(slotIDs, slot.ID)
+			}
+		}
+	}
+	sort.Slice(routeIDs, func(i, j int) bool { return routeIDs[i] < routeIDs[j] })
+	sort.Slice(slotIDs, func(i, j int) bool { return slotIDs[i] < slotIDs[j] })
+	if m, ok := findResource(ref.Metric); ok {
+		answer.Unit = m.unit
+		bins, err := s.store.ResourceSeries(ctx, slotIDs, timeRange, source, bin)
+		if err != nil {
+			return answer, err
+		}
+		for _, entry := range bins {
+			value, valid := m.value(entry)
+			answer.Points = append(answer.Points, newSeriesPoint(entry.TS, value, valid))
+		}
+		return answer, nil
+	}
+	m, _ := find(routeMetrics, ref.Metric)
+	answer.Unit = m.unit
+	bins, err := s.store.RouteSeries(ctx, routeIDs, timeRange, source, bin)
+	if err != nil {
+		return answer, err
+	}
+	for _, entry := range bins {
+		value, valid := m.value(entry)
+		answer.Points = append(answer.Points, newSeriesPoint(entry.TS, value, valid))
+	}
+	return answer, nil
 }

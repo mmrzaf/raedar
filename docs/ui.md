@@ -69,6 +69,12 @@ When the app has several routes, a selector switches the request charts between 
 
 **Events.** Events of the app in the selected range.
 
+## Compare `/compare`
+
+Several apps on one aligned timeline. Choose apps with the checkboxes, a group link (apps sharing a `raedar.group` label), or `?apps=a,b,c`; without a selection the busiest apps of the last hour are used. A **Totals** table ranks the apps over the range by 5xx responses: requests, share of the total, 5xx count and rate, share of all 5xx, p95, response traffic, and average CPU and memory. The last row combines the selection. Below it, aligned charts show requests, 5xx rate, p95, CPU, memory and response traffic per app with a dashed combined line, followed by the deploys and incidents of the selected apps.
+
+How the combination is computed: counts and bytes are summed; the combined 5xx rate is total 5xx over total requests, never an average of percentages; the combined p95 comes from the merged latency histograms; CPU and memory are summed across containers at each sample time and then averaged per bin; bins without data stay empty, they are never drawn as zero. The page shows correlations on a shared time axis and makes no claim about cause. A route with no requests has no row for the minute, so a gap means "nothing observed".
+
 ## Host `/host`
 
 The same chart layout and time range controls as the app page, for the host:
@@ -115,7 +121,7 @@ The pages load chart data from a small JSON API. It is meant for the UI; it is d
 | Endpoint | Returns |
 |---|---|
 | `GET /api/overview` | Everything on the overview page. |
-| `GET /api/series?series=…&series=…&from=…&to=…&points=…` | Time series, one per `series` parameter (at most 20), as `[timestamp, value]` pairs with `null` for a bin without data. A series reference is `kind/subject/metric` with every part percent-escaped: `app/shop/p95`, `route/shop%40docker/requests`, `slot/12/cpu` (the subject of a slot is its ID), `host//load1`, `disk/%2F/used`. Each answer carries its `unit`, `metric` and a `label`. A malformed reference or a metric the kind does not have is a `400`, an unknown app, route, slot or disk a `404`. |
+| `GET /api/series?series=…&series=…&from=…&to=…&points=…` | Time series, one per `series` parameter (at most 20), as `[timestamp, value]` pairs with `null` for a bin without data. A series reference is `kind/subject/metric` with every part percent-escaped: `app/shop/p95`, `route/shop%40docker/requests`, `slot/12/cpu` (the subject of a slot is its ID), `host//load1`, `disk/%2F/used`. The kind `apps` combines several apps (comma-separated subject, at most 12): `apps/shop,blog/error_rate` sums requests, errors and bytes, merges latency histograms for percentiles, and adds `cpu`, `memory`, `net_rx`, `net_tx` over all their containers plus `containers` (running count, minute data only). Each answer carries its `unit`, `metric` and a `label`. A malformed reference or a metric the kind does not have is a `400`, an unknown app, route, slot or disk a `404`. |
 | `GET /api/baseline?route=…&from=…&to=…` | Baseline values for the range. |
 | `GET /api/paths?app=…&route=…&from=…&to=…` | Path statistics. |
 | `GET /api/events?app=…&kind=…&from=…&to=…` | Events and incidents. |

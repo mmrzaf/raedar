@@ -287,3 +287,76 @@ func (s *Store) DiskSeries(ctx context.Context, disks []string, r Range, source 
 	}
 	return bins, nil
 }
+
+// ResourceBin is one bin of the combined resource use of several slots.
+type ResourceBin struct {
+	// TS is the start of the bin.
+	TS time.Time
+	// CPU is the combined CPU usage in millicores: the slots' values are added
+	// at each sample time, and the bin averages those sums.
+	CPU float64
+	// Memory is the combined working-set memory in bytes, combined like CPU.
+	Memory float64
+	// NetRx and NetTx are the network traffic of all slots in the bin, in bytes.
+	NetRx, NetTx int64
+	// Running is the average number of running containers. Only the minute
+	// tables record it, so it is valid only when HasRunning is true.
+	Running    float64
+	HasRunning bool
+}
+
+// ResourceSeries reads the combined resource use of the given slots. Gauges
+// are added across slots at every sample time before the bin averages them, so
+// two containers of 100 mc each are 200 mc, not their mean. Traffic is a sum.
+// A bin exists only where at least one slot has a sample; nothing is invented
+// for times without data.
+func (s *Store) ResourceSeries(ctx context.Context, slotIDs []int64, r Range, source RangeSource, bin time.Duration) ([]ResourceBin, error) {
+	if len(slotIDs) == 0 {
+		return nil, nil
+	}
+	var query string
+	if source == SourceHours {
+		query = `
+			select date_bin($4::double precision * interval '1 second', ts, $2::timestamptz) as bin,
+			       avg(cpu), avg(mem), sum(rx), sum(tx), 0::double precision, false
+			from (
+				select ts, sum(cpu_avg) cpu, sum(mem_avg) mem, sum(net_rx_bytes) rx, sum(net_tx_bytes) tx
+				from slot_hour
+				where slot_id = any($1) and ts >= $2 and ts < $3
+				group by ts
+			) per_hour
+			group by bin
+			order by bin`
+	} else {
+		query = `
+			select date_bin($4::double precision * interval '1 second', ts, $2::timestamptz) as bin,
+			       avg(cpu), avg(mem), sum(rx), sum(tx), avg(running), true
+			from (
+				select ts, sum(cpu_millicores) cpu, sum(mem_bytes) mem, sum(net_rx_bytes) rx,
+				       sum(net_tx_bytes) tx, sum(running::int) running
+				from slot_minute
+				where slot_id = any($1) and ts >= $2 and ts < $3
+				group by ts
+			) per_minute
+			group by bin
+			order by bin`
+	}
+	rows, err := s.pool.Query(ctx, query, slotIDs, r.From, r.To, bin.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("read resource series: %w", err)
+	}
+	defer rows.Close()
+	var bins []ResourceBin
+	for rows.Next() {
+		var entry ResourceBin
+		if err := rows.Scan(&entry.TS, &entry.CPU, &entry.Memory, &entry.NetRx, &entry.NetTx,
+			&entry.Running, &entry.HasRunning); err != nil {
+			return nil, fmt.Errorf("scan resource series: %w", err)
+		}
+		bins = append(bins, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read resource series: %w", err)
+	}
+	return bins, nil
+}

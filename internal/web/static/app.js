@@ -1,5 +1,5 @@
 // Entry point: each page draws only the parts it contains.
-import { drawAppCharts, drawHostCharts, drawIncidentChart, drawSparklines } from "./pages.js";
+import { drawAppCharts, drawCompareCharts, drawHostCharts, drawIncidentChart, drawSparklines } from "./pages.js";
 import { drawPatterns } from "./patterns.js";
 import { setupLogs } from "./logs.js";
 import { setupTables } from "./tables.js";
@@ -39,5 +39,6 @@ setupTables();
 setupLogs();
 drawAppCharts();
 drawHostCharts();
+drawCompareCharts();
 drawIncidentChart();
 drawPatterns();

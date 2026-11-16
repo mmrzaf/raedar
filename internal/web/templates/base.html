@@ -21,6 +21,7 @@
     </a>
     <nav class="nav" aria-label="Pages">
       <a href="/"{{if eq .Page.Nav "overview"}} aria-current="page"{{end}}>Overview</a>
+      <a href="/compare"{{if eq .Page.Nav "compare"}} aria-current="page"{{end}}>Compare</a>
       <a href="/host"{{if eq .Page.Nav "host"}} aria-current="page"{{end}}>Host</a>
       <a href="/patterns"{{if eq .Page.Nav "patterns"}} aria-current="page"{{end}}>Patterns</a>
       <a href="/events"{{if eq .Page.Nav "events"}} aria-current="page"{{end}}>Events</a>

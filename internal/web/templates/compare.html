@@ -1,0 +1,75 @@
+{{template "header" .}}
+{{with .Data}}
+<div class="page-head">
+  <div>
+    <h1>Compare</h1>
+    <p class="sub">Several apps on one aligned timeline, with exact combined totals. Relationships here are correlations, not proof of cause.</p>
+  </div>
+  <div class="toolbar">
+    <nav class="segmented" aria-label="Time range">
+      {{range $.RangePresets}}<a href="?apps={{$.Data.Joined}}&amp;range={{.Value}}"{{if eq .Value $.Data.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
+    </nav>
+  </div>
+</div>
+{{if .Apps}}
+<form class="card card-pad compare-picker" method="get">
+  <input type="hidden" name="range" value="{{.Range.Preset}}">
+  <fieldset>
+    <legend>Apps</legend>
+    {{range .Apps}}<label class="check"><input type="checkbox" name="apps" value="{{.Name}}"{{if .Selected}} checked{{end}}> {{.Name}}{{if .Group}} <span class="muted">· {{.Group}}</span>{{end}}</label>
+    {{end}}
+  </fieldset>
+  <div class="toolbar">
+    <button class="primary" type="submit">Compare</button>
+    {{if .Groups}}<span class="hint">Groups:</span>{{range .Groups}}<a href="?apps={{.Apps}}&amp;range={{$.Data.Range.Preset}}">{{.Name}}</a> {{end}}{{end}}
+  </div>
+</form>
+{{end}}
+{{if not .Selected}}
+<div class="card card-pad empty">{{if .Apps}}Select at least one app to compare.{{else}}No apps have been discovered yet.{{end}}</div>
+{{else}}
+<section class="section">
+  <div class="section-head"><h2>Totals</h2><span class="hint">{{datetime .Range.From}} – {{datetime .Range.To}} · rates come from summed counts, percentiles from merged histograms</span></div>
+  <div class="card"><div class="table-wrap"><table data-sortable data-table="compare">
+    <thead><tr><th>App</th><th class="num">Requests</th><th class="num">Share</th><th class="num">5xx</th><th class="num">5xx rate</th><th class="num">Share of 5xx</th><th class="num">p95</th><th class="num">Traffic</th><th class="num">CPU</th><th class="num">Memory</th></tr></thead>
+    <tbody>
+    {{range .Rows}}<tr>
+      <td><a href="/apps/{{.Name}}"><strong>{{.Name}}</strong></a></td>
+      <td class="num" data-sort="{{.Requests}}">{{count .Requests}}</td>
+      <td class="num" data-sort="{{.RequestShare}}">{{printf "%.0f" .RequestShare}}%</td>
+      <td class="num" data-sort="{{.S5xx}}">{{count .S5xx}}</td>
+      <td class="num" data-sort="{{.ErrorRate}}">{{if .RateKnown}}{{printf "%.2f" .ErrorRate}}%{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="num" data-sort="{{.ErrorShare}}">{{if .S5xx}}{{printf "%.0f" .ErrorShare}}%{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="num" data-sort="{{if .P95.Known}}{{.P95.MS}}{{end}}">{{.P95}}</td>
+      <td class="num" data-sort="{{.Bytes}}">{{bytes .Bytes}}</td>
+      <td class="num" data-sort="{{.CPU}}">{{if .ResourcesKnown}}{{cpu .CPU}}{{else}}<span class="muted" title="No container samples in this range">—</span>{{end}}</td>
+      <td class="num" data-sort="{{.Memory}}">{{if .ResourcesKnown}}{{bytes .Memory}}{{else}}<span class="muted">—</span>{{end}}</td>
+    </tr>{{end}}
+    </tbody>
+    {{with .Combined}}<tfoot><tr>
+      <th>{{.Name}}</th><td class="num">{{count .Requests}}</td><td class="num">100%</td><td class="num">{{count .S5xx}}</td>
+      <td class="num">{{if .RateKnown}}{{printf "%.2f" .ErrorRate}}%{{else}}—{{end}}</td><td class="num">{{if .S5xx}}100%{{else}}—{{end}}</td>
+      <td class="num">{{.P95}}</td><td class="num">{{bytes .Bytes}}</td>
+      <td class="num">{{if .ResourcesKnown}}{{cpu .CPU}}{{else}}—{{end}}</td><td class="num">{{if .ResourcesKnown}}{{bytes .Memory}}{{else}}—{{end}}</td>
+    </tr></tfoot>{{end}}
+  </table></div></div>
+</section>
+<div class="charts" data-compare="{{.Joined}}" data-from="{{.Range.From.Unix}}" data-to="{{.Range.To.Unix}}">
+  <section class="card"><div class="card-head"><h2>Requests</h2><span class="hint">dashed: combined</span></div><div class="chart" data-chart="requests"></div></section>
+  <section class="card"><div class="card-head"><h2>5xx rate</h2><span class="hint">dashed: combined, from summed counts</span></div><div class="chart" data-chart="errors"></div></section>
+  <section class="card"><div class="card-head"><h2>Latency p95</h2><span class="hint">dashed: merged histogram</span></div><div class="chart" data-chart="latency"></div></section>
+  <section class="card"><div class="card-head"><h2>CPU</h2><span class="hint">dashed: sum of all containers</span></div><div class="chart" data-chart="cpu"></div></section>
+  <section class="card"><div class="card-head"><h2>Memory</h2><span class="hint">dashed: sum of all containers</span></div><div class="chart" data-chart="memory"></div></section>
+  <section class="card"><div class="card-head"><h2>Response traffic</h2><span class="hint">dashed: combined</span></div><div class="chart" data-chart="bytes"></div></section>
+</div>
+<section class="section">
+  <div class="section-head"><h2>Deploys and incidents</h2></div>
+  <div class="card">
+  {{if .Events}}
+  <ul class="timeline">{{range .Events}}<li><time datetime="{{.TS.Format "2006-01-02T15:04:05Z07:00"}}">{{datetime .TS}}</time><span class="badge badge-{{.Severity}}">{{.Kind}}</span><span class="what">{{.Title}}{{if .App}} <span class="where">{{.App}}</span>{{end}}</span></li>{{end}}</ul>
+  {{else}}<div class="card-pad empty">No events for these apps in this range.</div>{{end}}
+  </div>
+</section>
+{{end}}
+{{end}}
+{{template "footer" .}}

@@ -360,3 +360,48 @@ func TestHostAndDiskSeries(t *testing.T) {
 		t.Errorf("disk bins = %+v, want the maximum used and minimum available", disks)
 	}
 }
+
+func TestResourceSeriesAddsSlotsBeforeAveraging(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	base := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	appID, err := st.UpsertApp(ctx, "shop", base)
+	if err != nil {
+		t.Fatalf("UpsertApp() error = %v", err)
+	}
+	var slots []int64
+	for _, key := range []string{"api #1", "db #1"} {
+		id, err := st.UpsertSlot(ctx, Slot{AppID: appID, Key: key, Service: key, Replica: 1}, base)
+		if err != nil {
+			t.Fatalf("UpsertSlot() error = %v", err)
+		}
+		slots = append(slots, id)
+	}
+	// Minute 0: both run (100+300 mc). Minute 1: only the first has a sample.
+	// Minute 3 has no samples at all and must not produce a bin.
+	for _, sample := range []SlotMinute{
+		{SlotID: slots[0], TS: base, CPUMillicores: 100, MemBytes: 1000, NetRxBytes: 5, Running: true},
+		{SlotID: slots[1], TS: base, CPUMillicores: 300, MemBytes: 3000, NetRxBytes: 7, Running: true},
+		{SlotID: slots[0], TS: base.Add(time.Minute), CPUMillicores: 200, MemBytes: 1000, NetRxBytes: 1, Running: true},
+	} {
+		if err := st.InsertSlotMinute(ctx, sample); err != nil {
+			t.Fatalf("InsertSlotMinute() error = %v", err)
+		}
+	}
+	bins, err := st.ResourceSeries(ctx, slots, Range{From: base, To: base.Add(4 * time.Minute)}, SourceMinutes, 4*time.Minute)
+	if err != nil {
+		t.Fatalf("ResourceSeries() error = %v", err)
+	}
+	if len(bins) != 1 {
+		t.Fatalf("bins = %d, want 1", len(bins))
+	}
+	got := bins[0]
+	// CPU sums are 400 and 200, so the bin averages 300; a mean over slots
+	// would report 200.
+	if got.CPU != 300 || got.Memory != 2500 || got.NetRx != 13 || got.Running != 1.5 || !got.HasRunning {
+		t.Errorf("bin = %+v, want cpu 300, memory 2500, rx 13, running 1.5", got)
+	}
+}

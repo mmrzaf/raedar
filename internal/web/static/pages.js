@@ -120,3 +120,36 @@ export function drawSparklines() {
     element.replaceChildren(svg);
   }
 }
+
+// drawCompareCharts draws the compare page: for every panel the selected apps
+// as solid lines and their combination as a dashed one. All series of a panel
+// come from one request range, so their bins line up exactly.
+export async function drawCompareCharts() {
+  const container = document.querySelector(".charts[data-compare]");
+  if (!container) return;
+  const apps = container.dataset.compare.split(",").filter(Boolean);
+  const span = range(container);
+  const combined = apps.join(",");
+  const panels = [
+    ["requests", "requests", "count"],
+    ["errors", "error_rate", "percent"],
+    ["latency", "p95", "ms"],
+    ["cpu", "cpu", "millicores"],
+    ["memory", "memory", "bytes"],
+    ["bytes", "bytes", "bytes"],
+  ];
+  await settle(panels.map(([name, metric]) => {
+    const target = chartIn(container, name);
+    return {
+      target,
+      run: async () => {
+        const refs = apps.map((app) => seriesRef("apps", app, metric));
+        if (apps.length > 1) refs.push(seriesRef("apps", combined, metric));
+        const series = (await fetchSeries(refs, ...span)).map((entry, index) => (
+          index < apps.length ? { ...entry, label: apps[index] } : { ...entry, label: "combined", dash: true, color: palette().text }
+        ));
+        drawChart(target, series, series[0]?.unit || "count", { range: span });
+      },
+    };
+  }));
+}
