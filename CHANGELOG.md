@@ -20,6 +20,8 @@ All notable changes to Raedar are listed here. The format follows
 
 ### Changed
 
+- Raedar's database connections disable PostgreSQL JIT, which made the first
+  14-day range query take seconds instead of a fraction of one.
 - **Configuration change for deployers.** `deploy/docker-compose.yml`,
   `deploy/db/init.sql` and the Gitman pipeline were removed; deployment is the
   operator's concern. Migration 0009 adds the active-check tables.

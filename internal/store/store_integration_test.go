@@ -536,3 +536,14 @@ func TestFailPendingDeliveries(t *testing.T) {
 		t.Fatalf("sent row = %q, %v; want untouched", status, err)
 	}
 }
+
+func TestConnectionsDisableJIT(t *testing.T) {
+	st := newStore(t)
+	var jit string
+	if err := st.pool.QueryRow(context.Background(), `show jit`).Scan(&jit); err != nil {
+		t.Fatalf("show jit: %v", err)
+	}
+	if jit != "off" {
+		t.Errorf("jit = %q, want off", jit)
+	}
+}
