@@ -4,6 +4,26 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - 2026-11-17
+
+### Added
+
+- **Compare page and combined series.** `/compare` and the `apps` series kind
+  combine several apps: summed counts, error rate from summed counts, p95 from
+  merged histograms, CPU and memory summed across containers. Optional
+  `raedar.group` label.
+- **Active availability checks** (`RAEDAR_PROBES`, off by default): bounded,
+  Traefik-only HTTP checks per route with `probe.failed` incidents, history and
+  labels `raedar.probe`, `raedar.probe.path`, `raedar.probe.expect`.
+- Portable deployment stack in `deploy/` (`compose.yaml`, `compose.host.yaml`):
+  bundled PostgreSQL, read-only socket proxy and basic auth by default.
+
+### Changed
+
+- **Configuration change for deployers.** `deploy/docker-compose.yml`,
+  `deploy/db/init.sql` and the Gitman pipeline were removed; deployment is the
+  operator's concern. Migration 0009 adds the active-check tables.
+
 ## [0.4.4] - 2026-10-29
 
 ### Added
