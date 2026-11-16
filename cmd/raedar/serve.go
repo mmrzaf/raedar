@@ -237,7 +237,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	start(hostStats.Run)
 	start(tlsChecks.Run)
 	if cfg.Probe.Enabled {
-		checker := probe.New(cfg.Probe, probe.Options{Address: cfg.Docker.TLSCheckAddr, UserAgent: "raedar-probe/" + version},
+		checker := probe.New(cfg.Probe, probe.Options{Address: cfg.Docker.TLSCheckAddr, UserAgent: accesslog.ProbeUserAgentPrefix + version},
 			discoverer, st, logger, clock.System())
 		start(checker.Run)
 	}

@@ -35,6 +35,8 @@ Container `inspect` output can contain environment variables; Raedar stores only
 
 ## Access log from a file
 
+With `-f` on the command line Compose does not load `compose.override.yaml` automatically; list it too (`-f compose.yaml -f compose.override.yaml`).
+
 ```yaml
 # compose.override.yaml
 services:
