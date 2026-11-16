@@ -27,6 +27,7 @@ import (
 	"github.com/mmrzaf/raedar/internal/source/accesslog"
 	"github.com/mmrzaf/raedar/internal/source/containers"
 	"github.com/mmrzaf/raedar/internal/source/host"
+	"github.com/mmrzaf/raedar/internal/source/probe"
 	"github.com/mmrzaf/raedar/internal/source/systemd"
 	"github.com/mmrzaf/raedar/internal/source/tlscheck"
 	"github.com/mmrzaf/raedar/internal/store"
@@ -235,6 +236,11 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	start(containerStats.Run)
 	start(hostStats.Run)
 	start(tlsChecks.Run)
+	if cfg.Probe.Enabled {
+		checker := probe.New(cfg.Probe, probe.Options{Address: cfg.Docker.TLSCheckAddr, UserAgent: accesslog.ProbeUserAgentPrefix + version},
+			discoverer, st, logger, clock.System())
+		start(checker.Run)
+	}
 	start(func(ctx context.Context) error { return keepLock(ctx, st, logger) })
 	var failure error
 	select {

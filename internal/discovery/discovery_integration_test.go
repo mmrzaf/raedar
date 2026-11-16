@@ -456,17 +456,17 @@ func TestResyncRecordsDeploysAndMerges(t *testing.T) {
 		t.Errorf("image IDs = %q, %q, want the short IDs", first.OldImageID, first.NewImageID)
 	}
 	// A deploy in another app is a separate event.
-	gitman := testContainer{
-		ID: "git1", Name: "gitman-1", Image: "gitman:1.0", ImageID: "sha256:" + strings.Repeat("f", 64),
-		Project: "gitman", Service: "gitman", Created: base,
+	billing := testContainer{
+		ID: "git1", Name: "billing-1", Image: "billing:1.0", ImageID: "sha256:" + strings.Repeat("f", 64),
+		Project: "billing", Service: "billing", Created: base,
 	}
-	fake.set(apiV2, webV2, gitman)
+	fake.set(apiV2, webV2, billing)
 	mustResync(t, d)
-	gitmanV2 := gitman
-	gitmanV2.ID, gitmanV2.Image = "git2", "gitman:1.1"
-	gitmanV2.ImageID = "sha256:" + strings.Repeat("0", 64)
-	gitmanV2.Created = base.Add(4 * time.Minute)
-	fake.set(apiV2, webV2, gitmanV2)
+	billingV2 := billing
+	billingV2.ID, billingV2.Image = "git2", "billing:1.1"
+	billingV2.ImageID = "sha256:" + strings.Repeat("0", 64)
+	billingV2.Created = base.Add(4 * time.Minute)
+	fake.set(apiV2, webV2, billingV2)
 	mustResync(t, d)
 	if got := countEvents(t, conn, "deploy"); got != 2 {
 		t.Errorf("deploy events = %d, want 2", got)
@@ -672,7 +672,7 @@ func TestRunRecordsLifecycleOnlyForTrackedContainers(t *testing.T) {
 	})
 	// A short-lived container of some tool, a one-off run and the service
 	// itself, which was recreated and has not been resynced yet.
-	stray := testContainer{ID: "tmp1", Name: "gitman-9f2c-3", Image: "gitman:1.0"}
+	stray := testContainer{ID: "tmp1", Name: "billing-9f2c-3", Image: "billing:1.0"}
 	oneOff := apiContainer("run1", "shop/api:1.0", "", base)
 	oneOff.Name = "shop-api-run-1a2b"
 	oneOff.Labels = map[string]string{labelComposeOneOff: "True"}

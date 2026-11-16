@@ -16,15 +16,44 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}
+  group: ci-${{ github.workflow }}-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 env:
   STATICCHECK_VERSION: 2026.2.2
 
 jobs:
-  go:
-    name: Go
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+
+      - name: Staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: ${{ env.STATICCHECK_VERSION }}
+          install-go: false
+
+  test:
+    name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -47,25 +76,12 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Formatting
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-
-      - name: Vet
-        run: |
-          go vet ./...
-          go vet -tags integration ./...
-
-      - name: Staticcheck
-        uses: dominikh/staticcheck-action@v1
-        with:
-          version: ${{ env.STATICCHECK_VERSION }}
-          install-go: false
 
       - name: Build
         run: go build ./...
@@ -76,7 +92,17 @@ jobs:
       - name: Integration tests
         run: go test -race -tags integration -count=1 ./...
 
-      - name: Docker image
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Build and check the image
         run: |
           set -euo pipefail
           version="$(cat VERSION)"

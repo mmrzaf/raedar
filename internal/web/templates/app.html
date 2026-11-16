@@ -9,6 +9,7 @@
     {{if .App.Domains}}<p class="sub">{{range $i, $d := .App.Domains}}{{if $i}} · {{end}}{{$d.Name}}{{if and $d.Status (ne $d.Status "ok")}} <span class="badge badge-{{if or (eq $d.Status "ok") (eq $d.Status "private")}}ok{{else if eq $d.Status "expiring"}}warning{{else}}critical{{end}}">{{$d.Status}}</span>{{end}}{{end}}</p>{{end}}
   </div>
   <div class="toolbar">
+    <a href="/compare?apps={{.App.Name}}&amp;range={{$.Data.Range.Preset}}">Compare with other apps</a>
     <span class="hint">Drag across a chart to zoom, click it to open the logs</span>
     <nav class="segmented" aria-label="Time range">
       {{range $.RangePresets}}<a href="?range={{.Value}}"{{if eq .Value $.Data.Range.Preset}} aria-current="page"{{end}}>{{.Name}}</a>{{end}}
@@ -24,6 +25,22 @@
   <section class="card"><div class="card-head"><h2>Memory</h2></div><div class="chart" data-chart="memory"></div></section>
   <section class="card"><div class="card-head"><h2>Network</h2></div><div class="chart" data-chart="network"></div></section>
 </div>
+{{if .Checks}}
+<section class="section">
+  <div class="section-head"><h2>Availability checks</h2><span class="hint">synthetic requests sent by Raedar through Traefik, not user traffic</span></div>
+  <div class="card"><div class="table-wrap"><table>
+    <thead><tr><th>Route</th><th>Checks</th><th>State</th><th class="num">Healthy in range</th><th class="num">Last</th></tr></thead>
+    <tbody>{{range .Checks}}<tr>
+      <td><strong>{{.Route}}</strong></td>
+      {{if .NotChecked}}<td colspan="4" class="muted">not checked: {{.NotChecked}}</td>
+      {{else}}<td class="mono">{{.Target}}</td>
+      <td><span class="badge badge-{{if eq .State "healthy"}}ok{{else if eq .State "unknown"}}warning{{else}}critical{{end}}">{{.State}}</span>{{if .Since.IsZero}}{{else}} <span class="muted">since {{relative .Since}}</span>{{end}}{{if and .Error (ne .LastResult "healthy")}}<br><span class="muted">latest check: {{.Error}}</span>{{end}}</td>
+      <td class="num">{{if .Checks}}{{printf "%.2f" .Availability}}% <span class="muted">of {{count .Checks}}</span>{{else}}<span class="muted">no checks in range</span>{{end}}</td>
+      <td class="num">{{if .LastChecked.IsZero}}<span class="muted">—</span>{{else}}{{if .Status}}HTTP {{.Status}} · {{.LatencyMS}} ms · {{end}}{{relative .LastChecked}}{{end}}</td>{{end}}
+    </tr>{{end}}</tbody>
+  </table></div></div>
+</section>
+{{end}}
 <section class="section">
   <div class="section-head"><h2>Containers</h2></div>
   <div class="card">

@@ -124,6 +124,12 @@ func defaults() *Config {
 				DeploySilence:     5 * time.Minute,
 			},
 		},
+		Probe: ProbeConfig{
+			Interval:    time.Minute,
+			Timeout:     5 * time.Second,
+			Concurrency: 4,
+			Path:        "/",
+		},
 		Heartbeat: HeartbeatConfig{
 			Interval: time.Minute,
 			Timeout:  3 * time.Minute,

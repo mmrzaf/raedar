@@ -63,3 +63,7 @@ Messages leave the host through third-party services (Telegram, the SMS provider
 ## Reporting a vulnerability
 
 See [SECURITY.md](../SECURITY.md).
+
+## Active checks
+
+When enabled, Raedar sends plain `GET` requests, with no credentials or cookies, only to Traefik's HTTPS address for routes it discovered. It never follows redirects or contacts other hosts. A protected route that answers 401 or 403 counts as alive.

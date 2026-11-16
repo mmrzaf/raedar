@@ -543,3 +543,17 @@ func TestModulesImportExistingFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestErrorRateOfCombinedTotalsIsNotTheMeanOfRates(t *testing.T) {
+	a := requestTotals{Requests: 40, S5xx: 1}
+	b := requestTotals{Requests: 60, S5xx: 5}
+	combined := a
+	combined.add(b)
+	rate, known := combined.errorRate()
+	if !known || rate != 6 {
+		t.Errorf("combined rate = %v, %v; want 6", rate, known)
+	}
+	if _, known := (requestTotals{}).errorRate(); known {
+		t.Error("a total without requests must have an unknown rate, not 0%")
+	}
+}

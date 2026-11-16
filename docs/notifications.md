@@ -63,7 +63,7 @@ Any 2xx response counts as delivered. Raedar retries 4xx/5xx with the same cappe
 Example for a provider expecting JSON:
 
 ```
-RAEDAR_SMS_TO=+989120000000
+RAEDAR_SMS_TO=+15555550100
 RAEDAR_SMS_FROM=10004346
 RAEDAR_SMS_HTTP_URL=https://sms.example.com/v1/send
 RAEDAR_SMS_HTTP_HEADERS=Authorization: Bearer xxxxxxxx
@@ -74,7 +74,7 @@ RAEDAR_SMS_HTTP_ENCODING=json
 Example for a provider that takes an API key in the URL path (for example, the Iranian panel at `api.example.com/v1/<key>/sms/send.json`):
 
 ```
-RAEDAR_SMS_TO=+989120000000
+RAEDAR_SMS_TO=+15555550100
 RAEDAR_SMS_FROM=10004346
 RAEDAR_SMS_HTTP_URL=https://api.example.com/v1/{{api_key}}/sms/send.json?receptor={{to}}&message={{message}}&sender={{from}}
 RAEDAR_SMS_HTTP_BODY=

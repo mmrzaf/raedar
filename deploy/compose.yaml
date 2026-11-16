@@ -1,0 +1,100 @@
+# Raedar: a read-only monitor for one Docker host behind Traefik.
+#
+# Core stack: raedar + PostgreSQL + a read-only Docker socket proxy.
+# Optional host metrics and systemd access live in compose.host.yaml.
+#
+#   cp .env.example .env && chmod 600 .env     # then edit it; app settings: raedar.env.example
+#   docker compose up -d
+#
+# The UI has no login. This file protects it with HTTP basic auth defined in
+# labels; see README.md for alternatives. Never publish port 8080.
+name: raedar
+
+services:
+  raedar:
+    image: ${RAEDAR_IMAGE:-ghcr.io/mmrzaf/raedar:latest}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "65534:65534"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    tmpfs: ["/tmp:size=16m"]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 256
+    # Application settings (optional file; see raedar.env.example). Compose-level
+    # values such as the database password stay in .env.
+    env_file:
+      - {path: raedar.env, required: false}
+    environment:
+      RAEDAR_DATABASE_URL: postgres://raedar:${RAEDAR_DB_PASSWORD:?set RAEDAR_DB_PASSWORD in .env}@postgres:5432/raedar?sslmode=disable
+      RAEDAR_DOCKER_HOST: tcp://socket-proxy:2375
+    depends_on:
+      postgres: {condition: service_healthy}
+      socket-proxy: {condition: service_started}
+    expose: ["8080"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/raedar", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+    networks: [default, socket, traefik]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+      traefik.http.services.raedar.loadbalancer.server.port: "8080"
+      traefik.http.routers.raedar.rule: Host(`${RAEDAR_DOMAIN:?set RAEDAR_DOMAIN in .env}`)
+      traefik.http.routers.raedar.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.raedar.tls: "true"
+      traefik.http.routers.raedar.tls.certresolver: ${TRAEFIK_CERT_RESOLVER:-}
+      traefik.http.middlewares.raedar-auth.basicauth.users: ${RAEDAR_BASIC_AUTH:?set RAEDAR_BASIC_AUTH in .env (htpasswd line, $ written as $$)}
+      # raedar-auth is always applied. Append your own middlewares (for example
+      # an IP allow-list) with RAEDAR_EXTRA_MIDDLEWARES=name@provider.
+      traefik.http.routers.raedar.middlewares: raedar-auth@docker${RAEDAR_EXTRA_MIDDLEWARES:+,${RAEDAR_EXTRA_MIDDLEWARES}}
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: raedar
+      POSTGRES_DB: raedar
+      POSTGRES_PASSWORD: ${RAEDAR_DB_PASSWORD}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raedar -d raedar"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  # Read-only view of the Docker API. Only GET endpoints Raedar uses are on.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1   # inspect, stats, logs
+      EVENTS: 1
+      INFO: 1
+      PING: 1
+      VERSION: 1
+      SYSTEM: ${SOCKET_PROXY_SYSTEM:-1}   # /system/df: Docker disk usage; 0 turns it off
+      POST: 0
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+    networks: [socket]
+
+volumes:
+  postgres-data:
+
+networks:
+  socket:
+    internal: true
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

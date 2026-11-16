@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/mmrzaf/raedar/internal/config"
+	"github.com/mmrzaf/raedar/internal/discovery"
+	"github.com/mmrzaf/raedar/internal/source/probe"
 	"github.com/mmrzaf/raedar/internal/store"
 )
 
@@ -33,6 +36,32 @@ type appPageData struct {
 	Paths      []pathView
 	Events     []eventView
 	Containers []containerView
+	// Checks are the active availability checks of the app's routes; nil when
+	// the feature is off.
+	Checks []checkView
+}
+
+// checkView is the active availability check of one route. It is synthetic:
+// it says nothing about real user requests.
+type checkView struct {
+	Route string
+	// Target is what is requested; empty when the route is not checked.
+	Target string
+	// NotChecked is why the route is not checked.
+	NotChecked string
+	// State is healthy, unhealthy, unreachable or unknown.
+	State string
+	// LastResult is the outcome of the newest single check; it can differ
+	// from State while the verdict waits for more evidence.
+	LastResult  string
+	Since       time.Time
+	LastChecked time.Time
+	Status      int
+	LatencyMS   int
+	Error       string
+	// Availability is the share of healthy checks in the range.
+	Availability float64
+	Checks       int64
 }
 
 // appDetail is the app header.
@@ -202,11 +231,16 @@ func (s *Server) appPage(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, "cannot read the events", http.StatusInternalServerError)
 		return
 	}
+	checks, err := s.checkViews(request.Context(), app, timeRange)
+	if err != nil {
+		http.Error(w, "cannot read the availability checks", http.StatusInternalServerError)
+		return
+	}
 	s.render(w, "app.html", map[string]any{
 		"Page": pageData{Title: app.Name, HostName: s.cfg.HostName, Now: now, Version: s.version,
 			Sources: s.sourceViews(request), Nav: "overview", Location: s.cfg.Location},
 		"App":          detail,
-		"Data":         appPageData{App: detail, Range: timeRange, Paths: paths, Events: events, Containers: detail.Containers},
+		"Data":         appPageData{App: detail, Range: timeRange, Paths: paths, Events: events, Containers: detail.Containers, Checks: checks},
 		"RangePresets": rangePresets(),
 	})
 }
@@ -493,4 +527,51 @@ func maskURL(value string) string {
 		}
 	}
 	return value
+}
+
+// checkViews returns the active check of every HTTP route of an app, or nil
+// when active checks are off. Routes that cannot be checked are listed with
+// the reason, so a missing history is explained.
+func (s *Server) checkViews(ctx context.Context, app *discovery.App, r rangeView) ([]checkView, error) {
+	if !s.cfg.Probe.Enabled {
+		return nil, nil
+	}
+	states, err := s.store.ProbeStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	window := store.Range{From: r.From, To: r.To}
+	source, _ := store.Resolution(window, s.cfg.Retention.Minute, s.clock.Now())
+	var views []checkView
+	for _, name := range sortedKeys(app.Routes) {
+		route := app.Routes[name]
+		if route.Kind != "http" || discovery.IsCatchAllRoute(name) {
+			continue
+		}
+		view := checkView{Route: name, State: store.ProbeUnknown}
+		target, reason := probe.Plan(route, s.cfg.Probe.Path)
+		if reason != "" {
+			view.NotChecked = reason
+			views = append(views, view)
+			continue
+		}
+		view.Target = target.String()
+		if state, ok := states[route.ID]; ok {
+			view.State, view.LastResult, view.Since, view.LastChecked, view.Error = state.State, state.LastResult, state.Since, state.LastChecked, state.Error
+			if state.StatusCode != nil {
+				view.Status = *state.StatusCode
+			}
+			if state.LatencyMS != nil {
+				view.LatencyMS = *state.LatencyMS
+			}
+		}
+		total, err := s.store.ProbeAvailability(ctx, []int64{route.ID}, window, source)
+		if err != nil {
+			return nil, err
+		}
+		view.Checks = total.Checks
+		view.Availability, _ = total.Percent()
+		views = append(views, view)
+	}
+	return views, nil
 }

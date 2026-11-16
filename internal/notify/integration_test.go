@@ -27,7 +27,7 @@ func TestPagerRowsPerIncidentAndChat(t *testing.T) {
 	ctx := t.Context()
 
 	incA := insertIncident(t, ctx, st, "route.down", "fallback@file", store.SeverityCritical)
-	incB := insertIncident(t, ctx, st, "route.down", "waiotech-api@docker", store.SeverityWarning)
+	incB := insertIncident(t, ctx, st, "route.down", "shop-api@docker", store.SeverityWarning)
 
 	tg := &scriptedTelegram{
 		chatIDs: []string{"101", "202"},

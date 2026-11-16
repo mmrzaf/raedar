@@ -108,6 +108,10 @@ All labels are optional.
 | `raedar.latency.ignore=/ws,/events` | any container of an app | Path prefixes excluded from latency for the app's routes, for WebSockets, server-sent events and long downloads. |
 | `raedar.errors.min_rate=5%` | any container of an app | Overrides `RAEDAR_ERRORS_MIN_RATE` for the app's routes. |
 | `raedar.slow.min_p95=800ms` | any container of an app | Overrides `RAEDAR_SLOW_MIN_P95` for the app's routes. |
+| `raedar.group=<name>` | any container of an app | Put the app in a logical group (a subsystem of several Compose projects). The Compare page can select a whole group. Optional; any set of apps can be compared without it. |
+| `raedar.probe=false` | any container of an app | No active availability checks for the app (see [data-sources.md](data-sources.md#active-checks)). |
+| `raedar.probe.path=/healthz` | any container of an app | Path the active check requests instead of `/`. |
+| `raedar.probe.expect=200-299` | any container of an app | Status codes that count as healthy for the active check, for example `200`, `200-299` or `200,401`. |
 | `raedar.traefik=true` | the Traefik container | Marks Traefik when it cannot be detected by image name. |
 
 App-level labels are read from all containers of the app. If two containers disagree, the most recently created container wins.

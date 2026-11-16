@@ -25,6 +25,9 @@ const (
 	RuleRouteSlow = "route.slow"
 	// RuleRouteDown alerts on requests that reached no backend.
 	RuleRouteDown = "route.down"
+	// RuleProbeFailed alerts on a route whose active availability check keeps
+	// failing, whether or not users are sending requests.
+	RuleProbeFailed = "probe.failed"
 	// RuleContainerCrashed reports a container that exited on its own.
 	RuleContainerCrashed = "container.crashed"
 	// RuleContainerRestarting reports a crash loop.

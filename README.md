@@ -12,7 +12,8 @@ Raedar runs as one container next to your apps. It finds your apps from Docker C
 - **Nothing to configure per app.** New apps, routes and domains appear on their own. Error and latency alerts compare each route with its own normal behavior.
 - **History you can read.** Requests, errors, latency, CPU and memory per app on one time axis, with deploys and crashes marked on it. Click any moment to see the container logs from then.
 - **Patterns.** Week heatmaps, daily profiles and long-term trends show when things tend to happen.
-- **Read-only and small.** One process, read-only access to Docker through a socket proxy, history in your existing PostgreSQL.
+- **Compare.** Several apps on one aligned timeline with exact combined totals; optional active availability checks for idle apps.
+- **Read-only and small.** One process, read-only access to Docker through a socket proxy, history in PostgreSQL (bundled in the example stack, or your own).
 
 ## Requirements
 
@@ -23,11 +24,11 @@ Raedar runs as one container next to your apps. It finds your apps from Docker C
 
 ## Documentation
 
-Start with the [overview](docs/overview.md), or see [all documents](docs/README.md). Installation is described in [deployment](docs/deployment.md).
+Start with the [overview](docs/overview.md), or see [all documents](docs/README.md). Install with the portable Compose stack in [deploy/](deploy/README.md).
 
 ## Status
 
-Raedar is in early development. The design is described in [docs](docs/README.md), and the [changelog](CHANGELOG.md) lists what changed in each release.
+Raedar is approaching 1.0. The design is described in [docs](docs/README.md), and the [changelog](CHANGELOG.md) lists what changed in each release.
 
 ## License
 

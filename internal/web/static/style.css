@@ -490,3 +490,12 @@ input.narrow { width: 5.5em; }
   .heatmap .hour, .heatmap .day { font-size: 10px; }
   .legend-scale { padding: 0 12px 12px; }
 }
+
+/* Compare page */
+.compare-picker { display: grid; gap: 12px; margin-bottom: 18px; }
+.compare-picker fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.compare-picker legend { font-size: 12px; color: var(--muted); font-weight: 550; margin-bottom: 6px; padding: 0; }
+.check { display: inline-flex; align-items: center; gap: 6px; }
+.check input { width: auto; }
+tfoot th, tfoot td { border-top: 1px solid var(--grid); font-weight: 600; }
+tfoot th { text-align: left; }

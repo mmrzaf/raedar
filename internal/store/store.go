@@ -52,6 +52,9 @@ func openStore(ctx context.Context, databaseURL string, logger *slog.Logger, ret
 	}
 	poolConfig.MaxConns = maxConnections
 	poolConfig.ConnConfig.RuntimeParams["timezone"] = "UTC"
+	// JIT compilation costs seconds on the first large range query and gains
+	// nothing for these short aggregations.
+	poolConfig.ConnConfig.RuntimeParams["jit"] = "off"
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("create connection pool: %w", err)

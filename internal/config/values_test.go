@@ -488,6 +488,26 @@ func variableCases() map[string]valueCase {
 			extra: map[string]string{"RAEDAR_HEARTBEAT_URL": "https://hb.example.com/host-1"},
 			check: wantHeader(Header{Name: "Authorization", Value: "Bearer token"}),
 		},
+		"RAEDAR_PROBES": {
+			value: "on",
+			check: wantBoolField(func(c *Config) bool { return c.Probe.Enabled }, true),
+		},
+		"RAEDAR_PROBE_INTERVAL": {
+			value: "2m",
+			check: wantDuration(func(c *Config) time.Duration { return c.Probe.Interval }, 2*time.Minute),
+		},
+		"RAEDAR_PROBE_TIMEOUT": {
+			value: "3s",
+			check: wantDuration(func(c *Config) time.Duration { return c.Probe.Timeout }, 3*time.Second),
+		},
+		"RAEDAR_PROBE_CONCURRENCY": {
+			value: "8",
+			check: wantInt(func(c *Config) int { return c.Probe.Concurrency }, 8),
+		},
+		"RAEDAR_PROBE_PATH": {
+			value: "/healthz",
+			check: wantString(func(c *Config) string { return c.Probe.Path }, "/healthz"),
+		},
 		"RAEDAR_HEARTBEAT_INTERVAL": {
 			value: "2m",
 			check: wantDuration(func(c *Config) time.Duration { return c.Heartbeat.Interval }, 2*time.Minute),
@@ -674,6 +694,11 @@ func TestVariableNames(t *testing.T) {
 		"RAEDAR_WEBHOOK_URL",
 		"RAEDAR_WEBHOOK_SECRET",
 		"RAEDAR_SUBJECT_NAMES",
+		"RAEDAR_PROBES",
+		"RAEDAR_PROBE_INTERVAL",
+		"RAEDAR_PROBE_TIMEOUT",
+		"RAEDAR_PROBE_CONCURRENCY",
+		"RAEDAR_PROBE_PATH",
 		"RAEDAR_HEARTBEAT_URL",
 		"RAEDAR_HEARTBEAT_HEADER",
 		"RAEDAR_HEARTBEAT_INTERVAL",

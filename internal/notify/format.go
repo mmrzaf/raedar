@@ -262,6 +262,8 @@ func incidentSummary(incident store.Incident) string {
 			line += fmt.Sprintf(" (usual at this hour: %s)", milliseconds(details["baseline_ms"]))
 		}
 		return line
+	case "probe.failed":
+		return probeLine(incident)
 	case "route.down":
 		requests, _ := number(details["requests"])
 		noBackend, _ := number(details["no_backend"])
@@ -440,6 +442,8 @@ func smsSummary(incident store.Incident) string {
 		return fmt.Sprintf("%s of requests fail", percent(details["rate"], 0))
 	case "route.slow":
 		return fmt.Sprintf("slow p95 %s", milliseconds(details["p95_ms"]))
+	case "probe.failed":
+		return "check " + stringDetail(incident, "state")
 	case "route.down":
 		requests, _ := number(details["requests"])
 		noBackend, _ := number(details["no_backend"])
@@ -482,6 +486,8 @@ func smsSummary(incident store.Incident) string {
 // shortRule returns a one-word label for a rule.
 func shortRule(rule string) string {
 	switch rule {
+	case "probe.failed":
+		return "check failed"
 	case "route.down":
 		return "down"
 	case "route.errors":
@@ -630,6 +636,8 @@ func stringListDetail(incident store.Incident, key string) []string {
 func actionLine(incident store.Incident) string {
 	details := decodeDetails(incident)
 	switch incident.Rule {
+	case "probe.failed":
+		return "check the container and Traefik routing behind this route"
 	case "route.down":
 		return "check the container behind this route"
 	case "route.errors":
@@ -700,4 +708,19 @@ func bytesText(value any) string {
 		return fmt.Sprintf("%.0f %s", number, units[unit])
 	}
 	return fmt.Sprintf("%.1f %s", number, units[unit])
+}
+
+// probeLine describes a failed active availability check. The check is
+// synthetic: the line says so, so it is not mistaken for user traffic.
+func probeLine(incident store.Incident) string {
+	line := "availability check " + stringDetail(incident, "state")
+	if status, ok := number(decodeDetails(incident)["status"]); ok {
+		line += fmt.Sprintf(" (HTTP %d)", int(status))
+	} else if reason := stringDetail(incident, "error"); reason != "" {
+		line += " (" + reason + ")"
+	}
+	if target := stringDetail(incident, "target"); target != "" {
+		line = target + ": " + line
+	}
+	return line
 }

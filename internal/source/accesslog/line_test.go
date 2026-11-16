@@ -114,3 +114,14 @@ func TestLineCountLatency(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLineSkipsActiveChecks(t *testing.T) {
+	check := `{"DownstreamStatus":200,"RouterName":"shop@docker","request_User-Agent":"raedar-probe/1.0.0","time":"2026-10-18T10:00:00Z"}`
+	if _, ok := parseLine([]byte(check)); ok {
+		t.Error("an active check was counted as user traffic")
+	}
+	user := `{"DownstreamStatus":200,"RouterName":"shop@docker","request_User-Agent":"Mozilla/5.0","time":"2026-10-18T10:00:00Z"}`
+	if _, ok := parseLine([]byte(user)); !ok {
+		t.Error("a user request was dropped")
+	}
+}

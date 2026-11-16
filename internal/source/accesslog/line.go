@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// ProbeUserAgentPrefix starts the User-Agent of Raedar's active checks.
+const ProbeUserAgentPrefix = "raedar-probe/"
+
 // line is one access log line as Traefik writes it.
 type line struct {
 	Time                  time.Time `json:"time"`
@@ -21,6 +24,7 @@ type line struct {
 	DownstreamStatus      int       `json:"DownstreamStatus"`
 	OriginStatus          int       `json:"OriginStatus"`
 	DownstreamContentSize int64     `json:"DownstreamContentSize"`
+	UserAgent             string    `json:"request_User-Agent"`
 }
 
 // Line is one parsed access log entry.
@@ -58,6 +62,11 @@ func parseLine(data []byte) (Line, bool) {
 		return Line{}, false
 	}
 	if entry.DownstreamStatus < 100 {
+		return Line{}, false
+	}
+	// Raedar's own active checks are synthetic; they must not count as user
+	// traffic. Traefik logs the header only when configured to keep it.
+	if strings.HasPrefix(entry.UserAgent, ProbeUserAgentPrefix) {
 		return Line{}, false
 	}
 	when := entry.Time

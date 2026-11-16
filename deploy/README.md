@@ -1,71 +1,62 @@
-# Raedar on the Waiotech host
+# Deploying Raedar
 
-Raedar runs next to the other apps on `fastcreate-733261`, behind the existing
-Traefik and on the shared PostgreSQL. A `v*` tag makes Gitman build
-`raedar:<version>` on the host and recreate the stack. GitHub is only a mirror
-and publishes the same version independently.
+A portable Docker Compose stack: Raedar, its own PostgreSQL, and a read-only Docker socket proxy. It joins your existing Traefik; nothing about your host layout is assumed.
 
-## Requirements on the host
+## Prerequisites
 
-- The `golang:1.27-alpine` image for the build stage (the Gitman pipeline waits
-  for it); the runtime image needs no base.
-- The `proxy`, `socket`, `data` and `zld_panel_egress` networks.
-- Traefik with the `security-headers`, `arvancloud-only` and `admin-auth`
-  middlewares, and the wildcard certificate that covers `*.waiotech.com`.
-- The socket proxy (`tcp://socket-proxy:2375`); Docker disk usage stays empty
-  because `/system/df` is not permitted.
-- The Traefik JSON access log at `/srv/logs/traefik/access.log`.
+- Docker with Compose v2, and Traefik v3 running as a container on a Docker network (default name `traefik`, override with `TRAEFIK_NETWORK`).
+- Traefik JSON access logs on stdout (`accessLog.format: json`, no `filePath`), or a log file you mount (see below).
 
-## First deploy
+## Install
 
 ```sh
-cd /srv/apps/raedar
-cp .env.example .env
-chmod 600 .env
-# Fill in APP_DB_PASSWORD (openssl rand -hex 32), the channels and any optional
-# settings. Never commit .env.
-docker exec -i -e PGPASSWORD="$(docker exec postgres printenv POSTGRES_PASSWORD)" postgres \
-  psql -U postgres -v ON_ERROR_STOP=1 \
-  -v db=raedar -v user=raedar -v password="$(grep '^APP_DB_PASSWORD=' .env | cut -d= -f2-)" \
-  < db/init.sql
+cp .env.example .env && chmod 600 .env
+# set RAEDAR_DOMAIN, RAEDAR_DB_PASSWORD and RAEDAR_BASIC_AUTH in .env
+# optional app settings (notifications, timezone, probes): cp raedar.env.example raedar.env
+docker compose up -d
+docker compose exec raedar raedar check
 ```
 
-The Gitman pipeline builds the image, writes `docker-compose.yml`, `README.md`,
-`.env.example` and `db/init.sql`, points `APP_IMAGE` at the pinned image and
-recreates the stack. The first deploy needs the `.env` above to exist.
+Add `-f compose.yaml -f compose.host.yaml` to every `docker compose` command to also read host disk usage and systemd (read-only mounts of `/` and the D-Bus socket). Skip it for the smallest install; those sources then show as unavailable in the UI instead of empty.
 
-## Verify
+## Access control
+
+Raedar has no login. `compose.yaml` attaches an HTTP basic-auth middleware (`raedar-auth`) to the router so a fresh install is never open. Replace or extend it with `RAEDAR_EXTRA_MIDDLEWARES` (for example an IP allow-list or forward-auth middleware). Do not publish port 8080.
+
+## Security of the mounts
+
+| Mount | Why | Risk | Disable |
+|---|---|---|---|
+| `socket-proxy` (GET only: containers, events, info, version, system) | discovery, stats, lifecycle, logs | container logs and environment-free inspect data are readable; no writes | `SOCKET_PROXY_SYSTEM=0` drops disk usage |
+| `/` read-only (`compose.host.yaml`) | disk/inode usage, hostname | world-readable host files | leave the file out |
+| D-Bus socket (`compose.host.yaml`) | systemd units/timers | read of unit state | `RAEDAR_SYSTEMD=off` |
+
+Container `inspect` output can contain environment variables; Raedar stores only identity, image, state, health and network facts, never environment values.
+
+## Access log from a file
+
+With `-f` on the command line Compose does not load `compose.override.yaml` automatically; list it too (`-f compose.yaml -f compose.override.yaml`).
+
+```yaml
+# compose.override.yaml
+services:
+  raedar:
+    volumes: ["/var/log/traefik:/logs:ro"]
+    environment: {RAEDAR_ACCESSLOG_PATH: /logs/access.log}
+```
+
+The file must be readable by uid 65534.
+
+## Upgrade, backup, restore
 
 ```sh
-docker compose ps
-docker exec raedar raedar healthcheck
-docker exec raedar raedar check
-docker exec raedar raedar notify-test
-curl -sk -H 'Host: raedar.waiotech.com' https://127.0.0.1/ -o /dev/null -w '%{http_code}\n'
+docker compose pull && docker compose up -d        # migrations run on start
+docker compose exec -T postgres pg_dump -U raedar raedar | gzip > raedar-$(date +%F).sql.gz
+gunzip -c raedar-DATE.sql.gz | docker compose exec -T postgres psql -U raedar -d raedar   # into an empty database
 ```
 
-From the host, a `403` from `arvancloud-only` (or a `401` from `admin-auth`)
-proves Traefik routed the request; `404` means the router is missing and `503`
-means the container is unhealthy. Open `https://raedar.waiotech.com` with the
-admin credentials.
+Migrations are forward-only; back up before a release that changes the schema, and do not run an older image against a newer schema.
 
-Within two minutes the overview shows apps, containers and host data. Request
-data appears as traffic arrives. Baselines need three days.
+## Using an existing PostgreSQL
 
-## Updates and rollback
-
-A release is a `v*` tag on a commit of `main` that passed CI, with `VERSION`
-matching the tag. Push the tag to Gitman (it builds and deploys it); pushing it
-to GitHub publishes the portable image and the release. Roll back by rerunning
-an older successful run in Gitman, or by pinning an older `APP_IMAGE` and
-running `docker compose up -d --no-build --pull never`.
-
-Database migrations are forward-only. Back up the database before a release
-that changes the schema (`~/dev/servers/waiotech/scripts/backup.sh`); an older
-image cannot read a newer schema.
-
-## Data
-
-Raedar keeps everything in PostgreSQL; it has no local state. The container
-logs go through the host's json-file rotation. The Traefik access log is
-mounted read-only and is never copied.
+Remove the `postgres` service, drop its `depends_on` entry and set `RAEDAR_DATABASE_URL` yourself (use `RAEDAR_DATABASE_URL_FILE` to keep the password in a secret file). PostgreSQL 14 or newer is required.

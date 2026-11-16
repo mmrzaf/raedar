@@ -97,6 +97,13 @@ func variables() []variable {
 		{name: "RAEDAR_SUBJECT_NAMES", apply: parseVar(func(c *Config) *SubjectNames { return &c.SubjectNames }, parseSubjectNames)},
 
 		// Heartbeats
+		// Active availability checks
+		{name: "RAEDAR_PROBES", apply: parseVar(func(c *Config) *bool { return &c.Probe.Enabled }, parseBool)},
+		{name: "RAEDAR_PROBE_INTERVAL", apply: parseVar(func(c *Config) *time.Duration { return &c.Probe.Interval }, parseDuration)},
+		{name: "RAEDAR_PROBE_TIMEOUT", apply: parseVar(func(c *Config) *time.Duration { return &c.Probe.Timeout }, parseDuration)},
+		{name: "RAEDAR_PROBE_CONCURRENCY", apply: parseVar(func(c *Config) *int { return &c.Probe.Concurrency }, parseIntAtLeast(1))},
+		{name: "RAEDAR_PROBE_PATH", apply: parseVar(func(c *Config) *string { return &c.Probe.Path }, checkedString(checkProbePath))},
+
 		{name: "RAEDAR_HEARTBEAT_URL", apply: parseVar(func(c *Config) *string { return &c.Heartbeat.URL }, parseHTTPURL)},
 		{name: "RAEDAR_HEARTBEAT_HEADER", apply: parseVar(func(c *Config) **Header { return &c.Heartbeat.Header }, parseOneHeader)},
 		{name: "RAEDAR_HEARTBEAT_INTERVAL", apply: parseVar(func(c *Config) *time.Duration { return &c.Heartbeat.Interval }, parseDuration)},

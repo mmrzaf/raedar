@@ -39,16 +39,16 @@ Raedar is built around two moments.
 At 21:04 the error rate on `git.example.com` climbs from its usual 0.1 % to 8 %. Two minutes later a Telegram message arrives:
 
 ```
-🔴 host-1 · gitman — 5xx errors
+🔴 host-1 · shop — 5xx errors
 8.2% of requests fail (usual at this hour: 0.1%)
-since 21:04 · 6 min after deploy gitman 1.4.1 → 1.4.2
+since 21:04 · 6 min after deploy shop 1.4.1 → 1.4.2
 most errors: POST /api/repos/:n/push
-https://raedar.example.com/apps/gitman?from=…&to=…
+https://raedar.example.com/apps/shop?from=…&to=…
 ```
 
-The link opens the gitman page on that time window. The error line jumps right after the deploy marker. Clicking the spike shows the gitman container's logs from that minute. After a rollback the rate falls back, and at 21:25 a second message says the incident is resolved after 21 minutes.
+The link opens the shop page on that time window. The error line jumps right after the deploy marker. Clicking the spike shows the shop container's logs from that minute. After a rollback the rate falls back, and at 21:25 a second message says the incident is resolved after 21 minutes.
 
-The next morning's digest mentions that `/` is at 81 % and growing about 0.4 GB a day, full in roughly 12 days. On the Patterns page, the latency heatmap for the same app shows a clear band every night between 02:00 and 03:00. Adding the Postgres container's CPU to the gitman charts shows that it lines up with the nightly backup.
+The next morning's digest mentions that `/` is at 81 % and growing about 0.4 GB a day, full in roughly 12 days. On the Patterns page, the latency heatmap for the same app shows a clear band every night between 02:00 and 03:00. Adding the Postgres container's CPU to the shop charts shows that it lines up with the nightly backup.
 
 ## Out of scope
 
@@ -58,4 +58,4 @@ The next morning's digest mentions that `/` is at 81 % and growing about 0.4 GB 
 - **Log storage and search.** Raedar shows container logs live from Docker and keeps none.
 - **Custom dashboards, query languages and plugins.**
 - **Built-in authentication.** The UI is served behind a Traefik authentication middleware.
-- **Uptime checks from the internet.** Use the outgoing heartbeat together with an external service or a second Raedar instance.
+- **Uptime checks from the internet.** Raedar's optional active checks run on the host through Traefik and cannot see outages the outside world sees. Use the outgoing heartbeat with an external service or a second Raedar instance for that.
