@@ -4,6 +4,24 @@ All notable changes to Raedar are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] - 2026-11-17
+
+### Fixed
+
+- The compare page's group link encodes its app list once instead of twice.
+- The compare page falls back to the first apps by name when no app has traffic
+  in the last hour.
+- An active check that changes between unreachable and unhealthy now restarts
+  the verdict's `since`, so an incident reflects the current failure.
+- A negated `PathPrefix` or `Path` in a Traefik rule is no longer chosen as the
+  probe path.
+
+### Changed
+
+- **The schema is one baseline.** Migrations 1 to 9 are folded into
+  `0001_initial.sql`, which creates the complete schema. A database created by
+  an earlier release is not reused; start from a fresh database.
+
 ## [1.0.1] - 2026-11-17
 
 ### Added
