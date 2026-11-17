@@ -1,3 +1,6 @@
+-- The complete schema of a Raedar database. This is the only baseline;
+-- later releases add their own numbered files.
+
 -- The model of the host: apps, slots, containers and routes.
 create table apps (
     id bigint generated always as identity primary key,
@@ -260,27 +263,178 @@ create table incidents (
     resolved_at timestamptz,
     one_shot boolean not null default false,
     summary text not null,
-    details jsonb not null default '{}'
+    details jsonb not null default '{}',
+    acked_at timestamptz,
+    acked_by text,
+    episode bigint not null default 1
 );
 
 create unique index incidents_open_idx on incidents (rule, subject) where resolved_at is null;
 create index incidents_route_idx on incidents (route_id, opened_at);
 create index incidents_slot_idx on incidents (slot_id, opened_at);
 
+-- A silence prevents incident pages for one subject for a window of time.
+-- The pager consults silences before paging, so an actively silenced
+-- (rule, subject) sees deliveries rows with status='silenced' but no Telegram
+-- message.
+--
+-- rule, subject and app_id may be NULL to match any; most-specific-match wins:
+-- rule+subject > rule > subject > app > wildcard.
+--
+-- The kind column distinguishes the kinds of silences Raedar owns:
+--   maintenance_window  explicit window created from the UI
+--   one_shot_mute       a Telegram "mute 2h" reply or a CLI/api mute
+--   auto_deploy         written automatically around a deploy of an app
+create table silences (
+    id bigint generated always as identity primary key,
+    kind text not null check (kind in (
+        'maintenance_window', 'one_shot_mute', 'auto_deploy'
+    )),
+    rule text,
+    subject text,
+    reason text not null,
+    starts_at timestamptz not null,
+    ends_at timestamptz not null,
+    created_at timestamptz not null default now(),
+    created_by text,
+    dedup_key text,
+    comment text,
+    app_id bigint references apps (id) on delete cascade
+);
+
+create index silences_active_idx on silences (starts_at, ends_at);
+create index silences_rule_subject_idx on silences (rule, subject);
+create index silences_app_idx on silences (app_id);
+
+-- A (kind, dedup_key) pair is unique. NULLs are distinct; the UI bumps the
+-- dedup_key when it wants to add a second silence of the same kind.
+create unique index silences_dedup_idx on silences (kind, dedup_key)
+    where dedup_key is not null;
+
+-- Telegram inbound inbox tracking.
+create table telegram_inbox (
+    -- The update_id we have already processed. Rows are deduped against this
+    -- table on every poll. Rows older than the dedup window (kept short, see
+    -- retention) are deleted by the poller after a successful run.
+    update_id bigint primary key,
+    processed_at timestamptz not null default now()
+);
+
+-- Notifications become durable obligations instead of one-shot reactions to
+-- incident changes. For every incident episode, channel and recipient there is
+-- exactly one page row. Silence, quiet hours, cooldown, flap, rate limiting,
+-- transport failures and process restarts only move its due_at; they no longer
+-- discard the page.
+--
+-- A new episode (an incident that resolves and reopens within the reopen
+-- window) increments incidents.episode, so the old episode's pages stay as
+-- history and the new one gets its own obligations.
+create table pages (
+    id bigint generated always as identity primary key,
+    incident_id bigint not null references incidents (id) on delete cascade,
+    episode bigint not null,
+    channel text not null,
+    recipient text not null default '',
+    status text not null default 'pending'
+        check (status in ('pending', 'announced', 'resolving', 'resolved', 'cancelled')),
+    kind text not null default 'opened'
+        check (kind in ('opened', 'escalated', 'resolved')),
+    severity text not null,
+    due_at timestamptz not null default now(),
+    reason text not null default '',
+    silence_id bigint references silences (id) on delete set null,
+    attempts integer not null default 0,
+    last_error text,
+    announced_at timestamptz,
+    resolved_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique (incident_id, episode, channel, recipient)
+);
+
+create index pages_due_idx on pages (due_at)
+    where status in ('pending', 'resolving');
+create index pages_incident_idx on pages (incident_id, episode);
+
+-- The deliveries table is the audit log. It records which durable obligation
+-- an attempt belongs to, which recipient it targeted, and why a page was
+-- suppressed.
 create table deliveries (
     id bigint generated always as identity primary key,
     incident_id bigint references incidents (id) on delete cascade,
-    kind text not null check (kind in ('opened', 'resolved', 'digest', 'test')),
+    kind text not null check (kind in ('opened', 'escalated', 'resolved', 'digest', 'test')),
     channel text not null,
     created_at timestamptz not null,
     sent_at timestamptz,
     attempts integer not null default 0,
-    status text not null,
-    error text
+    status text not null
+        check (status in ('pending', 'sent', 'failed', 'silenced', 'acked', 'held', 'cooldown', 'dropped')),
+    error text,
+    telegram_chat_id bigint,
+    telegram_message_id bigint,
+    page_id bigint references pages (id) on delete set null,
+    recipient text not null default '',
+    reason text,
+    silence_id bigint references silences (id) on delete set null
 );
 
 create index deliveries_incident_idx on deliveries (incident_id);
 create index deliveries_created_idx on deliveries (created_at);
+
+-- The inbox goroutine uses the (chat, message) pair to look up the incident of
+-- a message the operator replied to with `mute 2h` etc. Telegram message ids
+-- are only unique within one chat. One message may announce several incidents,
+-- so the pair is not unique either.
+create index deliveries_telegram_message_idx
+    on deliveries (telegram_chat_id, telegram_message_id)
+    where telegram_message_id is not null;
+create index deliveries_page_idx on deliveries (page_id) where page_id is not null;
+
+-- Active availability checks: synthetic requests Raedar sends to Traefik for
+-- routes it discovered. They are kept apart from the passive route_* tables,
+-- which describe real user traffic from the access log.
+
+-- The current verdict per route. state is what incidents act on, after the
+-- check runner applied its hysteresis; last_result is the latest single check.
+create table probe_state (
+    route_id bigint primary key references routes (id) on delete cascade,
+    state text not null check (state in ('healthy', 'unhealthy', 'unreachable', 'unknown')),
+    since timestamptz not null,
+    last_result text not null check (last_result in ('healthy', 'unhealthy', 'unreachable')),
+    last_checked timestamptz not null,
+    status_code integer,
+    latency_ms integer,
+    error text not null default '',
+    target text not null default '',
+    consecutive_failures integer not null default 0,
+    consecutive_successes integer not null default 0
+);
+
+-- Outcomes per route and minute. Counts are additive, like route_minute.
+create table probe_minute (
+    route_id bigint not null references routes (id) on delete cascade,
+    ts timestamptz not null,
+    checks integer not null default 0,
+    healthy integer not null default 0,
+    unhealthy integer not null default 0,
+    unreachable integer not null default 0,
+    latency_ms_max integer,
+    primary key (route_id, ts)
+);
+
+create table probe_hour (
+    route_id bigint not null references routes (id) on delete cascade,
+    ts timestamptz not null,
+    checks integer not null default 0,
+    healthy integer not null default 0,
+    unhealthy integer not null default 0,
+    unreachable integer not null default 0,
+    latency_ms_max integer,
+    primary key (route_id, ts)
+);
+
+create index probe_minute_ts_idx on probe_minute (ts);
+create index probe_hour_ts_idx on probe_hour (ts);
 
 -- Histogram helpers.
 create function raedar_hist_add(a int[], b int[]) returns int[]

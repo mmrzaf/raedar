@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -648,6 +649,7 @@ func TestCombinedAppsUseSummedCountsAndMergedHistograms(t *testing.T) {
 func TestComparePageShowsExactTotals(t *testing.T) {
 	server, st, _, model := newIntegrationServer(t)
 	addApp(t, st, model, "blog", 60, 5, 8)
+	model.Apps["shop"].Group = "shops"
 	handler := server.Handler()
 	recorder := get(t, handler, "/compare?apps=shop,blog&range=24h")
 	if recorder.Code != http.StatusOK {
@@ -659,9 +661,18 @@ func TestComparePageShowsExactTotals(t *testing.T) {
 			t.Errorf("compare page lacks %q", want)
 		}
 	}
+	// The group link carries the member names and is escaped exactly once.
+	link := regexp.MustCompile(`href="\?apps=([^&"]+)`).FindStringSubmatch(body)
+	if link == nil {
+		t.Fatal("compare page has no group link")
+	}
+	decoded, err := url.QueryUnescape(link[1])
+	if err != nil || decoded != "blog,shop" {
+		t.Errorf("group link apps = %q (decoded %q), want blog,shop", link[1], decoded)
+	}
 	// A group selects all its members.
 	recorder = get(t, handler, "/compare?group=shops")
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "data-compare=\"blog\"") {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "data-compare=\"blog,shop\"") {
 		t.Errorf("group selection failed: %d", recorder.Code)
 	}
 	// Without any parameter the page still renders with the busiest apps.

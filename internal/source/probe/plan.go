@@ -30,7 +30,7 @@ func (t Target) String() string { return t.Host + t.Path }
 
 var (
 	hostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
-	pathMatcher = regexp.MustCompile(`(?:^|[^A-Za-z])Path(?:Prefix)?\(\x60(/[^\x60]*)\x60\)`)
+	pathMatcher = regexp.MustCompile(`(?:^|[^A-Za-z!])Path(?:Prefix)?\(\x60(/[^\x60]*)\x60\)`)
 	// unsupported are matchers a plain GET cannot satisfy.
 	unsupported = regexp.MustCompile(`(?:Header|HeaderRegexp|Query|QueryRegexp|ClientIP|Method)\(`)
 )
