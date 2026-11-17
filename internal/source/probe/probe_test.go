@@ -29,6 +29,8 @@ func TestPlan(t *testing.T) {
 	}{
 		{name: "plain host", route: route("Host(`shop.example.com`)", []string{"shop.example.com"}, app), wantHost: "shop.example.com", wantPath: "/"},
 		{name: "path prefix from the rule", route: route("Host(`shop.example.com`) && PathPrefix(`/api`)", []string{"shop.example.com"}, app), wantHost: "shop.example.com", wantPath: "/api"},
+		{name: "negated path is ignored", route: route("Host(`shop.example.com`) && !PathPrefix(`/admin`)", []string{"shop.example.com"}, app), wantHost: "shop.example.com", wantPath: "/"},
+		{name: "positive path wins over a negated one", route: route("Host(`shop.example.com`) && PathPrefix(`/api`) && !Path(`/api/health`)", []string{"shop.example.com"}, app), wantHost: "shop.example.com", wantPath: "/api"},
 		{name: "label path wins", route: route("Host(`a.example.com`)", []string{"a.example.com"}, &discovery.App{Name: "a", ProbePath: "/healthz"}), wantHost: "a.example.com", wantPath: "/healthz"},
 		{name: "header matcher cannot be satisfied", route: route("Host(`a.example.com`) && Header(`X-Tenant`, `1`)", []string{"a.example.com"}, app), wantReason: "header"},
 		{name: "no exact hostname", route: route("HostRegexp(`.+`)", nil, app), wantReason: "hostname"},
@@ -106,6 +108,9 @@ func TestAdvanceDebouncesFailuresAndRecovery(t *testing.T) {
 	}
 	if got := step(Outcome{Result: store.ProbeUnhealthy, Status: 503}); got != store.ProbeUnhealthy {
 		t.Errorf("a 503 while failing = %s, want unhealthy", got)
+	}
+	if !state.Since.After(since) {
+		t.Error("since must move when the failure kind changes")
 	}
 	failingSince := state.Since
 	if got := step(good); got != store.ProbeUnhealthy {

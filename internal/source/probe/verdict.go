@@ -48,7 +48,7 @@ func Advance(previous *store.ProbeState, routeID int64, target string, outcome O
 	state.ConsecutiveFailures++
 	state.ConsecutiveSuccesses = 0
 	if state.ConsecutiveFailures >= failAfter {
-		if state.State == store.ProbeHealthy || state.State == store.ProbeUnknown {
+		if state.State != outcome.Result {
 			state.Since = now
 		}
 		state.State = outcome.Result
