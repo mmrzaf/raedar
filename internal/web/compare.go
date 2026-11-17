@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -160,8 +159,16 @@ func (s *Server) busiestApps(ctx context.Context, model *discovery.Model) []stri
 		if len(names) == defaultCompared {
 			break
 		}
-		if _, ok := model.Apps[view.Name]; ok && (view.RequestsPerMinute > 0 || view.Total > 0) {
+		if _, ok := model.Apps[view.Name]; ok && view.RequestsPerMinute > 0 {
 			names = append(names, view.Name)
+		}
+	}
+	if len(names) == 0 {
+		for _, name := range sortedKeys(model.Apps) {
+			if len(names) == defaultCompared {
+				break
+			}
+			names = append(names, name)
 		}
 	}
 	sort.Strings(names)
@@ -195,7 +202,7 @@ func (s *Server) comparePage(w http.ResponseWriter, request *http.Request) {
 		}
 	}
 	for _, name := range sortedKeys(groups) {
-		data.Groups = append(data.Groups, compareGroup{Name: name, Apps: url.QueryEscape(strings.Join(groups[name], ","))})
+		data.Groups = append(data.Groups, compareGroup{Name: name, Apps: strings.Join(groups[name], ",")})
 	}
 	if len(selected) > 0 {
 		rows, combined, err := s.compareRows(request.Context(), model, selected, timeRange)
